@@ -1,4 +1,4 @@
-module github.com/sipeed/picoclaw
+module cyb3rclaw
 
 go 1.25.9
 
