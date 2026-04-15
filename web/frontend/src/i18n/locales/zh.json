@@ -591,11 +591,11 @@
       "monitor_usb": "监听 USB",
       "monitor_usb_hint": "在启用设备功能时，监听 USB 插拔事件",
       "autostart_label": "开机自启",
-      "autostart_hint": "登录系统后自动启动 PicoClaw Web",
+      "autostart_hint": "登录系统后自动启动 Cyb3rClaw Web",
       "autostart_unsupported": "当前平台不支持开机自启",
       "autostart_load_error": "加载开机自启状态失败",
       "server_port": "服务端口",
-      "server_port_hint": "PicoClaw Web 的 HTTP 监听端口",
+      "server_port_hint": "Cyb3rClaw Web 的 HTTP 监听端口",
       "launcher_token": "登录令牌",
       "launcher_token_section_hint": "此分组中的改动需要在重启 launcher 后生效",
       "launcher_token_hint": "用于在 launcher 登录页进行登录",
@@ -640,8 +640,8 @@
     "next": "下一步",
     "finish": "完成",
     "welcome": {
-      "title": "欢迎使用 PicoClaw",
-      "description": "PicoClaw 是一个强大的 AI 助手平台。让我们花几秒钟时间，帮您完成基础配置。"
+      "title": "欢迎使用 Cyb3rClaw",
+      "description": "Cyb3rClaw 是一个强大的 AI 助手平台。让我们花几秒钟时间，帮您完成基础配置。"
     },
     "models": {
       "title": "配置模型",

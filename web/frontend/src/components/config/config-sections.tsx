@@ -81,7 +81,7 @@ export function AgentDefaultsSection({
         <Input
           value={form.workspace}
           onChange={(e) => onFieldChange("workspace", e.target.value)}
-          placeholder="~/.picoclaw/workspace"
+          placeholder="~/.cyb3rclaw/workspace"
         />
       </Field>
 

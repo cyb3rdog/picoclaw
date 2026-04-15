@@ -1,8 +1,8 @@
-// PicoClaw - Ultra-lightweight personal AI agent
+// Cyb3rClaw - Ultra-lightweight personal AI agent
 // Inspired by and based on nanobot: https://github.com/HKUDS/nanobot
 // License: MIT
 //
-// Copyright (c) 2026 PicoClaw contributors
+// Copyright (c) 2026 Cyb3rClaw contributors
 
 package main
 
@@ -50,19 +50,19 @@ func earlyColorDisabled() bool {
 	return false
 }
 
-func NewPicoclawCommand() *cobra.Command {
-	short := fmt.Sprintf("%s PicoClaw — personal AI assistant", internal.Logo)
-	long := fmt.Sprintf(`%s PicoClaw is a lightweight personal AI assistant.
+func NewCyb3rClawCommand() *cobra.Command {
+	short := fmt.Sprintf("%s Cyb3rClaw — personal AI assistant", internal.Logo)
+	long := fmt.Sprintf(`%s Cyb3rClaw is a lightweight personal AI assistant.
 
 Version: %s`, internal.Logo, config.FormatVersion())
 
 	cmd := &cobra.Command{
-		Use:   "picoclaw",
+		Use:   "cyb3rclaw",
 		Short: short,
 		Long:  long,
-		Example: `picoclaw version
-picoclaw onboard
-picoclaw --no-color status`,
+		Example: `cyb3rclaw version
+cyb3rclaw onboard
+cyb3rclaw --no-color status`,
 		SilenceErrors: true,
 		// Avoid plain UsageString() on stderr/stdout when a command fails; cliui
 		// renders matching panels on stderr instead.
@@ -90,7 +90,7 @@ picoclaw --no-color status`,
 		migrate.NewMigrateCommand(),
 		skills.NewSkillsCommand(),
 		model.NewModelCommand(),
-		updater.NewUpdateCommand("picoclaw"),
+		updater.NewUpdateCommand("cyb3rclaw"),
 		version.NewVersionCommand(),
 	)
 

@@ -3,7 +3,7 @@
 # Build variables
 BINARY_NAME=cyb3rclaw
 BUILD_DIR=build
-CMD_DIR=cmd/$(BINARY_NAME)
+CMD_DIR=cmd/picoclaw
 MAIN_GO=$(CMD_DIR)/main.go
 EXT=
 

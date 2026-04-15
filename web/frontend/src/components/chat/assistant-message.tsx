@@ -37,7 +37,7 @@ export function AssistantMessage({
     <div className="group flex w-full flex-col gap-1.5">
       <div className="text-muted-foreground flex items-center justify-between gap-2 px-1 text-xs opacity-70">
         <div className="flex items-center gap-2">
-          <span>PicoClaw</span>
+          <span>Cyb3rClaw</span>
           {isThought && (
             <span className="inline-flex items-center gap-1 rounded-full border border-amber-300/80 bg-amber-100/80 px-2 py-0.5 text-[11px] font-medium text-amber-800 dark:border-amber-500/40 dark:bg-amber-500/15 dark:text-amber-200">
               <IconBrain className="size-3" />

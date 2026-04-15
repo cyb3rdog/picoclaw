@@ -591,11 +591,11 @@
       "monitor_usb": "Monitor USB",
       "monitor_usb_hint": "Watch USB plug/unplug events when devices are enabled.",
       "autostart_label": "Launch at Login",
-      "autostart_hint": "Start PicoClaw Web automatically when you log in.",
+      "autostart_hint": "Start Cyb3rClaw Web automatically when you log in.",
       "autostart_unsupported": "Launch at login is not supported on this platform.",
       "autostart_load_error": "Failed to load launch-at-login status.",
       "server_port": "Service Port",
-      "server_port_hint": "HTTP port used by PicoClaw Web.",
+      "server_port_hint": "HTTP port used by Cyb3rClaw Web.",
       "launcher_token": "Login Token",
       "launcher_token_section_hint": "Changes in this section take effect after the launcher restarts.",
       "launcher_token_hint": "Used to sign in on the launcher login page.",
@@ -640,8 +640,8 @@
     "next": "Next",
     "finish": "Finish",
     "welcome": {
-      "title": "Welcome to PicoClaw",
-      "description": "PicoClaw is a powerful AI assistant platform. Let's take a few seconds to help you complete the basic setup."
+      "title": "Welcome to Cyb3rClaw",
+      "description": "Cyb3rClaw is a powerful AI assistant platform. Let's take a few seconds to help you complete the basic setup."
     },
     "models": {
       "title": "Configure Models",

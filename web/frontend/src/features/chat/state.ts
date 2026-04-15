@@ -1,9 +1,9 @@
-const LAST_SESSION_STORAGE_KEY = "picoclaw:last-session-id"
+const LAST_SESSION_STORAGE_KEY = 'cyb3rclaw:last-session-id'
 const UNIX_MS_THRESHOLD = 1e12
 
 function readStorageValue() {
   return (
-    globalThis.localStorage?.getItem(LAST_SESSION_STORAGE_KEY)?.trim() || ""
+    globalThis.localStorage?.getItem(LAST_SESSION_STORAGE_KEY)?.trim() || ''
   )
 }
 
@@ -26,18 +26,18 @@ export function clearStoredSessionId() {
 
 export function generateSessionId(): string {
   const webCrypto = globalThis.crypto
-  if (webCrypto && typeof webCrypto.randomUUID === "function") {
+  if (webCrypto && typeof webCrypto.randomUUID === 'function') {
     return webCrypto.randomUUID()
   }
 
-  if (webCrypto && typeof webCrypto.getRandomValues === "function") {
+  if (webCrypto && typeof webCrypto.getRandomValues === 'function') {
     const bytes = new Uint8Array(16)
     webCrypto.getRandomValues(bytes)
 
     bytes[6] = (bytes[6] & 0x0f) | 0x40
     bytes[8] = (bytes[8] & 0x3f) | 0x80
 
-    const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, "0"))
+    const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, '0'))
     return (
       `${hex[0]}${hex[1]}${hex[2]}${hex[3]}-` +
       `${hex[4]}${hex[5]}-` +
