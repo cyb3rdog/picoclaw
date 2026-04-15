@@ -13,18 +13,18 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/sipeed/picoclaw/cmd/picoclaw/internal"
-	"github.com/sipeed/picoclaw/cmd/picoclaw/internal/agent"
-	"github.com/sipeed/picoclaw/cmd/picoclaw/internal/auth"
-	"github.com/sipeed/picoclaw/cmd/picoclaw/internal/cliui"
-	"github.com/sipeed/picoclaw/cmd/picoclaw/internal/cron"
-	"github.com/sipeed/picoclaw/cmd/picoclaw/internal/gateway"
-	"github.com/sipeed/picoclaw/cmd/picoclaw/internal/migrate"
-	"github.com/sipeed/picoclaw/cmd/picoclaw/internal/model"
-	"github.com/sipeed/picoclaw/cmd/picoclaw/internal/onboard"
-	"github.com/sipeed/picoclaw/cmd/picoclaw/internal/skills"
-	"github.com/sipeed/picoclaw/cmd/picoclaw/internal/status"
-	"github.com/sipeed/picoclaw/cmd/picoclaw/internal/version"
+	"github.com/sipeed/picoclaw/cmd/cyb3rclaw/internal"
+	"github.com/sipeed/picoclaw/cmd/cyb3rclaw/internal/agent"
+	"github.com/sipeed/picoclaw/cmd/cyb3rclaw/internal/auth"
+	"github.com/sipeed/picoclaw/cmd/cyb3rclaw/internal/cliui"
+	"github.com/sipeed/picoclaw/cmd/cyb3rclaw/internal/cron"
+	"github.com/sipeed/picoclaw/cmd/cyb3rclaw/internal/gateway"
+	"github.com/sipeed/picoclaw/cmd/cyb3rclaw/internal/migrate"
+	"github.com/sipeed/picoclaw/cmd/cyb3rclaw/internal/model"
+	"github.com/sipeed/picoclaw/cmd/cyb3rclaw/internal/onboard"
+	"github.com/sipeed/picoclaw/cmd/cyb3rclaw/internal/skills"
+	"github.com/sipeed/picoclaw/cmd/cyb3rclaw/internal/status"
+	"github.com/sipeed/picoclaw/cmd/cyb3rclaw/internal/version"
 	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/updater"
 )
@@ -141,7 +141,7 @@ func main() {
 		}
 	}
 
-	cmd := NewPicoclawCommand()
+	cmd := NewCyb3rClawCommand()
 	last, err := cmd.ExecuteC()
 	if err != nil {
 		syncCliUIColor(cmd)
