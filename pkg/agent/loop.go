@@ -128,6 +128,7 @@ func (al *AgentLoop) Run(ctx context.Context) error {
 	if err := al.ensureHooksInitialized(ctx); err != nil {
 		return err
 	}
+	al.mountAgentSWLHooks()
 	if err := al.ensureMCPInitialized(ctx); err != nil {
 		return err
 	}

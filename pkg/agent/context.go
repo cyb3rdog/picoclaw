@@ -44,6 +44,22 @@ type ContextBuilder struct {
 	// build time. This catches nested file creations/deletions/mtime changes
 	// that may not update the top-level skill root directory mtime.
 	skillFilesAtCache map[string]time.Time
+
+	// extraSystemContent holds additional inline content appended at the end of
+	// the system prompt. Used by SWL and other optional subsystems.
+	extraSystemContentMu sync.RWMutex
+	extraSystemContent   []string
+}
+
+// AddInlineSystemContent appends content to be included at the end of the system prompt.
+// Safe for concurrent use.
+func (cb *ContextBuilder) AddInlineSystemContent(content string) {
+	if content == "" {
+		return
+	}
+	cb.extraSystemContentMu.Lock()
+	cb.extraSystemContent = append(cb.extraSystemContent, content)
+	cb.extraSystemContentMu.Unlock()
 }
 
 func (cb *ContextBuilder) WithToolDiscovery(useBM25, useRegex bool) *ContextBuilder {
@@ -162,6 +178,12 @@ You MUST frequently use <|[SPLIT]|> to break your responses into multiple short 
 
 Each part separated by the marker will be sent as an independent message.`)
 	}
+
+	// Extra inline content from optional subsystems (e.g. SWL session hint)
+	cb.extraSystemContentMu.RLock()
+	extra := append([]string(nil), cb.extraSystemContent...)
+	cb.extraSystemContentMu.RUnlock()
+	parts = append(parts, extra...)
 
 	// Join with "---" separator
 	return strings.Join(parts, "\n\n---\n\n")
