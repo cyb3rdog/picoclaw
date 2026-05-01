@@ -1,6 +1,7 @@
 import { IconChevronRight } from "@tabler/icons-react"
 import {
   IconAtom,
+  IconBrain,
   IconChevronsDown,
   IconChevronsUp,
   IconKey,
@@ -148,6 +149,12 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
             title: "navigation.tools",
             url: "/agent/tools",
             icon: IconTools,
+            translateTitle: true,
+          },
+          {
+            title: "navigation.swl",
+            url: "/swl",
+            icon: IconBrain,
             translateTitle: true,
           },
         ],
