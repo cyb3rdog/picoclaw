@@ -25,6 +25,7 @@ export interface CoreConfigForm {
   heartbeatInterval: string
   devicesEnabled: boolean
   monitorUSB: boolean
+  swlEnabled: boolean
 }
 
 export interface LauncherForm {
@@ -91,6 +92,7 @@ export const EMPTY_FORM: CoreConfigForm = {
   heartbeatInterval: "30",
   devicesEnabled: false,
   monitorUSB: true,
+  swlEnabled: false,
 }
 
 export const EMPTY_LAUNCHER_FORM: LauncherForm = {
@@ -136,6 +138,7 @@ export function buildFormFromConfig(config: unknown): CoreConfigForm {
   const tools = asRecord(root.tools)
   const cron = asRecord(tools.cron)
   const exec = asRecord(tools.exec)
+  const swl = asRecord(tools.swl)
   const toolFeedback = asRecord(defaults.tool_feedback)
 
   return {
@@ -228,6 +231,10 @@ export function buildFormFromConfig(config: unknown): CoreConfigForm {
       devices.monitor_usb === undefined
         ? EMPTY_FORM.monitorUSB
         : asBool(devices.monitor_usb),
+    swlEnabled:
+      swl.enabled === undefined
+        ? EMPTY_FORM.swlEnabled
+        : asBool(swl.enabled),
   }
 }
 

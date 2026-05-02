@@ -23,6 +23,7 @@ import {
   ExecSection,
   LauncherSection,
   RuntimeSection,
+  SWLSection,
 } from "@/components/config/config-sections"
 import {
   type CoreConfigForm,
@@ -264,6 +265,9 @@ export function ConfigPage() {
               exec_timeout_minutes: cronExecTimeoutMinutes,
             },
             exec: execConfigPatch,
+            swl: {
+              enabled: form.swlEnabled,
+            },
           },
           heartbeat: {
             enabled: form.heartbeatEnabled,
@@ -431,6 +435,8 @@ export function ConfigPage() {
                 }
                 onAutoStartChange={setAutoStartEnabled}
               />
+
+              <SWLSection form={form} onFieldChange={updateField} />
 
               {!isDirty && actionButtons}
             </div>

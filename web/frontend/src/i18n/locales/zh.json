@@ -706,8 +706,12 @@
         "exec": "运行命令",
         "cron": "定时任务",
         "launcher": "启动器",
-        "devices": "设备"
+        "devices": "设备",
+        "swl": "知识图谱 (SWL)"
       },
+      "swl_section_hint": "语义工作区层 — 从每次工具调用构建持久化知识图谱。",
+      "swl_enabled": "启用 SWL",
+      "swl_enabled_hint": "拦截工具调用以构建 SQLite 知识图谱。智能体可通过 query_swl 查询，无需重复读取文件。",
       "open_raw": "原始配置",
       "back_to_visual": "可视化配置",
       "raw_json_title": "原始 JSON 配置",

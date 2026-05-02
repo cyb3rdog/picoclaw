@@ -106,7 +106,7 @@ func (h *Handler) handleSWLGraph(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 
-	var nodes []swlNode
+	nodes := make([]swlNode, 0, 64)
 	nodeIDs := map[string]bool{}
 	for rows.Next() {
 		var n swlNode
@@ -133,7 +133,7 @@ func (h *Handler) handleSWLGraph(w http.ResponseWriter, r *http.Request) {
 	}
 	defer edgeRows.Close()
 
-	var links []swlLink
+	links := make([]swlLink, 0, 64)
 	for edgeRows.Next() {
 		var l swlLink
 		var sess sql.NullString
@@ -199,8 +199,7 @@ func (h *Handler) handleSWLStats(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 
-	var data swlStatsData
-	data.DBPath = dbPath
+	data := swlStatsData{DBPath: dbPath, Rows: make([]swlStatRow, 0, 16)}
 	for rows.Next() {
 		var sr swlStatRow
 		if rows.Scan(&sr.Type, &sr.Total, &sr.Verified, &sr.Stale, &sr.Unknown) == nil {
@@ -246,7 +245,7 @@ func (h *Handler) handleSWLSessions(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 
-	var sessions []swlSessionRow
+	sessions := make([]swlSessionRow, 0, 16)
 	for rows.Next() {
 		var s swlSessionRow
 		var endedAt, goal, summary sql.NullString

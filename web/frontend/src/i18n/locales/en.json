@@ -706,8 +706,12 @@
         "exec": "Run Commands",
         "cron": "Cron Tasks",
         "launcher": "Launcher",
-        "devices": "Devices"
+        "devices": "Devices",
+        "swl": "Knowledge Graph (SWL)"
       },
+      "swl_section_hint": "Semantic Workspace Layer — builds a persistent knowledge graph from every tool call.",
+      "swl_enabled": "Enable SWL",
+      "swl_enabled_hint": "Intercepts tool calls to build a SQLite knowledge graph. The agent can query it with query_swl instead of re-reading files.",
       "open_raw": "Raw Config",
       "back_to_visual": "Visual Config",
       "raw_json_title": "Raw JSON Configuration",

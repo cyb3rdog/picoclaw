@@ -42,7 +42,30 @@ interface Props {
 
 export function SWLGraph({ data }: Props) {
   const graphRef = useRef<any>(null)
+  const containerRef = useRef<HTMLDivElement>(null)
+  const [dims, setDims] = useState({ width: 600, height: 400 })
   const [graphData, setGraphData] = useState(data)
+
+  // Measure container and keep dimensions in sync
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0]
+      if (!entry) return
+      setDims({
+        width: Math.floor(entry.contentRect.width),
+        height: Math.floor(entry.contentRect.height),
+      })
+    })
+    observer.observe(el)
+    // Set initial size immediately
+    setDims({
+      width: Math.floor(el.clientWidth) || 600,
+      height: Math.floor(el.clientHeight) || 400,
+    })
+    return () => observer.disconnect()
+  }, [])
 
   // SSE real-time updates
   useEffect(() => {
@@ -57,13 +80,14 @@ export function SWLGraph({ data }: Props) {
         clearTimeout(debounceTimer)
         debounceTimer = setTimeout(() => {
           setGraphData((prev) => {
-            const nodeMap = new Map(prev.nodes.map((n) => [n.id, n]))
+            const nodeMap = new Map((prev.nodes ?? []).map((n) => [n.id, n]))
             for (const n of update.nodes) {
               nodeMap.set(n.id, n)
             }
             return {
               ...prev,
               nodes: Array.from(nodeMap.values()),
+              links: prev.links ?? [],
               meta: {
                 ...prev.meta,
                 nodeCount: nodeMap.size,
@@ -82,15 +106,12 @@ export function SWLGraph({ data }: Props) {
     }
   }, [])
 
-  const nodeColor = useCallback(
-    (node: any) => {
-      const n = node as SWLNode
-      if (n.factStatus === "stale") return "#555555"
-      if (n.factStatus === "deleted") return "#333333"
-      return NODE_COLORS[n.type] ?? "#ffffff"
-    },
-    [],
-  )
+  const nodeColor = useCallback((node: any) => {
+    const n = node as SWLNode
+    if (n.factStatus === "stale") return "#555555"
+    if (n.factStatus === "deleted") return "#333333"
+    return NODE_COLORS[n.type] ?? "#ffffff"
+  }, [])
 
   const nodeVal = useCallback((node: any) => {
     const n = node as SWLNode
@@ -101,23 +122,35 @@ export function SWLGraph({ data }: Props) {
     return LINK_COLORS[(link as SWLLink).rel] ?? "#444444"
   }, [])
 
+  // Normalize: ensure nodes/links are always arrays (guard against null from backend)
+  const safeData = {
+    nodes: graphData.nodes ?? [],
+    links: graphData.links ?? [],
+  }
+
   return (
-    <ForceGraph3D
-      ref={graphRef}
-      graphData={graphData as any}
-      nodeId="id"
-      nodeColor={nodeColor}
-      nodeVal={nodeVal}
-      nodeOpacity={0.85}
-      linkSource="source"
-      linkTarget="target"
-      linkColor={linkColor}
-      linkWidth={0.8}
-      linkDirectionalArrowLength={4}
-      linkDirectionalArrowRelPos={1}
-      enableNodeDrag
-      backgroundColor="#0a0a0f"
-      showNavInfo={false}
-    />
+    <div ref={containerRef} style={{ width: "100%", height: "100%" }}>
+      {dims.width > 0 && dims.height > 0 && (
+        <ForceGraph3D
+          ref={graphRef}
+          width={dims.width}
+          height={dims.height}
+          graphData={safeData as any}
+          nodeId="id"
+          nodeColor={nodeColor}
+          nodeVal={nodeVal}
+          nodeOpacity={0.85}
+          linkSource="source"
+          linkTarget="target"
+          linkColor={linkColor}
+          linkWidth={0.8}
+          linkDirectionalArrowLength={4}
+          linkDirectionalArrowRelPos={1}
+          enableNodeDrag
+          backgroundColor="#0a0a0f"
+          showNavInfo={false}
+        />
+      )}
+    </div>
   )
 }

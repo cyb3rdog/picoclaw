@@ -615,6 +615,30 @@ export function LauncherSection({
   )
 }
 
+interface SWLSectionProps {
+  form: CoreConfigForm
+  onFieldChange: UpdateCoreField
+}
+
+export function SWLSection({ form, onFieldChange }: SWLSectionProps) {
+  const { t } = useTranslation()
+
+  return (
+    <ConfigSectionCard
+      title={t("pages.config.sections.swl")}
+      description={t("pages.config.swl_section_hint")}
+    >
+      <SwitchCardField
+        label={t("pages.config.swl_enabled")}
+        hint={t("pages.config.swl_enabled_hint")}
+        layout="setting-row"
+        checked={form.swlEnabled}
+        onCheckedChange={(checked) => onFieldChange("swlEnabled", checked)}
+      />
+    </ConfigSectionCard>
+  )
+}
+
 interface DevicesSectionProps {
   form: CoreConfigForm
   onFieldChange: UpdateCoreField
