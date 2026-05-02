@@ -58,6 +58,31 @@ var (
 	reSogouRealURL = regexp.MustCompile(`url=([^&]+)`)
 )
 
+var preferredWebSearchLanguage atomic.Value
+
+func normalizePreferredWebSearchLanguage(lang string) string {
+	lang = strings.ToLower(strings.TrimSpace(lang))
+	switch {
+	case strings.HasPrefix(lang, "zh"), lang == "chinese":
+		return "zh"
+	case strings.HasPrefix(lang, "en"), lang == "english":
+		return "en"
+	default:
+		return ""
+	}
+}
+
+// SetPreferredWebSearchLanguage sets the language hint used by web search providers.
+func SetPreferredWebSearchLanguage(lang string) {
+	preferredWebSearchLanguage.Store(normalizePreferredWebSearchLanguage(lang))
+}
+
+// GetPreferredWebSearchLanguage returns the current preferred web search language ("zh", "en", or "").
+func GetPreferredWebSearchLanguage() string {
+	lang, _ := preferredWebSearchLanguage.Load().(string)
+	return lang
+}
+
 type APIKeyPool struct {
 	keys    []string
 	current uint32

@@ -104,3 +104,11 @@ func NewWebFetchToolWithConfig(
 ) (*WebFetchTool, error) {
 	return integrationtools.NewWebFetchToolWithConfig(maxChars, proxy, format, fetchLimitBytes, privateHostWhitelist)
 }
+
+func SetPreferredWebSearchLanguage(lang string) {
+	integrationtools.SetPreferredWebSearchLanguage(lang)
+}
+
+func GetPreferredWebSearchLanguage() string {
+	return integrationtools.GetPreferredWebSearchLanguage()
+}
