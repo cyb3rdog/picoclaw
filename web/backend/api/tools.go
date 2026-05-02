@@ -189,6 +189,12 @@ var toolCatalog = []toolCatalogEntry{
 		Category:    "discovery",
 		ConfigKey:   "mcp.discovery.use_bm25",
 	},
+	{
+		Name:        "query_swl",
+		Description: "Query the persistent semantic knowledge graph (SWL) built from all tool calls. Saves tokens by returning known facts instead of re-reading files.",
+		Category:    "knowledge",
+		ConfigKey:   "swl",
+	},
 }
 
 func (h *Handler) registerToolRoutes(mux *http.ServeMux) {
@@ -269,6 +275,10 @@ func buildToolSupport(cfg *config.Config) []toolSupportItem {
 			status, reasonCode = resolveDiscoveryToolSupport(cfg, cfg.Tools.MCP.Discovery.UseBM25)
 		case "web_search":
 			status, reasonCode = resolveWebSearchToolSupport(cfg)
+		case "query_swl":
+			if cfg.Tools.SWL != nil && cfg.Tools.SWL.Enabled {
+				status = "enabled"
+			}
 		case "i2c", "spi":
 			status, reasonCode = resolveHardwareToolSupport(cfg.Tools.IsToolEnabled(entry.ConfigKey))
 		case "serial":
@@ -396,6 +406,11 @@ func applyToolState(cfg *config.Config, toolName string, enabled bool) error {
 			cfg.Tools.MCP.Enabled = true
 			cfg.Tools.MCP.Discovery.Enabled = true
 		}
+	case "query_swl":
+		if cfg.Tools.SWL == nil {
+			cfg.Tools.SWL = &config.SWLToolConfig{}
+		}
+		cfg.Tools.SWL.Enabled = enabled
 	default:
 		return fmt.Errorf("tool %q cannot be updated", toolName)
 	}

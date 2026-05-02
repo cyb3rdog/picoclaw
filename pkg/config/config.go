@@ -1585,6 +1585,8 @@ func (t *ToolsConfig) IsToolEnabled(name string) bool {
 		return t.WriteFile.Enabled
 	case "mcp":
 		return t.MCP.Enabled
+	case "swl":
+		return t.SWL != nil && t.SWL.Enabled
 	default:
 		return true
 	}
