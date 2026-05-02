@@ -9,6 +9,7 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
+import { Route as SwlRouteImport } from './routes/swl'
 import { Route as ModelsRouteImport } from './routes/models'
 import { Route as LogsRouteImport } from './routes/logs'
 import { Route as LauncherSetupRouteImport } from './routes/launcher-setup'
@@ -24,6 +25,11 @@ import { Route as AgentToolsRouteImport } from './routes/agent/tools'
 import { Route as AgentSkillsRouteImport } from './routes/agent/skills'
 import { Route as AgentHubRouteImport } from './routes/agent/hub'
 
+const SwlRoute = SwlRouteImport.update({
+  id: '/swl',
+  path: '/swl',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ModelsRoute = ModelsRouteImport.update({
   id: '/models',
   path: '/models',
@@ -105,6 +111,7 @@ export interface FileRoutesByFullPath {
   '/launcher-setup': typeof LauncherSetupRoute
   '/logs': typeof LogsRoute
   '/models': typeof ModelsRoute
+  '/swl': typeof SwlRoute
   '/agent/hub': typeof AgentHubRoute
   '/agent/skills': typeof AgentSkillsRoute
   '/agent/tools': typeof AgentToolsRoute
@@ -121,6 +128,7 @@ export interface FileRoutesByTo {
   '/launcher-setup': typeof LauncherSetupRoute
   '/logs': typeof LogsRoute
   '/models': typeof ModelsRoute
+  '/swl': typeof SwlRoute
   '/agent/hub': typeof AgentHubRoute
   '/agent/skills': typeof AgentSkillsRoute
   '/agent/tools': typeof AgentToolsRoute
@@ -138,6 +146,7 @@ export interface FileRoutesById {
   '/launcher-setup': typeof LauncherSetupRoute
   '/logs': typeof LogsRoute
   '/models': typeof ModelsRoute
+  '/swl': typeof SwlRoute
   '/agent/hub': typeof AgentHubRoute
   '/agent/skills': typeof AgentSkillsRoute
   '/agent/tools': typeof AgentToolsRoute
@@ -156,6 +165,7 @@ export interface FileRouteTypes {
     | '/launcher-setup'
     | '/logs'
     | '/models'
+    | '/swl'
     | '/agent/hub'
     | '/agent/skills'
     | '/agent/tools'
@@ -172,6 +182,7 @@ export interface FileRouteTypes {
     | '/launcher-setup'
     | '/logs'
     | '/models'
+    | '/swl'
     | '/agent/hub'
     | '/agent/skills'
     | '/agent/tools'
@@ -188,6 +199,7 @@ export interface FileRouteTypes {
     | '/launcher-setup'
     | '/logs'
     | '/models'
+    | '/swl'
     | '/agent/hub'
     | '/agent/skills'
     | '/agent/tools'
@@ -205,10 +217,18 @@ export interface RootRouteChildren {
   LauncherSetupRoute: typeof LauncherSetupRoute
   LogsRoute: typeof LogsRoute
   ModelsRoute: typeof ModelsRoute
+  SwlRoute: typeof SwlRoute
 }
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
+    '/swl': {
+      id: '/swl'
+      path: '/swl'
+      fullPath: '/swl'
+      preLoaderRoute: typeof SwlRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/models': {
       id: '/models'
       path: '/models'
@@ -357,6 +377,7 @@ const rootRouteChildren: RootRouteChildren = {
   LauncherSetupRoute: LauncherSetupRoute,
   LogsRoute: LogsRoute,
   ModelsRoute: ModelsRoute,
+  SwlRoute: SwlRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

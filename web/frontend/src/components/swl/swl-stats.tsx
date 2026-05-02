@@ -1,4 +1,3 @@
-import * as React from "react"
 import { useQuery } from "@tanstack/react-query"
 
 import { swlApi, type SWLStats as SWLStatsData, type SWLSession } from "@/api/swl"

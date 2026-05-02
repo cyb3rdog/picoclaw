@@ -1,8 +1,7 @@
-import * as React from "react"
 import { useQuery } from "@tanstack/react-query"
 import { useTranslation } from "react-i18next"
 
-import { swlApi, type SWLGraphData, type SWLNode } from "@/api/swl"
+import { swlApi, type SWLGraphData } from "@/api/swl"
 import { SWLGraph } from "./swl-graph"
 import { SWLStats } from "./swl-stats"
 

@@ -1,5 +1,4 @@
-import * as React from "react"
-import { useEffect, useRef, useCallback } from "react"
+import { useEffect, useRef, useCallback, useState } from "react"
 import ForceGraph3D from "react-force-graph-3d"
 
 import { type SWLGraphData, type SWLNode, type SWLLink, swlApi } from "@/api/swl"
@@ -43,7 +42,7 @@ interface Props {
 
 export function SWLGraph({ data }: Props) {
   const graphRef = useRef<any>(null)
-  const [graphData, setGraphData] = React.useState(data)
+  const [graphData, setGraphData] = useState(data)
 
   // SSE real-time updates
   useEffect(() => {
@@ -98,11 +97,6 @@ export function SWLGraph({ data }: Props) {
     return Math.log1p(n.accessCount ?? 0) + 1 + n.knowledgeDepth * 0.5
   }, [])
 
-  const nodeOpacity = useCallback((node: any) => {
-    const n = node as SWLNode
-    return Math.max(0.3, n.confidence ?? 1.0)
-  }, [])
-
   const linkColor = useCallback((link: any) => {
     return LINK_COLORS[(link as SWLLink).rel] ?? "#444444"
   }, [])
@@ -114,7 +108,7 @@ export function SWLGraph({ data }: Props) {
       nodeId="id"
       nodeColor={nodeColor}
       nodeVal={nodeVal}
-      nodeOpacity={nodeOpacity}
+      nodeOpacity={0.85}
       linkSource="source"
       linkTarget="target"
       linkColor={linkColor}
