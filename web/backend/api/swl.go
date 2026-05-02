@@ -290,6 +290,18 @@ func (h *Handler) handleSWLStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Open a single persistent read-only connection for the lifetime of this SSE stream.
+	db, err := openSWLReadOnly(dbPath)
+	if err != nil {
+		// DB not yet created — send empty keepalive and wait
+		fmt.Fprintf(w, ": swl not ready\n\n")
+		flusher.Flush()
+		db = nil
+	}
+	if db != nil {
+		defer db.Close()
+	}
+
 	var lastModAt string
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
@@ -299,32 +311,29 @@ func (h *Handler) handleSWLStream(w http.ResponseWriter, r *http.Request) {
 		case <-r.Context().Done():
 			return
 		case <-ticker.C:
-			db, err := openSWLReadOnly(dbPath)
-			if err != nil {
+			// If DB wasn't available at connect time, try once more
+			if db == nil {
+				db, _ = openSWLReadOnly(dbPath)
+				if db != nil {
+					defer db.Close() //nolint:gocritic
+				}
 				continue
 			}
 
 			var currentModAt string
-			db.QueryRow("SELECT MAX(modified_at) FROM entities").Scan(&currentModAt) //nolint:errcheck
-			db.Close()
+			db.QueryRowContext(r.Context(), "SELECT MAX(modified_at) FROM entities").Scan(&currentModAt) //nolint:errcheck
 
 			if currentModAt == "" || currentModAt == lastModAt {
 				continue
 			}
 			lastModAt = currentModAt
 
-			// Re-open and send delta
-			db, err = openSWLReadOnly(dbPath)
-			if err != nil {
-				continue
-			}
 			rows, err := db.QueryContext(r.Context(), `
 				SELECT id, type, name, confidence, fact_status, knowledge_depth, access_count
 				FROM entities WHERE modified_at >= ? ORDER BY modified_at DESC LIMIT 100`,
 				currentModAt,
 			)
 			if err != nil {
-				db.Close()
 				continue
 			}
 
@@ -333,20 +342,20 @@ func (h *Handler) handleSWLStream(w http.ResponseWriter, r *http.Request) {
 				var n swlNode
 				if rows.Scan(&n.ID, &n.Type, &n.Name, &n.Confidence,
 					&n.FactStatus, &n.KnowledgeDepth, &n.AccessCount) == nil {
+					n.Name = swlShortName(n.Name)
 					updates = append(updates, n)
 				}
 			}
 			rows.Close()
-			db.Close()
 
 			if len(updates) == 0 {
 				continue
 			}
 
 			payload, _ := json.Marshal(map[string]any{
-				"type":    "delta",
-				"nodes":   updates,
-				"modAt":   currentModAt,
+				"type":  "delta",
+				"nodes": updates,
+				"modAt": currentModAt,
 			})
 			fmt.Fprintf(w, "data: %s\n\n", payload)
 			flusher.Flush()

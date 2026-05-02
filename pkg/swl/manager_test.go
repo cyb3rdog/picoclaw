@@ -417,3 +417,155 @@ func TestScanWorkspace(t *testing.T) {
 	}
 }
 
+// TestFullTurn simulates a complete agent turn: write_file → read_file → Ask.
+// This is the end-to-end integration test verifying the full inference pipeline.
+func TestFullTurn(t *testing.T) {
+	m := newTestManager(t)
+	defer m.Close()
+
+	const sessionKey = "channel:test:123"
+	const filePath = "pkg/calc/calc.go"
+	const fileContent = `package calc
+
+// Add returns the sum of a and b.
+func Add(a, b int) int { return a + b }
+
+// Subtract returns a minus b.
+// TODO: handle overflow
+func Subtract(a, b int) int { return a - b }
+`
+
+	// --- Turn 1: write_file ---
+	m.PostHook(sessionKey, "write_file", map[string]any{
+		"path":    filePath,
+		"content": fileContent,
+	}, "")
+
+	// File entity should exist and be verified
+	fileID := entityID(KnownTypeFile, filePath)
+	var fileStatus string
+	if err := m.db.QueryRow("SELECT fact_status FROM entities WHERE id = ?", fileID).Scan(&fileStatus); err != nil {
+		t.Fatalf("File entity not found after write_file: %v", err)
+	}
+	if fileStatus != string(FactVerified) {
+		t.Errorf("expected verified after write_file, got %s", fileStatus)
+	}
+
+	// Symbols should be extracted
+	var symCount int
+	m.db.QueryRow("SELECT COUNT(*) FROM entities WHERE type = ? AND fact_status != 'deleted'", KnownTypeSymbol).Scan(&symCount)
+	if symCount == 0 {
+		t.Error("expected Symbol entities after write_file")
+	}
+
+	// Task should be extracted (TODO: handle overflow)
+	var taskCount int
+	m.db.QueryRow("SELECT COUNT(*) FROM entities WHERE type = ?", KnownTypeTask).Scan(&taskCount)
+	if taskCount == 0 {
+		t.Error("expected Task entity (from TODO comment) after write_file")
+	}
+
+	// --- Turn 2: read_file (simulates LLM reading the file back) ---
+	m.PostHook(sessionKey, "read_file", map[string]any{"path": filePath}, fileContent)
+
+	// Depth should be bumped
+	var depth int
+	m.db.QueryRow("SELECT knowledge_depth FROM entities WHERE id = ?", fileID).Scan(&depth)
+	if depth < 2 {
+		t.Errorf("expected knowledge_depth >= 2 after read_file, got %d", depth)
+	}
+
+	// --- Turn 3: Ask natural-language questions ---
+	symbolsResult := m.Ask("functions in " + filePath)
+	if !strings.Contains(symbolsResult, "Add") && !strings.Contains(symbolsResult, "Subtract") {
+		t.Errorf("expected Add/Subtract in symbol query, got: %s", symbolsResult)
+	}
+
+	tasksResult := m.Ask("todos in " + filePath)
+	if !strings.Contains(tasksResult, "overflow") && !strings.Contains(tasksResult, "TODO") {
+		t.Errorf("expected TODO mention in task query, got: %s", tasksResult)
+	}
+
+	// --- Turn 4: SessionResume should reflect the work done ---
+	resumeResult := m.SessionResume(sessionKey)
+	if resumeResult == "" {
+		t.Error("expected non-empty SessionResume after activity")
+	}
+
+	// --- Turn 5: delete_file → tombstone ---
+	m.PostHook(sessionKey, "delete_file", map[string]any{"path": filePath}, "")
+	var deletedStatus string
+	m.db.QueryRow("SELECT fact_status FROM entities WHERE id = ?", fileID).Scan(&deletedStatus)
+	if deletedStatus != string(FactDeleted) {
+		t.Errorf("expected deleted after delete_file, got %s", deletedStatus)
+	}
+
+	// Children (symbols/tasks) should cascade to stale
+	var staleChildren int
+	m.db.QueryRow(`SELECT COUNT(*) FROM entities
+		WHERE fact_status = 'stale'
+		AND id IN (SELECT to_id FROM edges WHERE from_id = ? AND rel IN ('defines','has_task'))`,
+		fileID).Scan(&staleChildren)
+	if staleChildren == 0 {
+		t.Error("expected child entities to become stale after file deleted")
+	}
+}
+
+// TestMultiSessionIsolation verifies that two different session keys produce
+// independent sessions with separate UUIDs.
+func TestMultiSessionIsolation(t *testing.T) {
+	m := newTestManager(t)
+	defer m.Close()
+
+	id1 := m.EnsureSession("workspace:chan1")
+	id2 := m.EnsureSession("workspace:chan2")
+
+	if id1 == id2 {
+		t.Error("different session keys must produce different session UUIDs")
+	}
+
+	var count int
+	m.db.QueryRow("SELECT COUNT(*) FROM sessions").Scan(&count)
+	if count != 2 {
+		t.Errorf("expected 2 sessions, got %d", count)
+	}
+}
+
+// TestRegistrySharedManager verifies that AcquireManager returns the same
+// Manager for the same workspace and increments ref count correctly.
+func TestRegistrySharedManager(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &Config{}
+
+	m1, err := AcquireManager(dir, cfg)
+	if err != nil {
+		t.Fatalf("AcquireManager 1: %v", err)
+	}
+	m2, err := AcquireManager(dir, cfg)
+	if err != nil {
+		t.Fatalf("AcquireManager 2: %v", err)
+	}
+
+	if m1 != m2 {
+		t.Error("expected same Manager pointer for same workspace")
+	}
+
+	// Release once — manager should still be alive (ref=1)
+	ReleaseManager(dir, cfg)
+	if m1.db == nil {
+		t.Error("manager should still be open after first release")
+	}
+
+	// Release again — manager should be closed
+	ReleaseManager(dir, cfg)
+
+	// Registry entry should be gone
+	regMu.Lock()
+	dbPath := resolveDBPath(dir, cfg)
+	_, stillExists := registry[dbPath]
+	regMu.Unlock()
+	if stillExists {
+		t.Error("registry entry should be removed after final release")
+	}
+}
+

@@ -125,9 +125,10 @@ func (h *SWLHook) AfterLLM(ctx context.Context, resp *LLMHookResponse) (*LLMHook
 		if reasoning != "" {
 			delta := h.manager.ExtractLLMResponse(sessionID, reasoning)
 			if delta != nil && !delta.IsEmpty() {
+				cap := h.manager.Config().EffectiveReasoningConfidenceCap()
 				for i := range delta.Entities {
-					if delta.Entities[i].Confidence > 0.75 {
-						delta.Entities[i].Confidence = 0.75
+					if delta.Entities[i].Confidence > cap {
+						delta.Entities[i].Confidence = cap
 					}
 					delta.Entities[i].ExtractionMethod = swl.MethodInferred
 				}

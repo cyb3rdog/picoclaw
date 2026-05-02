@@ -26,6 +26,10 @@ type Config struct {
 	ExtractURLs *bool `json:"extract_urls,omitempty"`
 	// ExtractLLMContent enables extraction from LLM response text. Default: true.
 	ExtractLLMContent *bool `json:"extract_llm_content,omitempty"`
+
+	// ReasoningConfidenceCap is the maximum confidence assigned to entities
+	// extracted from LLM reasoning/thinking blocks. Default: 0.75.
+	ReasoningConfidenceCap *float64 `json:"reasoning_confidence_cap,omitempty"`
 }
 
 func boolDefault(b *bool, def bool) bool {
@@ -89,4 +93,17 @@ func (c *Config) effectiveExtractLLMContent() bool {
 		return true
 	}
 	return boolDefault(c.ExtractLLMContent, true)
+}
+
+// EffectiveReasoningConfidenceCap returns the maximum confidence for entities
+// extracted from LLM reasoning/thinking blocks (default 0.75).
+func (c *Config) EffectiveReasoningConfidenceCap() float64 {
+	if c == nil || c.ReasoningConfidenceCap == nil {
+		return 0.75
+	}
+	v := *c.ReasoningConfidenceCap
+	if v <= 0 || v > 1.0 {
+		return 0.75
+	}
+	return v
 }

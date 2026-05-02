@@ -453,6 +453,19 @@
     },
     "write_file": {
       "enabled": true
+    },
+    "swl": {
+      "_comment": "SWL: Semantic Workspace Layer — persistent knowledge graph. Builds automatically from tool calls and LLM responses. View live graph at /swl in the web console.",
+      "enabled": false,
+      "inject_session_hint": true,
+      "extract_symbols": true,
+      "extract_imports": true,
+      "extract_tasks": true,
+      "extract_sections": true,
+      "extract_urls": true,
+      "extract_llm_content": true,
+      "reasoning_confidence_cap": 0.75,
+      "max_file_size_bytes": 524288
     }
   },
   "heartbeat": {
