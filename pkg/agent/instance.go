@@ -60,6 +60,8 @@ type AgentInstance struct {
 
 	// SWLManager is non-nil when the Semantic Workspace Layer is enabled.
 	SWLManager *swl.Manager
+	// swlRelease is called in Close() to decrement the registry reference count.
+	swlRelease func()
 }
 
 // NewAgentInstance creates an agent instance from config.
@@ -136,13 +138,18 @@ func NewAgentInstance(
 			ExtractURLs:       cfg.Tools.SWL.ExtractURLs,
 			ExtractLLMContent: cfg.Tools.SWL.ExtractLLMContent,
 		}
-		mgr, swlErr := swl.NewManager(workspace, swlCfg)
+		mgr, swlErr := swl.AcquireManager(workspace, swlCfg)
 		if swlErr != nil {
 			logger.WarnCF("agent", "SWL init failed; continuing without SWL",
 				map[string]any{"error": swlErr.Error()})
 		} else {
 			swlManager = mgr
 			toolsRegistry.Register(swl.NewQuerySWLTool(mgr))
+		}
+	}
+	swlReleaseFn := func() {
+		if swlManager != nil {
+			swl.ReleaseManager(workspace, swlManager.Config())
 		}
 	}
 
@@ -279,6 +286,7 @@ func NewAgentInstance(
 		LightProvider:             lightProvider,
 		CandidateProviders:        candidateProviders,
 		SWLManager:                swlManager,
+		swlRelease:                swlReleaseFn,
 	}
 }
 
@@ -385,8 +393,8 @@ func mediaTempDirPattern() string {
 
 // Close releases resources held by the agent's session store and SWL manager.
 func (a *AgentInstance) Close() error {
-	if a.SWLManager != nil {
-		_ = a.SWLManager.Close()
+	if a.swlRelease != nil {
+		a.swlRelease()
 	}
 	if a.Sessions != nil {
 		return a.Sessions.Close()

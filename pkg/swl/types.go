@@ -19,6 +19,7 @@ const (
 	KnownTypeCommand    EntityType = "Command"
 	KnownTypeIntent     EntityType = "Intent"
 	KnownTypeSubAgent   EntityType = "SubAgent"
+	KnownTypeTool       EntityType = "Tool"
 )
 
 // EdgeRel is an open string alias. KnownRel* constants are conventions,

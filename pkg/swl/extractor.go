@@ -19,12 +19,10 @@ const (
 	maxTopics   = 10
 )
 
-// noiseSymbols are discarded during symbol extraction.
+// noiseSymbols are universally noisy names discarded during symbol extraction.
+// Kept minimal to avoid suppressing valid symbols in non-Go/non-English codebases.
 var noiseSymbols = map[string]bool{
-	"main": true, "test": true, "setup": true, "init": true,
-	"get": true, "set": true, "run": true, "new": true,
-	"String": true, "Error": true, "Close": true,
-	"open": true, "close": true, "read": true, "write": true,
+	"main": true, "init": true, "test": true,
 }
 
 // --- Compiled patterns (initialised once at package load) ---
@@ -56,6 +54,17 @@ var (
 	taskRE    = regexp.MustCompile(`(?i)(?:TODO|FIXME|HACK|NOTE|BUG|XXX|OPTIMIZE|REFACTOR|REVIEW|DEPRECATED)[:\s]+(.+)`)
 	headingRE = regexp.MustCompile(`(?m)^(#{1,3})\s+(.+)`)
 	urlRE     = regexp.MustCompile(`https?://[^\s"'<>)\]]+`)
+
+	// filePathRE matches absolute Unix/Windows paths and relative paths that
+	// look like workspace files (contain a slash and end with a known extension).
+	filePathRE = regexp.MustCompile(
+		`(?:^|[\s'"` + "`" + `(])` +
+			`(/[\w./-]+\.\w+|` + // absolute: /foo/bar.go
+			`[\w][\w.-]*/[\w./-]+\.\w+)` + // relative: pkg/foo/bar.go
+			`(?:$|[\s'"` + "`" + `):,])`)
+
+	// backtickFileRE matches filenames inside backticks: `pkg/foo/bar.go`
+	backtickFileRE = regexp.MustCompile("`([^`]+\\.\\w+)`")
 
 	// exec output patterns
 	gitCommitRE  = regexp.MustCompile(`(?m)^commit\s+([0-9a-f]{7,40})`)
@@ -312,20 +321,48 @@ func (m *Manager) ExtractLLMResponse(sessionID, content string) *GraphDelta {
 	}
 
 	// URLs the LLM mentions
-	urls := urlRE.FindAllString(content, maxURLs)
-	for _, u := range urls {
-		urlID := entityID(KnownTypeURL, u)
-		delta.Entities = append(delta.Entities, EntityTuple{
-			ID: urlID, Type: KnownTypeURL, Name: u,
-			Confidence: 0.7, ExtractionMethod: MethodInferred, KnowledgeDepth: 1,
-		})
+	if !isDone(ctx) {
+		for _, u := range urlRE.FindAllString(content, maxURLs) {
+			urlID := entityID(KnownTypeURL, u)
+			delta.Entities = append(delta.Entities, EntityTuple{
+				ID: urlID, Type: KnownTypeURL, Name: u,
+				Confidence: 0.7, ExtractionMethod: MethodInferred, KnowledgeDepth: 1,
+			})
+		}
+	}
+
+	// File paths mentioned in the response (e.g. "I'll edit `pkg/foo/bar.go`")
+	if !isDone(ctx) {
+		seen := map[string]bool{}
+		pathCount := 0
+		for _, paths := range [][][]string{
+			backtickFileRE.FindAllStringSubmatch(content, -1),
+			filePathRE.FindAllStringSubmatch(content, -1),
+		} {
+			for _, m := range paths {
+				if isDone(ctx) || pathCount >= 20 {
+					break
+				}
+				p := strings.TrimSpace(m[1])
+				if p == "" || seen[p] {
+					continue
+				}
+				seen[p] = true
+				fileID := entityID(KnownTypeFile, p)
+				delta.Entities = append(delta.Entities, EntityTuple{
+					ID: fileID, Type: KnownTypeFile, Name: p,
+					Confidence: 0.6, ExtractionMethod: MethodInferred, KnowledgeDepth: 1,
+				})
+				pathCount++
+			}
+		}
 	}
 
 	return delta
 }
 
 // ExtractGeneric is the catch-all Layer 3 extractor for unknown tools.
-// It applies URL and task extraction to any text result.
+// Applied when no specific extractor matches — extracts URLs, file paths, and tasks.
 func (m *Manager) ExtractGeneric(toolName, result string) *GraphDelta {
 	if result == "" {
 		return nil
@@ -339,16 +376,15 @@ func (m *Manager) ExtractGeneric(toolName, result string) *GraphDelta {
 
 	delta := &GraphDelta{}
 
-	// Tool entity
-	toolID := entityID("Tool", toolName)
+	// Tool entity — use KnownTypeTool constant
+	toolID := entityID(KnownTypeTool, toolName)
 	delta.Entities = append(delta.Entities, EntityTuple{
-		ID: toolID, Type: "Tool", Name: toolName,
+		ID: toolID, Type: KnownTypeTool, Name: toolName,
 		Confidence: 1.0, ExtractionMethod: MethodObserved, KnowledgeDepth: 1,
 	})
 
 	// URLs in result
-	urls := urlRE.FindAllString(result, maxURLs)
-	for _, u := range urls {
+	for _, u := range urlRE.FindAllString(result, maxURLs) {
 		if isDone(ctx) {
 			break
 		}
@@ -358,6 +394,55 @@ func (m *Manager) ExtractGeneric(toolName, result string) *GraphDelta {
 			Confidence: 0.8, ExtractionMethod: MethodExtracted, KnowledgeDepth: 1,
 		})
 		delta.Edges = append(delta.Edges, EdgeTuple{FromID: toolID, Rel: KnownRelFound, ToID: urlID})
+	}
+
+	// File paths referenced in result (e.g. MCP tools returning file listings)
+	if !isDone(ctx) {
+		seen := map[string]bool{}
+		pathCount := 0
+		for _, paths := range [][][]string{
+			backtickFileRE.FindAllStringSubmatch(result, -1),
+			filePathRE.FindAllStringSubmatch(result, -1),
+		} {
+			for _, match := range paths {
+				if isDone(ctx) || pathCount >= 20 {
+					break
+				}
+				p := strings.TrimSpace(match[1])
+				if p == "" || seen[p] {
+					continue
+				}
+				seen[p] = true
+				fileID := entityID(KnownTypeFile, p)
+				delta.Entities = append(delta.Entities, EntityTuple{
+					ID: fileID, Type: KnownTypeFile, Name: p,
+					Confidence: 0.6, ExtractionMethod: MethodExtracted, KnowledgeDepth: 1,
+				})
+				delta.Edges = append(delta.Edges, EdgeTuple{FromID: toolID, Rel: KnownRelFound, ToID: fileID})
+				pathCount++
+			}
+		}
+	}
+
+	// Task/TODO patterns in result text
+	if !isDone(ctx) {
+		taskCount := 0
+		for _, match := range taskRE.FindAllStringSubmatch(result, -1) {
+			if isDone(ctx) || taskCount >= maxTasks {
+				break
+			}
+			text := strings.TrimSpace(match[1])
+			if text == "" {
+				continue
+			}
+			taskID := entityID(KnownTypeTask, text)
+			delta.Entities = append(delta.Entities, EntityTuple{
+				ID: taskID, Type: KnownTypeTask, Name: text,
+				Confidence: 0.7, ExtractionMethod: MethodExtracted, KnowledgeDepth: 1,
+			})
+			delta.Edges = append(delta.Edges, EdgeTuple{FromID: toolID, Rel: KnownRelFound, ToID: taskID})
+			taskCount++
+		}
 	}
 
 	return delta

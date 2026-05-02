@@ -1,6 +1,7 @@
 package swl
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"regexp"
@@ -463,7 +464,8 @@ func (m *Manager) SafeQuery(sqlStr string) (string, error) {
 		return "", fmt.Errorf("only SELECT/WITH/EXPLAIN queries are allowed")
 	}
 
-	ctx := contextWithTimeout(5 * time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 	rows, err := m.db.QueryContext(ctx, sqlStr)
 	if err != nil {
 		return "", err

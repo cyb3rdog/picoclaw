@@ -148,8 +148,3 @@ func parseRFC3339(s string) time.Time {
 	}
 	return time.Time{}
 }
-
-func contextWithTimeout(d time.Duration) context.Context {
-	ctx, _ := context.WithTimeout(context.Background(), d) //nolint:govet
-	return ctx
-}

@@ -11,10 +11,11 @@ import (
 // Manager is the top-level SWL object. One instance per workspace.
 // All exported methods are safe for concurrent use.
 type Manager struct {
-	cfg    *Config
-	dbPath string
-	db     *sql.DB
-	mu     sync.Mutex // serializes all writes
+	cfg       *Config
+	workspace string // absolute workspace root
+	dbPath    string
+	db        *sql.DB
+	mu        sync.Mutex // serializes all writes
 
 	writer *entityWriter
 
@@ -49,6 +50,7 @@ func NewManager(workspace string, cfg *Config) (*Manager, error) {
 
 	m := &Manager{
 		cfg:            cfg,
+		workspace:      workspace,
 		dbPath:         dbPath,
 		db:             db,
 		activeSessions: make(map[string]string),
@@ -65,6 +67,9 @@ func NewManager(workspace string, cfg *Config) (*Manager, error) {
 
 // DBPath returns the filesystem path to the SQLite database.
 func (m *Manager) DBPath() string { return m.dbPath }
+
+// Workspace returns the absolute workspace root.
+func (m *Manager) Workspace() string { return m.workspace }
 
 // Config returns the Manager's configuration (never nil).
 func (m *Manager) Config() *Config {

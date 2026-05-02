@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
@@ -119,6 +118,7 @@ func (h *Handler) handleSWLGraph(w http.ResponseWriter, r *http.Request) {
 		if metaStr != "" && metaStr != "{}" {
 			_ = json.Unmarshal([]byte(metaStr), &n.Metadata)
 		}
+		n.Name = swlShortName(n.Name)
 		nodes = append(nodes, n)
 		nodeIDs[n.ID] = true
 	}
@@ -360,6 +360,3 @@ func swlShortName(name string) string {
 	}
 	return name
 }
-
-var _ = swlShortName // used by templates
-var _ = strings.Contains // keep import

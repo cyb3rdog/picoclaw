@@ -3,7 +3,6 @@ package swl
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	toolshared "github.com/sipeed/picoclaw/pkg/tools/shared"
 )
@@ -113,7 +112,7 @@ func (t *QuerySWLTool) Execute(ctx context.Context, args map[string]any) *toolsh
 	if v, _ := args["scan"].(bool); v {
 		root, _ := args["root"].(string)
 		if root == "" {
-			root = m.dbPath[:strings.LastIndex(m.dbPath, "/.swl")]
+			root = m.workspace
 		}
 		stats, err := m.ScanWorkspace(root)
 		if err != nil {
