@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import ForceGraph3D from "react-force-graph-3d"
 import * as THREE from "three"
 
@@ -56,6 +56,7 @@ export function SWLGraph({ data, onNodeClick }: Props) {
   const graphRef = useRef<any>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const bloomAdded = useRef(false)
+  const [size, setSize] = useState({ w: 800, h: 600 })
 
   // Freeze initial data in a ref — SSE pushes updates imperatively so React
   // never needs to re-render this component just because graph data changes.
@@ -96,22 +97,17 @@ export function SWLGraph({ data, onNodeClick }: Props) {
     }
   }, [])
 
-  // ── Container resize → imperative resize (no React state) ─────────────────
-  // Updating React state on resize would trigger re-renders that can cause
-  // the WebGL canvas to briefly flash. Using the graph's own setter avoids it.
+  // ── Container resize → update width/height props ──────────────────────────
+  // width/height are React props on ForceGraph3D (not imperative methods).
+  // Changing them does NOT restart the physics simulation, so no flicker.
   useEffect(() => {
     const el = containerRef.current
     if (!el) return
 
     const applySize = () => {
-      const fg = graphRef.current
-      if (!fg) return
       const w = el.clientWidth
       const h = el.clientHeight
-      if (w > 0 && h > 0) {
-        fg.width(w)
-        fg.height(h)
-      }
+      if (w > 0 && h > 0) setSize({ w, h })
     }
 
     applySize()
@@ -216,6 +212,8 @@ export function SWLGraph({ data, onNodeClick }: Props) {
     >
       <ForceGraph3D
         ref={graphRef}
+        width={size.w}
+        height={size.h}
         graphData={initialData.current as any}
         nodeId="id"
         nodeThreeObject={buildNodeObject}
