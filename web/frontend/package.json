@@ -34,6 +34,7 @@
     "react": "19.2.5",
     "react-dom": "19.2.5",
     "react-force-graph-3d": "^1.29.1",
+    "three": "0.184.0",
     "react-i18next": "^17.0.4",
     "react-markdown": "^10.1.0",
     "react-textarea-autosize": "^8.5.9",
