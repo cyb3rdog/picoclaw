@@ -21,6 +21,8 @@ INSERT INTO entities (
     accessed_at, access_count
 ) VALUES (?, ?, ?, ?, ?, ?, ?, 'unknown', ?, ?, ?, 1)
 ON CONFLICT(id) DO UPDATE SET
+    name = CASE WHEN excluded.name != '' THEN excluded.name ELSE name END,
+    metadata = CASE WHEN excluded.metadata != '{}' AND excluded.metadata != '' THEN excluded.metadata ELSE metadata END,
     confidence = MAX(confidence, excluded.confidence),
     knowledge_depth = MAX(knowledge_depth, excluded.knowledge_depth),
     extraction_method = CASE

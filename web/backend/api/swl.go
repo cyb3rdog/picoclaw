@@ -343,9 +343,14 @@ func (h *Handler) handleSWLStream(w http.ResponseWriter, r *http.Request) {
 	}
 
 	db, _ := openSWLReadOnly(dbPath)
-	if db != nil {
-		defer db.Close()
-	} else {
+	// Single defer closes whatever db is at function return — avoids defer-in-loop
+	// accumulation when the stream reconnects to a newly-available DB.
+	defer func() {
+		if db != nil {
+			db.Close()
+		}
+	}()
+	if db == nil {
 		fmt.Fprintf(w, ": swl not ready\n\n")
 		flusher.Flush()
 	}
@@ -369,7 +374,6 @@ func (h *Handler) handleSWLStream(w http.ResponseWriter, r *http.Request) {
 			if db == nil {
 				if db2, _ := openSWLReadOnly(dbPath); db2 != nil {
 					db = db2
-					defer db.Close() //nolint:gocritic
 					db.QueryRowContext(r.Context(), "SELECT COALESCE(MAX(modified_at),'') FROM entities").Scan(&lastModAt) //nolint:errcheck
 				}
 				continue
@@ -390,7 +394,7 @@ func (h *Handler) handleSWLStream(w http.ResponseWriter, r *http.Request) {
 			// The old code used `modified_at >= currentModAt` which returned only the single
 			// most-recent entity instead of everything changed since the last check.
 			rows, err := db.QueryContext(r.Context(), `
-				SELECT id, type, name, confidence, fact_status, knowledge_depth, access_count
+				SELECT id, type, name, confidence, fact_status, knowledge_depth, access_count, metadata
 				FROM entities WHERE modified_at > ? ORDER BY modified_at ASC LIMIT 100`,
 				prevModAt,
 			)
@@ -401,9 +405,13 @@ func (h *Handler) handleSWLStream(w http.ResponseWriter, r *http.Request) {
 			var updates []swlNode
 			for rows.Next() {
 				var n swlNode
+				var metaStr string
 				if rows.Scan(&n.ID, &n.Type, &n.Name, &n.Confidence,
-					&n.FactStatus, &n.KnowledgeDepth, &n.AccessCount) == nil {
+					&n.FactStatus, &n.KnowledgeDepth, &n.AccessCount, &metaStr) == nil {
 					n.Name = swlShortName(n.Name)
+					if metaStr != "" && metaStr != "{}" {
+						_ = json.Unmarshal([]byte(metaStr), &n.Metadata)
+					}
 					updates = append(updates, n)
 				}
 			}

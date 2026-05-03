@@ -122,6 +122,7 @@ export function SWLPage() {
               selectedNode={selectedNode}
               hiddenTypes={hiddenTypes}
               onToggleType={handleToggleType}
+              onClearFilter={() => setHiddenTypes(new Set())}
             />
           )}
         </div>

@@ -299,10 +299,15 @@ func (m *Manager) askSessions() string {
 
 // --- Tier 2: named SQL templates ---
 
-var sqlTemplates = map[string]struct {
+type tier2Template struct {
 	keywords []string
 	query    string
-}{
+	// argFn returns the SQL arguments for this specific template.
+	// nil means the query takes no parameters.
+	argFn func(question string) []any
+}
+
+var sqlTemplates = map[string]tier2Template{
 	"dependency_chain": {
 		keywords: []string{"chain", "transitive", "recursive"},
 		query: `WITH RECURSIVE chain(id, depth) AS (
@@ -310,6 +315,7 @@ var sqlTemplates = map[string]struct {
 			UNION ALL
 			SELECT e.to_id, c.depth+1 FROM edges e JOIN chain c ON e.from_id = c.id WHERE c.depth < 8
 		) SELECT DISTINCT e.name, c.depth FROM chain c JOIN entities e ON e.id = c.id ORDER BY c.depth LIMIT 50`,
+		argFn: func(question string) []any { return []any{"%" + question + "%"} },
 	},
 	"files_by_type": {
 		keywords: []string{"count by type", "entity types", "breakdown"},
@@ -326,7 +332,11 @@ func (m *Manager) tryTier2(question string) string {
 	for _, tmpl := range sqlTemplates {
 		for _, kw := range tmpl.keywords {
 			if strings.Contains(q, kw) {
-				rows, err := m.db.Query(tmpl.query, "%"+question+"%")
+				var args []any
+				if tmpl.argFn != nil {
+					args = tmpl.argFn(question)
+				}
+				rows, err := m.db.Query(tmpl.query, args...)
 				if err != nil {
 					continue
 				}

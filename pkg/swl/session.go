@@ -155,7 +155,11 @@ func (m *Manager) autoSummary() string {
 // SessionResume returns a brief "bring me up to speed" digest.
 func (m *Manager) SessionResume(sessionKey string) string {
 	sessionID := m.EnsureSession(sessionKey)
-	go m.SessionSync(sessionID)
+	m.wg.Add(1)
+	go func() {
+		defer m.wg.Done()
+		m.SessionSync(sessionID)
+	}()
 
 	type stat struct {
 		entityType string

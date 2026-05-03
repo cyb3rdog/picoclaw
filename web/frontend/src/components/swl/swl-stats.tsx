@@ -21,12 +21,13 @@ const STATUS_META: Record<string, { icon: string; cls: string; label: string }> 
 }
 
 interface Props {
-  selectedNode?: SWLNode | null
-  hiddenTypes:   Set<string>
-  onToggleType:  (type: string) => void
+  selectedNode?:  SWLNode | null
+  hiddenTypes:    Set<string>
+  onToggleType:   (type: string) => void
+  onClearFilter?: () => void
 }
 
-export function SWLStats({ selectedNode, hiddenTypes, onToggleType }: Props) {
+export function SWLStats({ selectedNode, hiddenTypes, onToggleType, onClearFilter }: Props) {
   const { data: stats } = useQuery<SWLStatsData>({
     queryKey:       ["swl-stats"],
     queryFn:        swlApi.getStats,
@@ -86,7 +87,7 @@ export function SWLStats({ selectedNode, hiddenTypes, onToggleType }: Props) {
             {stats.edgeCount} edges total
             {hiddenTypes.size > 0 && (
               <button
-                onClick={() => hiddenTypes.forEach((t) => onToggleType(t))}
+                onClick={onClearFilter ?? (() => hiddenTypes.forEach((t) => onToggleType(t)))}
                 className="ml-2 underline opacity-60 hover:opacity-100"
               >
                 show all

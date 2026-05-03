@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/swl"
 )
 
@@ -182,8 +183,7 @@ func (h *SWLHook) matchesAgent(agentID string) bool {
 
 func recoverSWLHook(label string) {
 	if r := recover(); r != nil {
-		_ = r
-		_ = label
+		logger.ErrorCF("swl", fmt.Sprintf("panic in %s", label), map[string]any{"panic": fmt.Sprintf("%v", r)})
 	}
 }
 

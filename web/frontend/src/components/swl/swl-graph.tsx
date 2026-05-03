@@ -20,6 +20,7 @@ export const NODE_COLORS: Record<string, number> = {
   Section:     0x29b6f6,
   Intent:      0xce93d8,
   SubAgent:    0x80cbc4,
+  Tool:        0xff6b9d,
 }
 
 const LINK_COLORS: Record<string, string> = {
@@ -43,7 +44,7 @@ const TYPE_ICON: Record<string, string> = {
   File: "📄", Directory: "📁", Symbol: "⚡", Task: "✅",
   URL: "🔗", Session: "🕐", Note: "📝", Topic: "🏷",
   Dependency: "📦", Command: "⌨", Commit: "🔀", Section: "§",
-  Intent: "🎯", SubAgent: "🤖",
+  Intent: "🎯", SubAgent: "🤖", Tool: "🔧",
 }
 
 function resolveColor(n: SWLNode): number {
