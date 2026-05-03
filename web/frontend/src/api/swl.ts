@@ -50,9 +50,12 @@ export interface SWLSession {
   summary?: string
 }
 
+export type SWLViewMode = "overview" | "full"
+
 export const swlApi = {
-  async getGraph(): Promise<SWLGraphData> {
-    const res = await launcherFetch("/api/swl/graph")
+  async getGraph(view: SWLViewMode = "full"): Promise<SWLGraphData> {
+    const url = view === "overview" ? "/api/swl/graph?view=overview" : "/api/swl/graph"
+    const res = await launcherFetch(url)
     if (!res.ok) throw new Error(`SWL graph: ${res.status}`)
     return res.json()
   },

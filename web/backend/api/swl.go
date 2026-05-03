@@ -92,23 +92,40 @@ func (h *Handler) handleSWLGraph(w http.ResponseWriter, r *http.Request) {
 	}
 	defer db.Close()
 
-	const maxEdges        = 2000
-	const maxNodes        = 500
-	const maxEdgesPerNode = 50 // prevents hub nodes (700+ degree) from flooding the edge budget
+	isOverview := r.URL.Query().Get("view") == "overview"
+
+	// Parameters vary by view mode:
+	//   full     — 500 nodes, 2000 edges, 50 edges/hub  — detail exploration
+	//   overview — 100 nodes,  400 edges, 20 edges/hub  — structural snapshot,
+	//              Symbol/Section excluded from Phase 1 edges (they dominate the
+	//              DB at 14k+ rows but add noise at the overview zoom level)
+	maxNodes        := 500
+	maxEdges        := 2000
+	maxEdgesPerNode := 50
+	var overviewTypeFilter string
+	if isOverview {
+		maxNodes        = 100
+		maxEdges        = 400
+		maxEdgesPerNode = 20
+		// Exclude Symbol/Section as edge endpoints so they won't appear in Phase 2.
+		// Both types total ~14k rows (10k Symbol + 4k Section); omitting them from
+		// the overview edge scan reveals the structural graph (files, dirs, deps, sessions).
+		overviewTypeFilter = `AND n1.type NOT IN ('Symbol','Section')
+		          AND n2.type NOT IN ('Symbol','Section')`
+	}
 
 	// Phase 1: Select the highest-quality edges (both endpoints non-deleted).
-	// Ordering by combined depth+access prioritises structural hub edges over
-	// recently-touched leaf edges, ensuring parent→child connections survive.
-	// We scan more than maxEdges so the per-node cap doesn't starve the budget.
-	edgeRows, err := db.QueryContext(r.Context(), `
+	// We scan 3× the edge budget to compensate for the per-node degree cap.
+	edgeQuery := `
 		SELECT e.from_id, e.rel, e.to_id, COALESCE(e.source_session,'')
 		FROM edges e
 		JOIN entities n1 ON n1.id = e.from_id AND n1.fact_status != 'deleted'
 		JOIN entities n2 ON n2.id = e.to_id   AND n2.fact_status != 'deleted'
+		` + overviewTypeFilter + `
 		ORDER BY (n1.knowledge_depth + n2.knowledge_depth +
 		          MIN(n1.access_count,50) + MIN(n2.access_count,50)) DESC
-		LIMIT ?
-	`, maxEdges*3)
+		LIMIT ?`
+	edgeRows, err := db.QueryContext(r.Context(), edgeQuery, maxEdges*3)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -116,14 +133,14 @@ func (h *Handler) handleSWLGraph(w http.ResponseWriter, r *http.Request) {
 
 	links := make([]swlLink, 0, maxEdges)
 	neededIDs := map[string]bool{}
-	nodeDegree := map[string]int{} // tracks edges-per-node; enforces per-hub cap
+	nodeDegree := map[string]int{}
 	for edgeRows.Next() {
 		var l swlLink
 		if err := edgeRows.Scan(&l.Source, &l.Rel, &l.Target, &l.SessionID); err != nil {
 			continue
 		}
 		if nodeDegree[l.Source] >= maxEdgesPerNode || nodeDegree[l.Target] >= maxEdgesPerNode {
-			continue // skip: this endpoint has reached its display budget
+			continue
 		}
 		links = append(links, l)
 		neededIDs[l.Source] = true
@@ -136,8 +153,8 @@ func (h *Handler) handleSWLGraph(w http.ResponseWriter, r *http.Request) {
 	}
 	edgeRows.Close()
 
-	// Phase 2: Fetch entity details for all edge-endpoint IDs in batches.
-	// SQLite has a 999-parameter limit; use batches of 400.
+	// Phase 2: Fetch entity details for all edge-endpoint IDs in batches of 400
+	// (SQLite 999-parameter limit).
 	nodes := make([]swlNode, 0, len(neededIDs))
 	nodeIDs := map[string]bool{}
 
@@ -189,31 +206,35 @@ func (h *Handler) handleSWLGraph(w http.ResponseWriter, r *http.Request) {
 		brows.Close()
 	}
 
-	// Phase 3: Fill remaining capacity with high-value isolated nodes.
-	// Exclude trivial leaf nodes (Symbol/Section at depth≤1 with a single access)
-	// since 10k+ of them dominate the DB but add noise to overview renders.
-	// Files, Directories, Tasks, Topics, Dependencies, etc. always qualify.
+	// Phase 3: Fill remaining node budget.
+	// Overview excludes Symbol/Section entirely.
+	// Full view excludes only the most trivial ones (depth≤1, access≤1).
 	if len(nodes) < maxNodes {
 		remaining := maxNodes - len(nodes)
+		var fillFilter string
+		if isOverview {
+			fillFilter = `AND type NOT IN ('Symbol','Section')`
+		} else {
+			fillFilter = `AND NOT (type IN ('Symbol','Section') AND knowledge_depth <= 1 AND access_count <= 1)`
+		}
 		fillRows, ferr := db.QueryContext(r.Context(), `
 			SELECT id,type,name,confidence,fact_status,knowledge_depth,access_count,metadata
 			FROM entities
 			WHERE fact_status != 'deleted'
-			  AND NOT (type IN ('Symbol','Section') AND knowledge_depth <= 1 AND access_count <= 1)
+			  `+fillFilter+`
 			ORDER BY knowledge_depth DESC, access_count DESC, accessed_at DESC
 			LIMIT ?
-		`, remaining*3) // over-select to account for already-included rows
+		`, remaining*3)
 		if ferr == nil {
 			scanNode(fillRows)
 			fillRows.Close()
 		}
-		// Trim to maxNodes if over-selected
 		if len(nodes) > maxNodes {
 			nodes = nodes[:maxNodes]
 		}
 	}
 
-	// Re-filter edges: drop any whose endpoints weren't included in the final set.
+	// Re-filter edges: drop any whose endpoints weren't included in the final node set.
 	validLinks := links[:0]
 	for _, l := range links {
 		if nodeIDs[l.Source] && nodeIDs[l.Target] {

@@ -74,10 +74,12 @@ export function SWLGraph({ data, hiddenTypes, onNodeClick }: Props) {
   const isFirstMount = useRef(true)
   const [size, setSize] = useState({ w: 800, h: 600 })
 
-  // Truth sources: allNodesRef holds the actual objects the simulation mutates
-  // (it adds x/y/z in-place). Keeping references stable means positions survive
-  // across setGraphState calls — 3d-force-graph matches by nodeId and copies
-  // x/y/z/vx/vy/vz from the previous frame automatically.
+  // Truth sources: allNodesRef holds the actual objects the d3 simulation
+  // mutates in-place (it writes x/y/z directly onto these objects). Keeping
+  // stable references means positions survive across setGraphState calls —
+  // d3-force checks for existing x/y/z on each node object and starts there.
+  // NOTE: ngraph does NOT do this (it keeps positions internally), which is
+  // why we must stay on the d3 engine.
   const allNodesRef    = useRef<Map<string, any>>(
     new Map((data.nodes ?? []).map((n) => [n.id, n])),
   )
@@ -91,9 +93,6 @@ export function SWLGraph({ data, hiddenTypes, onNodeClick }: Props) {
   }))
 
   // ── applyFiltered ────────────────────────────────────────────────────────────
-  // Rebuilds the visible set from allNodesRef / allLinksRef and writes to state.
-  // Wrapped in requestAnimationFrame to align React reconciliation with the WebGL
-  // frame boundary — prevents mid-frame tearing when the simulation is running.
   const applyFiltered = useCallback(() => {
     const hidden = hiddenTypesRef.current
     const all    = Array.from(allNodesRef.current.values())
@@ -110,9 +109,14 @@ export function SWLGraph({ data, hiddenTypes, onNodeClick }: Props) {
   }, [])
 
   // ── applySSEUpdate ────────────────────────────────────────────────────────────
-  // For existing nodes: mutates in-place so the objects the simulation already
-  // tracks get updated attributes without losing their x/y/z position.
-  // For new nodes: adds to allNodesRef then triggers a full filtered rebuild.
+  // For existing nodes: mutates in-place only. The nodePositionUpdate callback
+  // reads these mutated properties every frame and syncs material color/opacity.
+  // We deliberately do NOT call setGraphState for property-only updates:
+  //   - setGraphState triggers graphData change → library reheats d3 to alpha=1
+  //   - warmupTicks run synchronously → main thread blocked for no visual benefit
+  //   - (the custom MeshBasicMaterial is not updated by the library's onUpdateObj)
+  // For new nodes: adds to allNodesRef then triggers a filtered rebuild (which
+  // does call setGraphState, adding the new node to the simulation).
   const applySSEUpdate = useCallback(
     (updates: SWLNode[]) => {
       const hidden = hiddenTypesRef.current
@@ -121,7 +125,7 @@ export function SWLGraph({ data, hiddenTypes, onNodeClick }: Props) {
       for (const n of updates) {
         const existing = allNodesRef.current.get(n.id)
         if (existing) {
-          Object.assign(existing, n) // keeps simulation's x/y/z intact
+          Object.assign(existing, n) // keeps simulation's x/y/z; nodePositionUpdate handles visuals
         } else {
           allNodesRef.current.set(n.id, { ...n })
           if (!hidden.has(n.type)) hasNew = true
@@ -130,11 +134,8 @@ export function SWLGraph({ data, hiddenTypes, onNodeClick }: Props) {
 
       if (hasNew) {
         applyFiltered()
-      } else {
-        // Mutated in-place; create a fresh array reference so React re-renders
-        // (same object refs → 3d-force-graph keeps positions via ID match)
-        setGraphState((prev) => ({ ...prev, nodes: [...prev.nodes] }))
       }
+      // property-only updates: no setGraphState — nodePositionUpdate picks them up next frame
     },
     [applyFiltered],
   )
@@ -153,7 +154,6 @@ export function SWLGraph({ data, hiddenTypes, onNodeClick }: Props) {
   // ── Filter changes ────────────────────────────────────────────────────────────
   useEffect(() => {
     hiddenTypesRef.current = hiddenTypes ?? new Set()
-    // Only rebuild when there is an actual filter (empty set = no-op on mount)
     if ((hiddenTypes?.size ?? 0) > 0 || !isFirstMount.current) {
       applyFiltered()
     }
@@ -266,30 +266,54 @@ export function SWLGraph({ data, hiddenTypes, onNodeClick }: Props) {
   }, [])
 
   // ── THREE node objects ────────────────────────────────────────────────────────
+  // buildNodeObject creates the mesh once per node (on first appearance).
+  // Color and visual state are kept live by updateNodeMaterial (nodePositionUpdate).
   const buildNodeObject = useCallback((rawNode: any) => {
     const n     = rawNode as SWLNode
     const color = resolveColor(n)
     const r     = resolveRadius(n)
-    // LOD: use fewer segments when the graph is large to maintain GPU budget.
     const nodeCount = allNodesRef.current.size
     const segs = nodeCount > 200 ? [6, 4] : [14, 10]
 
-    if (n.factStatus === "stale" || n.factStatus === "deleted") {
-      return new THREE.Mesh(
-        new THREE.SphereGeometry(r, segs[0], segs[1]),
-        new THREE.MeshBasicMaterial({
-          color,
-          wireframe:   true,
-          transparent: true,
-          opacity:     n.factStatus === "deleted" ? 0.15 : 0.4,
-        }),
-      )
-    }
+    const isStaleOrDeleted = n.factStatus === "stale" || n.factStatus === "deleted"
     return new THREE.Mesh(
       new THREE.SphereGeometry(r, segs[0], segs[1]),
-      new THREE.MeshBasicMaterial({ color }),
+      new THREE.MeshBasicMaterial({
+        color,
+        wireframe:   isStaleOrDeleted,
+        transparent: isStaleOrDeleted,
+        opacity:     n.factStatus === "deleted" ? 0.15 : n.factStatus === "stale" ? 0.4 : 1.0,
+      }),
     )
   }, [])
+
+  // updateNodeMaterial is called every frame for every node via nodePositionUpdate.
+  // It syncs the THREE.js material to the current node data (mutated in-place by
+  // applySSEUpdate). This is the only correct way to reflect property changes
+  // (factStatus→color, status→wireframe) on custom nodeThreeObject meshes without
+  // recreating the mesh (which would lose simulation position) or calling
+  // setGraphState (which reheats the simulation for zero visual benefit).
+  // Returns false → library still runs the default obj.position update.
+  const updateNodeMaterial = useCallback(
+    (_obj: any, _coords: { x: number; y: number; z: number }, rawNode: any): boolean => {
+      const obj = _obj as THREE.Mesh & { material: THREE.MeshBasicMaterial }
+      if (!obj?.material) return false
+      const n = rawNode as SWLNode
+      const m = obj.material
+
+      const newColor         = resolveColor(n)
+      const shouldWireframe  = n.factStatus === "stale" || n.factStatus === "deleted"
+      const targetOpacity    = n.factStatus === "deleted" ? 0.15 : n.factStatus === "stale" ? 0.4 : 1.0
+
+      if (m.color.getHex() !== newColor) m.color.setHex(newColor)
+      if (m.wireframe !== shouldWireframe) m.wireframe = shouldWireframe
+      if (m.transparent !== shouldWireframe) m.transparent = shouldWireframe
+      if (shouldWireframe && m.opacity !== targetOpacity) m.opacity = targetOpacity
+
+      return false // let the library write obj.position from the simulation
+    },
+    [],
+  )
 
   const getLinkColor = useCallback(
     (link: any) => LINK_COLORS[(link as SWLLink).rel] ?? "#2a2d3a55",
@@ -344,6 +368,7 @@ export function SWLGraph({ data, hiddenTypes, onNodeClick }: Props) {
         nodeId="id"
         nodeThreeObject={buildNodeObject}
         nodeThreeObjectExtend={false}
+        nodePositionUpdate={updateNodeMaterial}
         nodeLabel={getNodeLabel}
         linkSource="source"
         linkTarget="target"
@@ -362,7 +387,7 @@ export function SWLGraph({ data, hiddenTypes, onNodeClick }: Props) {
         showNavInfo={false}
         onNodeClick={handleNodeClick}
         onBackgroundClick={handleBgClick}
-        warmupTicks={40}
+        warmupTicks={60}
         cooldownTime={2500}
         d3AlphaDecay={0.03}
         d3VelocityDecay={0.3}

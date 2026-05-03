@@ -1,10 +1,10 @@
 import { IconLayoutSidebarRight } from "@tabler/icons-react"
 import { useCallback, useState } from "react"
-import { useQuery } from "@tanstack/react-query"
+import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { Link } from "@tanstack/react-router"
 import { useTranslation } from "react-i18next"
 
-import { swlApi, type SWLGraphData, type SWLNode } from "@/api/swl"
+import { swlApi, type SWLGraphData, type SWLNode, type SWLViewMode } from "@/api/swl"
 import { PageHeader } from "@/components/page-header"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
@@ -13,10 +13,11 @@ import { SWLStats } from "./swl-stats"
 
 export function SWLPage() {
   const { t } = useTranslation()
+  const queryClient = useQueryClient()
   const [selectedNode, setSelectedNode] = useState<SWLNode | null>(null)
   const [hiddenTypes,  setHiddenTypes]  = useState<Set<string>>(new Set())
-  // Mobile: stats panel visible as a bottom sheet
   const [showStats,    setShowStats]    = useState(false)
+  const [viewMode,     setViewMode]     = useState<SWLViewMode>("full")
 
   const {
     data: graphData,
@@ -24,8 +25,8 @@ export function SWLPage() {
     error,
     refetch,
   } = useQuery<SWLGraphData>({
-    queryKey: ["swl-graph"],
-    queryFn:  swlApi.getGraph,
+    queryKey: ["swl-graph", viewMode],
+    queryFn:  () => swlApi.getGraph(viewMode),
     retry:    false,
     refetchInterval: 30_000,
   })
@@ -38,6 +39,18 @@ export function SWLPage() {
       return next
     })
   }, [])
+
+  const handleToggleView = useCallback(() => {
+    const next: SWLViewMode = viewMode === "full" ? "overview" : "full"
+    setViewMode(next)
+    setSelectedNode(null)
+    setHiddenTypes(new Set())
+    // Prefetch the other view in the background for instant switching
+    queryClient.prefetchQuery({
+      queryKey: ["swl-graph", viewMode],
+      queryFn:  () => swlApi.getGraph(viewMode),
+    })
+  }, [viewMode, queryClient])
 
   if (isLoading) {
     return (
@@ -81,7 +94,21 @@ export function SWLPage() {
         title={t("navigation.swl")}
         titleExtra={metaExtra}
       >
-        {/* Stats toggle: always present; on desktop it toggles the panel too */}
+        {/* View mode toggle */}
+        <button
+          onClick={handleToggleView}
+          className={cn(
+            "rounded border px-2.5 py-1 text-xs font-mono transition-colors",
+            viewMode === "overview"
+              ? "border-accent bg-accent text-foreground"
+              : "border-border text-muted-foreground hover:text-foreground",
+          )}
+          title={viewMode === "full" ? "Switch to overview (structural nodes only)" : "Switch to full view (all 500 nodes)"}
+        >
+          {viewMode === "overview" ? "overview" : "full"}
+        </button>
+
+        {/* Stats toggle */}
         <Button
           variant="ghost"
           size="icon"
@@ -99,7 +126,7 @@ export function SWLPage() {
       {/* ── Main area ──────────────────────────────────────────────────────── */}
       <div className="relative flex flex-1 overflow-hidden">
 
-        {/* Graph — always full-width on mobile, shrinks on desktop when panel open */}
+        {/* Graph */}
         <div className="flex-1 overflow-hidden">
           {graphData && (
             <SWLGraph
@@ -110,7 +137,7 @@ export function SWLPage() {
           )}
         </div>
 
-        {/* ── Desktop side panel (sm+): inline, shown when showStats=true ── */}
+        {/* ── Desktop side panel (sm+) ── */}
         <div
           className={cn(
             "hidden sm:flex sm:flex-col sm:shrink-0 sm:overflow-y-auto sm:border-l sm:transition-all sm:duration-200",
@@ -127,10 +154,9 @@ export function SWLPage() {
           )}
         </div>
 
-        {/* ── Mobile bottom sheet (below sm): overlay over the graph ── */}
+        {/* ── Mobile bottom sheet ── */}
         {showStats && (
           <div className="absolute inset-x-0 bottom-0 z-20 flex max-h-[60vh] flex-col overflow-hidden rounded-t-xl border-t bg-background shadow-2xl sm:hidden">
-            {/* Drag handle */}
             <div className="flex shrink-0 justify-center py-2">
               <div className="bg-muted-foreground/30 h-1 w-10 rounded-full" />
             </div>
@@ -139,6 +165,7 @@ export function SWLPage() {
                 selectedNode={selectedNode}
                 hiddenTypes={hiddenTypes}
                 onToggleType={handleToggleType}
+                onClearFilter={() => setHiddenTypes(new Set())}
               />
             </div>
           </div>
