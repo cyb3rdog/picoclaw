@@ -352,20 +352,20 @@ export function SWLGraph({ data, hiddenTypes, onNodeClick }: Props) {
         linkOpacity={0.3}
         linkDirectionalArrowLength={3.5}
         linkDirectionalArrowRelPos={0.95}
-        linkDirectionalParticles={nodeCount > 150 ? 0 : 2}
+        linkDirectionalParticles={nodeCount > 200 ? 0 : 2}
         linkDirectionalParticleWidth={1.5}
         linkDirectionalParticleColor={getLinkColor}
         linkDirectionalParticleSpeed={0.005}
         enableNodeDrag
         backgroundColor="rgba(0,0,0,0)"
-        rendererConfig={{ alpha: true, antialias: nodeCount < 150 }}
+        rendererConfig={{ alpha: true, antialias: nodeCount < 200 }}
         showNavInfo={false}
         onNodeClick={handleNodeClick}
         onBackgroundClick={handleBgClick}
-        forceEngine="ngraph"
-        ngraphPhysics={{ gravity: -1.5, springLength: 40, springCoefficient: 0.001, dragCoefficient: 0.04 }}
-        warmupTicks={0}
-        cooldownTime={2000}
+        warmupTicks={40}
+        cooldownTime={2500}
+        d3AlphaDecay={0.03}
+        d3VelocityDecay={0.3}
       />
     </div>
   )
