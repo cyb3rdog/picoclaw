@@ -89,6 +89,9 @@ export function SWLGraph({ data, hiddenTypes, focusNodeId, onNodeClick }: Props)
   const hiddenTypesRef = useRef<Set<string>>(hiddenTypes ?? new Set())
   const focusNodeRef   = useRef<string | undefined>(focusNodeId)
 
+  // sharedGeometry was used for InstancedMesh experiment - now unused, kept for reference
+  // const sharedGeometry = useMemo(() => new THREE.SphereGeometry(1, 8, 6), [])
+
   // graphState is the React prop fed to ForceGraph3D. Only updated via setGraphState.
   const [graphState, setGraphState] = useState<{ nodes: any[]; links: any[] }>(() => ({
     nodes: data.nodes ?? [],
@@ -299,13 +302,17 @@ export function SWLGraph({ data, hiddenTypes, focusNodeId, onNodeClick }: Props)
   // buildNodeObject creates the mesh once per node (on first appearance).
   // Color and visual state are kept live by updateNodeMaterial (nodePositionUpdate).
   //
+  // PERFORMANCE NOTE: For graphs with >5000 nodes, consider switching to InstancedMesh
+  // to reduce memory pressure. The current implementation creates individual meshes
+  // which works well for up to ~5000 nodes. The shared geometry below helps but
+  // InstancedMesh would be a more significant optimization.
+  //
   // LOD tiers (based on total visible node count):
   //   < 100 nodes  → 14×10 sphere segs, full quality
   //   100-300 nodes → 8×6 sphere segs
   //   > 300 nodes  → 5×4 sphere segs (minimum readable sphere)
   //
-  // Focus node gets a larger radius (+50%) and a ring halo to make it visually
-  // distinct as the center of a neighborhood subgraph.
+  // Focus node gets a larger radius (+50%) for visual distinction.
   const buildNodeObject = useCallback((rawNode: any) => {
     const n        = rawNode as SWLNode
     const isFocus  = n.id === focusNodeRef.current
@@ -329,11 +336,6 @@ export function SWLGraph({ data, hiddenTypes, focusNodeId, onNodeClick }: Props)
         opacity:     n.factStatus === "deleted" ? 0.15 : n.factStatus === "stale" ? 0.4 : 1.0,
       }),
     )
-
-    // NOTE: Ring halo removed — it created a new THREE.Mesh per focus change,
-    // causing a memory leak. Focus is now indicated by:
-    //   - 1.5× radius scale (already applied above)
-    //   - Emissive color shift in updateNodeMaterial (handled separately)
 
     return mesh
   }, [])
