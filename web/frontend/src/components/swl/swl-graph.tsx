@@ -91,6 +91,8 @@ export function SWLGraph({ data, hiddenTypes, onNodeClick }: Props) {
 
   // ── applyFiltered ────────────────────────────────────────────────────────────
   // Rebuilds the visible set from allNodesRef / allLinksRef and writes to state.
+  // Wrapped in requestAnimationFrame to align React reconciliation with the WebGL
+  // frame boundary — prevents mid-frame tearing when the simulation is running.
   const applyFiltered = useCallback(() => {
     const hidden = hiddenTypesRef.current
     const all    = Array.from(allNodesRef.current.values())
@@ -101,7 +103,9 @@ export function SWLGraph({ data, hiddenTypes, onNodeClick }: Props) {
       const tgt = typeof l.target === "object" ? (l.target as any).id : l.target
       return visibleIds.has(src) && visibleIds.has(tgt)
     })
-    setGraphState({ nodes: visible, links: visibleLinks })
+    requestAnimationFrame(() => {
+      setGraphState({ nodes: visible, links: visibleLinks })
+    })
   }, [])
 
   // ── applySSEUpdate ────────────────────────────────────────────────────────────
@@ -265,10 +269,13 @@ export function SWLGraph({ data, hiddenTypes, onNodeClick }: Props) {
     const n     = rawNode as SWLNode
     const color = resolveColor(n)
     const r     = resolveRadius(n)
+    // LOD: use fewer segments when the graph is large to maintain GPU budget.
+    const nodeCount = allNodesRef.current.size
+    const segs = nodeCount > 200 ? [6, 4] : [14, 10]
 
     if (n.factStatus === "stale" || n.factStatus === "deleted") {
       return new THREE.Mesh(
-        new THREE.SphereGeometry(r, 8, 6),
+        new THREE.SphereGeometry(r, segs[0], segs[1]),
         new THREE.MeshBasicMaterial({
           color,
           wireframe:   true,
@@ -278,7 +285,7 @@ export function SWLGraph({ data, hiddenTypes, onNodeClick }: Props) {
       )
     }
     return new THREE.Mesh(
-      new THREE.SphereGeometry(r, 14, 10),
+      new THREE.SphereGeometry(r, segs[0], segs[1]),
       new THREE.MeshBasicMaterial({ color }),
     )
   }, [])
@@ -320,6 +327,8 @@ export function SWLGraph({ data, hiddenTypes, onNodeClick }: Props) {
   )
   const handleBgClick = useCallback(() => onNodeClick?.(null), [onNodeClick])
 
+  const nodeCount = graphState.nodes.length
+
   return (
     <div
       ref={containerRef}
@@ -342,12 +351,13 @@ export function SWLGraph({ data, hiddenTypes, onNodeClick }: Props) {
         linkOpacity={0.3}
         linkDirectionalArrowLength={3.5}
         linkDirectionalArrowRelPos={0.95}
-        linkDirectionalParticles={2}
+        linkDirectionalParticles={nodeCount > 300 ? 0 : 2}
         linkDirectionalParticleWidth={1.5}
         linkDirectionalParticleColor={getLinkColor}
         linkDirectionalParticleSpeed={0.005}
         enableNodeDrag
-        backgroundColor="#181818"
+        backgroundColor="rgba(0,0,0,0)"
+        rendererConfig={{ alpha: true, antialias: nodeCount < 200 }}
         showNavInfo={false}
         onNodeClick={handleNodeClick}
         onBackgroundClick={handleBgClick}

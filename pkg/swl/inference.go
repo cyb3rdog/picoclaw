@@ -6,6 +6,26 @@ import (
 	"sync"
 )
 
+// normalizePath converts any path to a canonical workspace-relative form so that
+// all references to the same file ("/abs/path/f.go", "./rel/f.go", "rel/f.go")
+// produce the same entity ID.  Paths outside the workspace are returned as cleaned
+// absolute paths.  An empty string is returned unchanged.
+func (m *Manager) normalizePath(rawPath string) string {
+	if rawPath == "" {
+		return rawPath
+	}
+	p := filepath.Clean(rawPath)
+	if !filepath.IsAbs(p) && m.workspace != "" {
+		p = filepath.Join(m.workspace, p)
+	}
+	if m.workspace != "" {
+		if rel, err := filepath.Rel(m.workspace, p); err == nil && !strings.HasPrefix(rel, "..") {
+			return rel
+		}
+	}
+	return p
+}
+
 // PostHook runs the three-layer inference pipeline for a completed tool call.
 // It is called from the agent SWLHook.AfterTool goroutine.
 // sessionKey is the picoclaw session key; it is mapped to a SWL session UUID.
@@ -69,9 +89,14 @@ func (m *Manager) runInference(sessionID, toolName string, args map[string]any, 
 
 	// Layer 1: declarative tool map
 	if rule, ok := toolMap[toolName]; ok {
-		primaryID := resolveEntityID(rule.entityType, args, rule.entityExpr)
-		if primaryID != "" {
-			primaryName := resolveEntityName(args, rule.entityExpr)
+		primaryName := resolveEntityName(args, rule.entityExpr)
+		// Normalize file/directory paths so that absolute vs relative forms of the
+		// same path produce the same entity ID (prevents graph fragmentation).
+		if (rule.entityType == KnownTypeFile || rule.entityType == KnownTypeDirectory) && primaryName != "" {
+			primaryName = m.normalizePath(primaryName)
+		}
+		if primaryName != "" {
+			primaryID := entityID(rule.entityType, primaryName)
 			_ = m.writer.upsertEntity(EntityTuple{
 				ID: primaryID, Type: rule.entityType, Name: primaryName,
 				Confidence: 1.0, ExtractionMethod: MethodObserved, KnowledgeDepth: 1,
@@ -79,7 +104,7 @@ func (m *Manager) runInference(sessionID, toolName string, args map[string]any, 
 			_ = m.writer.upsertEdge(EdgeTuple{FromID: primaryID, Rel: rule.rel, ToID: sessionID, SessionID: sessionID})
 
 			if rule.entityType == KnownTypeFile {
-				dir := filepath.Dir(primaryName)
+				dir := filepath.Dir(primaryName) // primaryName is normalized; dir is consistent
 				dirID := entityID(KnownTypeDirectory, dir)
 				_ = m.writer.upsertEntity(EntityTuple{
 					ID: dirID, Type: KnownTypeDirectory, Name: dir,
@@ -120,7 +145,7 @@ func postApplyWriteFile(m *Manager, fileID, sessionID string, args map[string]an
 	m.writer.mu.Unlock()
 
 	if changed {
-		filePath, _ := args["path"].(string)
+		filePath := m.normalizePath(argString(args, "path"))
 		if delta := m.ExtractContent(fileID, filePath, content); delta != nil && !delta.IsEmpty() {
 			_ = m.writer.applyDelta(delta, sessionID)
 		}
@@ -146,7 +171,7 @@ func postApplyReadFile(m *Manager, fileID, sessionID string, args map[string]any
 	}
 	m.writer.mu.Unlock()
 
-	filePath, _ := args["path"].(string)
+	filePath := m.normalizePath(argString(args, "path"))
 	if delta := m.ExtractContent(fileID, filePath, result); delta != nil && !delta.IsEmpty() {
 		_ = m.writer.applyDelta(delta, sessionID)
 	}
@@ -199,19 +224,16 @@ func postApplyWebFetch(m *Manager, urlID, sessionID string, args map[string]any,
 
 // --- expression resolvers ---
 
-func resolveEntityID(entityType EntityType, args map[string]any, expr string) string {
-	name := resolveEntityName(args, expr)
-	if name == "" {
-		return ""
-	}
-	return entityID(entityType, name)
-}
-
 func resolveEntityName(args map[string]any, expr string) string {
 	if !strings.HasPrefix(expr, "args.") {
 		return ""
 	}
 	key := strings.TrimPrefix(expr, "args.")
+	v, _ := args[key].(string)
+	return strings.TrimSpace(v)
+}
+
+func argString(args map[string]any, key string) string {
 	v, _ := args[key].(string)
 	return strings.TrimSpace(v)
 }

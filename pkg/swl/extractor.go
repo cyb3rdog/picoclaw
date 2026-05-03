@@ -339,12 +339,17 @@ func (m *Manager) ExtractLLMResponse(sessionID, content string) *GraphDelta {
 			backtickFileRE.FindAllStringSubmatch(content, -1),
 			filePathRE.FindAllStringSubmatch(content, -1),
 		} {
-			for _, m := range paths {
+			for _, match := range paths {
 				if isDone(ctx) || pathCount >= 20 {
 					break
 				}
-				p := strings.TrimSpace(m[1])
-				if p == "" || seen[p] {
+				p := strings.TrimSpace(match[1])
+				if p == "" {
+					continue
+				}
+				// Normalize so inferred paths unify with observed ones.
+				p = m.normalizePath(p)
+				if seen[p] {
 					continue
 				}
 				seen[p] = true

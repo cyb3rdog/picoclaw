@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -91,64 +92,124 @@ func (h *Handler) handleSWLGraph(w http.ResponseWriter, r *http.Request) {
 	}
 	defer db.Close()
 
-	// Limit to 500 most-recently-active entities for performance.
-	rows, err := db.QueryContext(r.Context(), `
-		SELECT id, type, name, confidence, fact_status, knowledge_depth, access_count, metadata
-		FROM entities
-		WHERE fact_status != 'deleted'
-		ORDER BY accessed_at DESC
-		LIMIT 500
-	`)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	defer rows.Close()
+	const maxEdges = 2000
+	const maxNodes = 500
 
-	nodes := make([]swlNode, 0, 64)
-	nodeIDs := map[string]bool{}
-	for rows.Next() {
-		var n swlNode
-		var metaStr string
-		if err := rows.Scan(&n.ID, &n.Type, &n.Name, &n.Confidence,
-			&n.FactStatus, &n.KnowledgeDepth, &n.AccessCount, &metaStr); err != nil {
-			continue
-		}
-		if metaStr != "" && metaStr != "{}" {
-			_ = json.Unmarshal([]byte(metaStr), &n.Metadata)
-		}
-		n.Name = swlShortName(n.Name)
-		nodes = append(nodes, n)
-		nodeIDs[n.ID] = true
-	}
-
-	// Only return edges where both endpoints are in our node set.
+	// Phase 1: Select the highest-quality edges (both endpoints non-deleted).
+	// Ordering by combined depth+access prioritises structural hub edges over
+	// recently-touched leaf edges, ensuring parent→child connections survive.
 	edgeRows, err := db.QueryContext(r.Context(), `
-		SELECT from_id, rel, to_id, source_session FROM edges LIMIT 2000
-	`)
+		SELECT e.from_id, e.rel, e.to_id, COALESCE(e.source_session,'')
+		FROM edges e
+		JOIN entities n1 ON n1.id = e.from_id AND n1.fact_status != 'deleted'
+		JOIN entities n2 ON n2.id = e.to_id   AND n2.fact_status != 'deleted'
+		ORDER BY (n1.knowledge_depth + n2.knowledge_depth +
+		          MIN(n1.access_count,50) + MIN(n2.access_count,50)) DESC
+		LIMIT ?
+	`, maxEdges)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	defer edgeRows.Close()
 
-	links := make([]swlLink, 0, 64)
+	links := make([]swlLink, 0, 128)
+	neededIDs := map[string]bool{} // all node IDs referenced by edges
 	for edgeRows.Next() {
 		var l swlLink
-		var sess sql.NullString
-		if err := edgeRows.Scan(&l.Source, &l.Rel, &l.Target, &sess); err != nil {
+		if err := edgeRows.Scan(&l.Source, &l.Rel, &l.Target, &l.SessionID); err != nil {
 			continue
 		}
-		if !nodeIDs[l.Source] || !nodeIDs[l.Target] {
-			continue
-		}
-		l.SessionID = sess.String
 		links = append(links, l)
+		neededIDs[l.Source] = true
+		neededIDs[l.Target] = true
+	}
+	edgeRows.Close()
+
+	// Phase 2: Fetch entity details for all edge-endpoint IDs in batches.
+	// SQLite has a 999-parameter limit; use batches of 400.
+	nodes := make([]swlNode, 0, len(neededIDs))
+	nodeIDs := map[string]bool{}
+
+	needList := make([]string, 0, len(neededIDs))
+	for id := range neededIDs {
+		needList = append(needList, id)
 	}
 
-	data := swlGraphData{Nodes: nodes, Links: links}
+	const batchSize = 400
+	scanNode := func(rows *sql.Rows) {
+		for rows.Next() {
+			var n swlNode
+			var metaStr string
+			if rows.Scan(&n.ID, &n.Type, &n.Name, &n.Confidence,
+				&n.FactStatus, &n.KnowledgeDepth, &n.AccessCount, &metaStr) != nil {
+				continue
+			}
+			if nodeIDs[n.ID] {
+				continue
+			}
+			if metaStr != "" && metaStr != "{}" {
+				_ = json.Unmarshal([]byte(metaStr), &n.Metadata)
+			}
+			n.Name = swlShortName(n.Name)
+			nodes = append(nodes, n)
+			nodeIDs[n.ID] = true
+		}
+	}
+
+	for i := 0; i < len(needList); i += batchSize {
+		end := i + batchSize
+		if end > len(needList) {
+			end = len(needList)
+		}
+		batch := needList[i:end]
+		ph := strings.Repeat("?,", len(batch))
+		ph = ph[:len(ph)-1]
+		args := make([]any, len(batch))
+		for j, id := range batch {
+			args[j] = id
+		}
+		brows, berr := db.QueryContext(r.Context(),
+			"SELECT id,type,name,confidence,fact_status,knowledge_depth,access_count,metadata"+
+				" FROM entities WHERE id IN ("+ph+")", args...)
+		if berr != nil {
+			continue
+		}
+		scanNode(brows)
+		brows.Close()
+	}
+
+	// Phase 3: Fill remaining capacity with high-value nodes not yet included
+	// (isolated nodes with no edges, or nodes whose edges weren't in top-2000).
+	if len(nodes) < maxNodes {
+		remaining := maxNodes - len(nodes)
+		fillRows, ferr := db.QueryContext(r.Context(), `
+			SELECT id,type,name,confidence,fact_status,knowledge_depth,access_count,metadata
+			FROM entities
+			WHERE fact_status != 'deleted'
+			ORDER BY knowledge_depth DESC, access_count DESC, accessed_at DESC
+			LIMIT ?
+		`, remaining*3) // over-select to account for already-included rows
+		if ferr == nil {
+			scanNode(fillRows)
+			fillRows.Close()
+		}
+		// Trim to maxNodes if over-selected
+		if len(nodes) > maxNodes {
+			nodes = nodes[:maxNodes]
+		}
+	}
+
+	// Re-filter edges: drop any whose endpoints weren't included in the final set.
+	validLinks := links[:0]
+	for _, l := range links {
+		if nodeIDs[l.Source] && nodeIDs[l.Target] {
+			validLinks = append(validLinks, l)
+		}
+	}
+
+	data := swlGraphData{Nodes: nodes, Links: validLinks}
 	data.Meta.NodeCount = len(nodes)
-	data.Meta.LinkCount = len(links)
+	data.Meta.LinkCount = len(validLinks)
 	data.Meta.BuildTime = time.Now().UTC().Format(time.RFC3339)
 
 	w.Header().Set("Content-Type", "application/json")
