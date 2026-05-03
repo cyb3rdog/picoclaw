@@ -92,12 +92,14 @@ func (h *Handler) handleSWLGraph(w http.ResponseWriter, r *http.Request) {
 	}
 	defer db.Close()
 
-	const maxEdges = 2000
-	const maxNodes = 500
+	const maxEdges        = 2000
+	const maxNodes        = 500
+	const maxEdgesPerNode = 50 // prevents hub nodes (700+ degree) from flooding the edge budget
 
 	// Phase 1: Select the highest-quality edges (both endpoints non-deleted).
 	// Ordering by combined depth+access prioritises structural hub edges over
 	// recently-touched leaf edges, ensuring parent→child connections survive.
+	// We scan more than maxEdges so the per-node cap doesn't starve the budget.
 	edgeRows, err := db.QueryContext(r.Context(), `
 		SELECT e.from_id, e.rel, e.to_id, COALESCE(e.source_session,'')
 		FROM edges e
@@ -106,22 +108,31 @@ func (h *Handler) handleSWLGraph(w http.ResponseWriter, r *http.Request) {
 		ORDER BY (n1.knowledge_depth + n2.knowledge_depth +
 		          MIN(n1.access_count,50) + MIN(n2.access_count,50)) DESC
 		LIMIT ?
-	`, maxEdges)
+	`, maxEdges*3)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	links := make([]swlLink, 0, 128)
-	neededIDs := map[string]bool{} // all node IDs referenced by edges
+	links := make([]swlLink, 0, maxEdges)
+	neededIDs := map[string]bool{}
+	nodeDegree := map[string]int{} // tracks edges-per-node; enforces per-hub cap
 	for edgeRows.Next() {
 		var l swlLink
 		if err := edgeRows.Scan(&l.Source, &l.Rel, &l.Target, &l.SessionID); err != nil {
 			continue
 		}
+		if nodeDegree[l.Source] >= maxEdgesPerNode || nodeDegree[l.Target] >= maxEdgesPerNode {
+			continue // skip: this endpoint has reached its display budget
+		}
 		links = append(links, l)
 		neededIDs[l.Source] = true
 		neededIDs[l.Target] = true
+		nodeDegree[l.Source]++
+		nodeDegree[l.Target]++
+		if len(links) >= maxEdges {
+			break
+		}
 	}
 	edgeRows.Close()
 
@@ -178,14 +189,17 @@ func (h *Handler) handleSWLGraph(w http.ResponseWriter, r *http.Request) {
 		brows.Close()
 	}
 
-	// Phase 3: Fill remaining capacity with high-value nodes not yet included
-	// (isolated nodes with no edges, or nodes whose edges weren't in top-2000).
+	// Phase 3: Fill remaining capacity with high-value isolated nodes.
+	// Exclude trivial leaf nodes (Symbol/Section at depth≤1 with a single access)
+	// since 10k+ of them dominate the DB but add noise to overview renders.
+	// Files, Directories, Tasks, Topics, Dependencies, etc. always qualify.
 	if len(nodes) < maxNodes {
 		remaining := maxNodes - len(nodes)
 		fillRows, ferr := db.QueryContext(r.Context(), `
 			SELECT id,type,name,confidence,fact_status,knowledge_depth,access_count,metadata
 			FROM entities
 			WHERE fact_status != 'deleted'
+			  AND NOT (type IN ('Symbol','Section') AND knowledge_depth <= 1 AND access_count <= 1)
 			ORDER BY knowledge_depth DESC, access_count DESC, accessed_at DESC
 			LIMIT ?
 		`, remaining*3) // over-select to account for already-included rows
