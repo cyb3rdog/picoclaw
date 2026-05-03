@@ -695,10 +695,26 @@ func (h *Handler) handleSWLStream(w http.ResponseWriter, r *http.Request) {
 					&n.FactStatus, &n.KnowledgeDepth, &n.AccessCount, &metaStr) == nil {
 					n.Name = swlShortName(n.Name)
 					if metaStr != "" && metaStr != "{}" {
-						_ = json.Unmarshal([]byte(metaStr), &n.Metadata)
+						var meta map[string]any
+						if json.Unmarshal([]byte(metaStr), &meta) == nil {
+							// FIX: Safe metadata access - don't assume modified_at exists
+							if v, ok := meta["modified_at"]; ok {
+								if s, ok := v.(string); ok {
+									lastProcessedModAt = s
+								}
+							}
+							if v, ok := meta["access_count"]; ok {
+								// Access count can come from metadata as fallback
+								switch val := v.(type) {
+								case float64:
+									n.AccessCount = int(val)
+								case int:
+									n.AccessCount = val
+								}
+							}
+						}
 					}
 					updates = append(updates, n)
-					lastProcessedModAt = n.Metadata["modified_at"].(string) //nolint:errcheck
 				}
 			}
 			rows.Close()
@@ -732,6 +748,7 @@ func swlShortName(name string) string {
 
 // handleSWLTopology returns the full graph topology (lightweight nodes/edges only).
 // This is used for initial load where we need all nodes at once for physics simulation.
+// FIX: Added pagination for large graphs to prevent memory exhaustion.
 func (h *Handler) handleSWLTopology(w http.ResponseWriter, r *http.Request) {
 	dbPath, err := h.swlDBPath()
 	if err != nil {
@@ -745,14 +762,9 @@ func (h *Handler) handleSWLTopology(w http.ResponseWriter, r *http.Request) {
 	}
 	defer db.Close()
 
-	// Fetch all non-deleted entities (lightweight: just id, type, name)
-	nodeRows, err := db.QueryContext(r.Context(), `
-		SELECT id, type, name FROM entities WHERE fact_status != 'deleted'`)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	defer nodeRows.Close()
+	// FIX: Paginate results to handle large graphs (10k nodes per page max)
+	const nodesPerPage = 10000
+	const edgesPerPage = 20000
 
 	type topologyNode struct {
 		ID   string `json:"id"`
@@ -765,32 +777,75 @@ func (h *Handler) handleSWLTopology(w http.ResponseWriter, r *http.Request) {
 		Rel    string `json:"rel"`
 	}
 
-	nodes := make([]topologyNode, 0)
+	// Fetch nodes in pages
+	allNodes := make([]topologyNode, 0)
 	nodeIDs := make(map[string]bool)
-	for nodeRows.Next() {
-		var n topologyNode
-		if nodeRows.Scan(&n.ID, &n.Type, &n.Name) == nil {
-			nodes = append(nodes, n)
-			nodeIDs[n.ID] = true
+	offset := 0
+	for {
+		nodeRows, err := db.QueryContext(r.Context(), `
+			SELECT id, type, name FROM entities 
+			WHERE fact_status != 'deleted' 
+			ORDER BY id LIMIT ? OFFSET ?`, nodesPerPage, offset)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		
+		count := 0
+		for nodeRows.Next() {
+			var n topologyNode
+			if nodeRows.Scan(&n.ID, &n.Type, &n.Name) == nil {
+				allNodes = append(allNodes, n)
+				nodeIDs[n.ID] = true
+				count++
+			}
+		}
+		nodeRows.Close()
+		
+		if count < nodesPerPage {
+			break
+		}
+		offset += nodesPerPage
+		
+		// Safety limit: max 50k nodes
+		if len(allNodes) >= 50000 {
+			break
 		}
 	}
 
-	// Fetch all edges
-	edgeRows, err := db.QueryContext(r.Context(), "SELECT from_id, rel, to_id FROM edges")
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	defer edgeRows.Close()
-
-	links := make([]topologyLink, 0)
-	for edgeRows.Next() {
-		var l topologyLink
-		if edgeRows.Scan(&l.Source, &l.Rel, &l.Target) == nil {
-			// Only include edges where both endpoints exist
-			if nodeIDs[l.Source] && nodeIDs[l.Target] {
-				links = append(links, l)
+	// Fetch edges in pages
+	allLinks := make([]topologyLink, 0)
+	edgeOffset := 0
+	for {
+		edgeRows, err := db.QueryContext(r.Context(), `
+			SELECT from_id, rel, to_id FROM edges 
+			ORDER BY id LIMIT ? OFFSET ?`, edgesPerPage, edgeOffset)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		
+		count := 0
+		for edgeRows.Next() {
+			var l topologyLink
+			if edgeRows.Scan(&l.Source, &l.Rel, &l.Target) == nil {
+				// Only include edges where both endpoints exist
+				if nodeIDs[l.Source] && nodeIDs[l.Target] {
+					allLinks = append(allLinks, l)
+				}
+				count++
 			}
+		}
+		edgeRows.Close()
+		
+		if count < edgesPerPage {
+			break
+		}
+		edgeOffset += edgesPerPage
+		
+		// Safety limit: max 100k edges
+		if len(allLinks) >= 100000 {
+			break
 		}
 	}
 
@@ -807,11 +862,11 @@ func (h *Handler) handleSWLTopology(w http.ResponseWriter, r *http.Request) {
 			TotalEdges int `json:"totalEdges"`
 		} `json:"meta"`
 	}{
-		Nodes: nodes,
-		Links: links,
+		Nodes: allNodes,
+		Links: allLinks,
 		Meta: struct {
 			TotalNodes int `json:"totalNodes"`
 			TotalEdges int `json:"totalEdges"`
-		}{len(nodes), len(links)},
+		}{len(allNodes), len(allLinks)},
 	})
 }
