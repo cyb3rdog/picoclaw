@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useCallback, useState } from "react"
 import { useQuery } from "@tanstack/react-query"
 import { Link } from "@tanstack/react-router"
 import { useTranslation } from "react-i18next"
@@ -10,6 +10,7 @@ import { SWLStats } from "./swl-stats"
 export function SWLPage() {
   const { t } = useTranslation()
   const [selectedNode, setSelectedNode] = useState<SWLNode | null>(null)
+  const [hiddenTypes,  setHiddenTypes]  = useState<Set<string>>(new Set())
 
   const {
     data: graphData,
@@ -18,12 +19,20 @@ export function SWLPage() {
     refetch,
   } = useQuery<SWLGraphData>({
     queryKey: ["swl-graph"],
-    queryFn: swlApi.getGraph,
-    retry: false,
-    // No refetchInterval — SSE (EventSource) in SWLGraph handles real-time
-    // node updates imperatively to avoid triggering React re-renders and the
-    // associated WebGL canvas flicker.
+    queryFn:  swlApi.getGraph,
+    retry:    false,
+    // Periodic refresh keeps links up-to-date (nodes arrive sooner via SSE).
+    refetchInterval: 30_000,
   })
+
+  const handleToggleType = useCallback((type: string) => {
+    setHiddenTypes((prev) => {
+      const next = new Set(prev)
+      if (next.has(type)) next.delete(type)
+      else next.add(type)
+      return next
+    })
+  }, [])
 
   if (isLoading) {
     return (
@@ -39,10 +48,7 @@ export function SWLPage() {
         <p className="text-muted-foreground max-w-xs text-center text-sm">
           Knowledge graph unavailable. Enable SWL in config to start building it.
         </p>
-        <Link
-          to="/config"
-          className="text-xs underline opacity-60 hover:opacity-100"
-        >
+        <Link to="/config" className="text-xs underline opacity-60 hover:opacity-100">
           Open Config →
         </Link>
         <button
@@ -72,11 +78,19 @@ export function SWLPage() {
       <div className="flex flex-1 overflow-hidden">
         <div className="flex-1 overflow-hidden">
           {graphData && (
-            <SWLGraph data={graphData} onNodeClick={setSelectedNode} />
+            <SWLGraph
+              data={graphData}
+              hiddenTypes={hiddenTypes}
+              onNodeClick={setSelectedNode}
+            />
           )}
         </div>
         <div className="w-72 shrink-0 overflow-y-auto border-l">
-          <SWLStats selectedNode={selectedNode} />
+          <SWLStats
+            selectedNode={selectedNode}
+            hiddenTypes={hiddenTypes}
+            onToggleType={handleToggleType}
+          />
         </div>
       </div>
     </div>

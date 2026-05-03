@@ -6,100 +6,93 @@ import {
   type SWLSession,
   type SWLStats as SWLStatsData,
 } from "@/api/swl"
+import { NODE_COLORS } from "./swl-graph"
 
-const NODE_TYPE_COLORS: [string, string][] = [
-  ["File", "#4499ff"],
-  ["Directory", "#778899"],
-  ["Symbol", "#44ff99"],
-  ["Task", "#ffcc33"],
-  ["URL", "#33ffee"],
-  ["Session", "#cc44ff"],
-  ["Note", "#ff8833"],
-  ["Topic", "#ff3388"],
-  ["Dependency", "#88ff33"],
-  ["Command", "#ffee33"],
-  ["Commit", "#ff4444"],
-  ["Section", "#33ccff"],
-  ["Intent", "#ff88cc"],
-  ["SubAgent", "#88ccff"],
-]
-
-const COLOR_BY_TYPE: Record<string, string> = Object.fromEntries(NODE_TYPE_COLORS)
+// Convert a numeric THREE.js colour to a CSS hex string
+function toHex(n: number): string {
+  return `#${n.toString(16).padStart(6, "0")}`
+}
 
 const STATUS_META: Record<string, { icon: string; cls: string; label: string }> = {
-  verified: { icon: "✓", cls: "text-green-500", label: "Verified" },
-  stale: { icon: "⚠", cls: "text-yellow-500", label: "Stale" },
-  unknown: { icon: "?", cls: "text-muted-foreground", label: "Unknown" },
-  deleted: { icon: "✗", cls: "text-red-500/50", label: "Deleted" },
+  verified: { icon: "✓", cls: "text-emerald-500",     label: "Verified" },
+  stale:    { icon: "⚠", cls: "text-amber-400",       label: "Stale"    },
+  unknown:  { icon: "?", cls: "text-muted-foreground", label: "Unknown"  },
+  deleted:  { icon: "✗", cls: "text-red-500/50",      label: "Deleted"  },
 }
 
 interface Props {
   selectedNode?: SWLNode | null
+  hiddenTypes:   Set<string>
+  onToggleType:  (type: string) => void
 }
 
-export function SWLStats({ selectedNode }: Props) {
+export function SWLStats({ selectedNode, hiddenTypes, onToggleType }: Props) {
   const { data: stats } = useQuery<SWLStatsData>({
-    queryKey: ["swl-stats"],
-    queryFn: swlApi.getStats,
+    queryKey:       ["swl-stats"],
+    queryFn:        swlApi.getStats,
     refetchInterval: 15_000,
-    retry: false,
+    retry:           false,
   })
 
   const { data: sessions } = useQuery<SWLSession[]>({
-    queryKey: ["swl-sessions"],
-    queryFn: swlApi.getSessions,
+    queryKey:       ["swl-sessions"],
+    queryFn:        swlApi.getSessions,
     refetchInterval: 30_000,
-    retry: false,
+    retry:           false,
   })
 
   return (
     <div className="space-y-4 p-3 text-xs">
+
       {/* ── Node inspector ── */}
       {selectedNode ? (
         <NodeInspector node={selectedNode} />
       ) : (
-        <div className="text-muted-foreground py-2 text-center text-[11px] opacity-50">
+        <div className="text-muted-foreground py-2 text-center text-[11px] opacity-40">
           Click a node to inspect
         </div>
       )}
 
-      {/* ── Entity counts ── */}
+      {/* ── Entity type filter / counts ── */}
       {stats && (
         <section>
-          <h2 className="text-muted-foreground mb-1 font-semibold uppercase tracking-wide">
-            Entities
+          <h2 className="text-muted-foreground mb-1.5 font-semibold uppercase tracking-wide">
+            Entity Types
+            <span className="ml-1 font-normal normal-case opacity-50">· click to filter</span>
           </h2>
-          <table className="w-full">
-            <thead>
-              <tr className="text-muted-foreground">
-                <th className="text-left font-normal">Type</th>
-                <th className="text-right font-normal">All</th>
-                <th className="text-right font-normal">✓</th>
-                <th className="text-right font-normal">⚠</th>
-              </tr>
-            </thead>
-            <tbody>
-              {stats.rows.map((row) => (
-                <tr key={row.type} className="border-t border-muted/20">
-                  <td className="py-0.5">
-                    <div className="flex items-center gap-1">
-                      <span
-                        className="inline-block h-1.5 w-1.5 shrink-0 rounded-full"
-                        style={{
-                          backgroundColor: COLOR_BY_TYPE[row.type] ?? "#666",
-                        }}
-                      />
-                      <span className="font-mono">{row.type}</span>
-                    </div>
-                  </td>
-                  <td className="text-right">{row.total}</td>
-                  <td className="text-right text-green-600">{row.verified}</td>
-                  <td className="text-right text-yellow-500">{row.stale}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          <div className="text-muted-foreground mt-1">{stats.edgeCount} edges total</div>
+          <div className="space-y-0.5">
+            {stats.rows.map((row) => {
+              const hidden = hiddenTypes.has(row.type)
+              const color  = toHex(NODE_COLORS[row.type] ?? 0x888899)
+              return (
+                <button
+                  key={row.type}
+                  onClick={() => onToggleType(row.type)}
+                  className={`flex w-full items-center gap-2 rounded px-2 py-1 text-left transition-opacity hover:bg-muted/30 ${hidden ? "opacity-30" : "opacity-100"}`}
+                >
+                  <span
+                    className="inline-block h-2 w-2 shrink-0 rounded-full"
+                    style={{ backgroundColor: hidden ? "#444" : color }}
+                  />
+                  <span className="flex-1 truncate font-mono">{row.type}</span>
+                  <span className="text-muted-foreground tabular-nums">{row.total}</span>
+                  <span className="text-emerald-600 tabular-nums">{row.verified}</span>
+                  <span className="text-amber-500 tabular-nums">{row.stale}</span>
+                </button>
+              )
+            })}
+          </div>
+          <div className="text-muted-foreground mt-1.5 px-2 text-[10px]">
+            {stats.edgeCount} edges total
+            {hiddenTypes.size > 0 && (
+              <button
+                onClick={() => hiddenTypes.forEach((t) => onToggleType(t))}
+                className="ml-2 underline opacity-60 hover:opacity-100"
+              >
+                show all
+              </button>
+            )}
+          </div>
         </section>
       )}
 
@@ -107,7 +100,7 @@ export function SWLStats({ selectedNode }: Props) {
       {sessions && sessions.length > 0 && (
         <section>
           <h2 className="text-muted-foreground mb-1 font-semibold uppercase tracking-wide">
-            Recent Sessions
+            Sessions
           </h2>
           <div className="space-y-1">
             {sessions.slice(0, 5).map((s) => (
@@ -117,7 +110,6 @@ export function SWLStats({ selectedNode }: Props) {
         </section>
       )}
 
-      <NodeLegend />
     </div>
   )
 }
@@ -125,26 +117,24 @@ export function SWLStats({ selectedNode }: Props) {
 // ── Node inspector ─────────────────────────────────────────────────────────────
 
 function NodeInspector({ node }: { node: SWLNode }) {
-  const color = COLOR_BY_TYPE[node.type] ?? "#888"
+  const color  = toHex(NODE_COLORS[node.type] ?? 0x888899)
   const status = STATUS_META[node.factStatus] ?? {
-    icon: "?",
-    cls: "text-muted-foreground",
-    label: node.factStatus,
+    icon: "?", cls: "text-muted-foreground", label: node.factStatus,
   }
 
   return (
-    <section className="rounded-md border border-border/40 bg-muted/10 p-2.5 space-y-2">
-      {/* Header: type badge + status */}
+    <section
+      className="rounded-md border border-border/40 bg-muted/10 p-2.5 space-y-2"
+      style={{ borderColor: `${color}44` }}
+    >
+      {/* Header */}
       <div className="flex items-center gap-1.5">
         <span
           className="inline-block h-2.5 w-2.5 shrink-0 rounded-full"
           style={{ backgroundColor: color }}
         />
         <span className="text-muted-foreground">{node.type}</span>
-        <span
-          className={`ml-auto font-mono text-[11px] ${status.cls}`}
-          title={status.label}
-        >
+        <span className={`ml-auto font-mono text-[11px] ${status.cls}`}>
           {status.icon} {status.label}
         </span>
       </div>
@@ -154,16 +144,17 @@ function NodeInspector({ node }: { node: SWLNode }) {
         {node.name}
       </div>
 
-      {/* Key metrics */}
+      {/* Metrics */}
       <div className="grid grid-cols-2 gap-x-3 gap-y-0.5 text-[11px]">
         <span className="text-muted-foreground">Confidence</span>
-        <span className="text-right font-mono">
-          {Math.round(node.confidence * 100)}%
+        <span className="text-right font-mono">{Math.round(node.confidence * 100)}%</span>
+        <span className="text-muted-foreground">Depth</span>
+        <span className="text-right font-mono" style={{ color: "#8bc34a" }}>
+          {"█".repeat(Math.min(node.knowledgeDepth ?? 0, 5))}
+          {"░".repeat(Math.max(0, 5 - (node.knowledgeDepth ?? 0)))}
         </span>
-        <span className="text-muted-foreground">Knowledge depth</span>
-        <span className="text-right font-mono">{node.knowledgeDepth}</span>
-        <span className="text-muted-foreground">Access count</span>
-        <span className="text-right font-mono">{node.accessCount}</span>
+        <span className="text-muted-foreground">Accesses</span>
+        <span className="text-right font-mono">{node.accessCount ?? 0}</span>
       </div>
 
       {/* Metadata */}
@@ -172,16 +163,14 @@ function NodeInspector({ node }: { node: SWLNode }) {
           <div className="text-muted-foreground text-[10px] uppercase tracking-wide mb-1">
             Metadata
           </div>
-          {Object.entries(node.metadata)
-            .slice(0, 6)
-            .map(([k, v]) => (
-              <div key={k} className="flex justify-between gap-2 font-mono text-[10px]">
-                <span className="text-muted-foreground truncate">{k}</span>
-                <span className="text-foreground truncate max-w-[110px]">
-                  {typeof v === "string" ? v : JSON.stringify(v)}
-                </span>
-              </div>
-            ))}
+          {Object.entries(node.metadata).slice(0, 6).map(([k, v]) => (
+            <div key={k} className="flex justify-between gap-2 font-mono text-[10px]">
+              <span className="text-muted-foreground truncate">{k}</span>
+              <span className="text-foreground truncate max-w-[110px]">
+                {typeof v === "string" ? v : JSON.stringify(v)}
+              </span>
+            </div>
+          ))}
         </div>
       )}
     </section>
@@ -195,30 +184,9 @@ function SessionRow({ session: s }: { session: SWLSession }) {
     <div className="truncate">
       <span className="font-mono text-muted-foreground">{s.id.slice(0, 8)}</span>
       {s.goal && <span className="ml-1 truncate">{s.goal.slice(0, 40)}</span>}
-      {!s.endedAt && <span className="ml-1 text-green-500">active</span>}
+      {!s.endedAt && (
+        <span className="ml-1 text-emerald-500">active</span>
+      )}
     </div>
-  )
-}
-
-// ── Node type legend ───────────────────────────────────────────────────────────
-
-function NodeLegend() {
-  return (
-    <section>
-      <h2 className="text-muted-foreground mb-1 font-semibold uppercase tracking-wide">
-        Node Types
-      </h2>
-      <div className="grid grid-cols-2 gap-x-2 gap-y-0.5">
-        {NODE_TYPE_COLORS.map(([type, color]) => (
-          <div key={type} className="flex items-center gap-1">
-            <span
-              className="inline-block h-2 w-2 shrink-0 rounded-full"
-              style={{ backgroundColor: color }}
-            />
-            <span className="truncate font-mono">{type}</span>
-          </div>
-        ))}
-      </div>
-    </section>
   )
 }

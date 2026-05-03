@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"sync"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -264,13 +263,6 @@ func (h *Handler) handleSWLSessions(w http.ResponseWriter, r *http.Request) {
 
 // --- SSE stream endpoint ---
 
-// swlStreamState tracks watermarks for SSE diff delivery.
-type swlStreamState struct {
-	mu          sync.Mutex
-	lastModAt   string
-	lastNodeSet string
-}
-
 func (h *Handler) handleSWLStream(w http.ResponseWriter, r *http.Request) {
 	dbPath, err := h.swlDBPath()
 	if err != nil {
@@ -289,19 +281,21 @@ func (h *Handler) handleSWLStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Open a single persistent read-only connection for the lifetime of this SSE stream.
-	db, err := openSWLReadOnly(dbPath)
-	if err != nil {
-		// DB not yet created — send empty keepalive and wait
-		fmt.Fprintf(w, ": swl not ready\n\n")
-		flusher.Flush()
-		db = nil
-	}
+	db, _ := openSWLReadOnly(dbPath)
 	if db != nil {
 		defer db.Close()
+	} else {
+		fmt.Fprintf(w, ": swl not ready\n\n")
+		flusher.Flush()
 	}
 
+	// Initialise watermark at connect time so we only stream changes from now on.
+	// This prevents re-flooding data that the initial REST call already delivered.
 	var lastModAt string
+	if db != nil {
+		db.QueryRowContext(r.Context(), "SELECT COALESCE(MAX(modified_at),'') FROM entities").Scan(&lastModAt) //nolint:errcheck
+	}
+
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 
@@ -310,27 +304,34 @@ func (h *Handler) handleSWLStream(w http.ResponseWriter, r *http.Request) {
 		case <-r.Context().Done():
 			return
 		case <-ticker.C:
-			// If DB wasn't available at connect time, try once more
+			// Reconnect if DB became available after initial connection attempt.
 			if db == nil {
-				db, _ = openSWLReadOnly(dbPath)
-				if db != nil {
+				if db2, _ := openSWLReadOnly(dbPath); db2 != nil {
+					db = db2
 					defer db.Close() //nolint:gocritic
+					db.QueryRowContext(r.Context(), "SELECT COALESCE(MAX(modified_at),'') FROM entities").Scan(&lastModAt) //nolint:errcheck
 				}
 				continue
 			}
 
-			var currentModAt string
-			db.QueryRowContext(r.Context(), "SELECT MAX(modified_at) FROM entities").Scan(&currentModAt) //nolint:errcheck
+			var maxModAt string
+			db.QueryRowContext(r.Context(), "SELECT COALESCE(MAX(modified_at),'') FROM entities").Scan(&maxModAt) //nolint:errcheck
 
-			if currentModAt == "" || currentModAt == lastModAt {
+			if maxModAt == "" || maxModAt == lastModAt {
 				continue
 			}
-			lastModAt = currentModAt
 
+			// Capture previous watermark before advancing it.
+			prevModAt := lastModAt
+			lastModAt = maxModAt
+
+			// Query all entities modified SINCE the previous watermark (not AT the new one).
+			// The old code used `modified_at >= currentModAt` which returned only the single
+			// most-recent entity instead of everything changed since the last check.
 			rows, err := db.QueryContext(r.Context(), `
 				SELECT id, type, name, confidence, fact_status, knowledge_depth, access_count
-				FROM entities WHERE modified_at >= ? ORDER BY modified_at DESC LIMIT 100`,
-				currentModAt,
+				FROM entities WHERE modified_at > ? ORDER BY modified_at ASC LIMIT 100`,
+				prevModAt,
 			)
 			if err != nil {
 				continue
@@ -354,7 +355,7 @@ func (h *Handler) handleSWLStream(w http.ResponseWriter, r *http.Request) {
 			payload, _ := json.Marshal(map[string]any{
 				"type":  "delta",
 				"nodes": updates,
-				"modAt": currentModAt,
+				"modAt": maxModAt,
 			})
 			fmt.Fprintf(w, "data: %s\n\n", payload)
 			flusher.Flush()
