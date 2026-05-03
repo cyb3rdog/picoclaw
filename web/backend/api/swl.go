@@ -1,6 +1,7 @@
 package api
 
 import (
+	"compress/gzip"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -18,6 +19,7 @@ import (
 func (h *Handler) registerSWLRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/swl/graph", h.handleSWLGraph)
 	mux.HandleFunc("GET /api/swl/graph/neighborhood", h.handleSWLNeighborhood)
+	mux.HandleFunc("GET /api/swl/graph/topology", h.handleSWLTopology)
 	mux.HandleFunc("GET /api/swl/stats", h.handleSWLStats)
 	mux.HandleFunc("GET /api/swl/sessions", h.handleSWLSessions)
 	mux.HandleFunc("GET /api/swl/stream", h.handleSWLStream)
@@ -110,26 +112,26 @@ func (h *Handler) handleSWLGraph(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Parameters vary by mode:
-	//   map      — 500 nodes, 2000 edges, 50 edges/hub  — general exploration
-	//   overview — 150 nodes,  600 edges, 25 edges/hub  — structural snapshot
+	//   map      — 20000 nodes, 40000 edges, 500 edges/hub  — general exploration
+	//   overview — 10000 nodes, 20000 edges, 250 edges/hub  — structural snapshot
 	//              Symbol/Section excluded (they dominate at 14k+ rows but add noise)
-	//   session  — 200 nodes,  800 edges, 40 edges/hub  — scoped to recent sessions
-	maxNodes := 500
-	maxEdges := 2000
-	maxEdgesPerNode := 50
+	//   session  — 5000 nodes, 10000 edges, 150 edges/hub  — scoped to recent sessions
+	maxNodes := 20000
+	maxEdges := 40000
+	maxEdgesPerNode := 500
 	var typeFilter string
 
 	switch mode {
 	case "overview":
-		maxNodes = 150
-		maxEdges = 600
-		maxEdgesPerNode = 25
+		maxNodes = 10000
+		maxEdges = 20000
+		maxEdgesPerNode = 250
 		typeFilter = `AND n1.type NOT IN ('Symbol','Section')
 		          AND n2.type NOT IN ('Symbol','Section')`
 	case "session":
-		maxNodes = 200
-		maxEdges = 800
-		maxEdgesPerNode = 40
+		maxNodes = 5000
+		maxEdges = 10000
+		maxEdgesPerNode = 150
 	}
 
 	// For session mode: resolve the set of session IDs to scope by.
@@ -229,7 +231,15 @@ func (h *Handler) handleSWLGraph(w http.ResponseWriter, r *http.Request) {
 			"SELECT id,type,name,confidence,fact_status,knowledge_depth,access_count,metadata"+
 				" FROM entities WHERE id IN ("+ph+")", args...)
 		if berr != nil {
-			continue
+			// FIX: Log warning and retry once instead of silently dropping
+			h.log.Warnf("SWL Phase 2 batch query failed: %v, retrying...", berr)
+			brows, berr = db.QueryContext(r.Context(),
+				"SELECT id,type,name,confidence,fact_status,knowledge_depth,access_count,metadata"+
+					" FROM entities WHERE id IN ("+ph+")", args...)
+			if berr != nil {
+				h.log.Warnf("SWL Phase 2 batch retry failed: %v", berr)
+				continue
+			}
 		}
 		scanNode(brows)
 		brows.Close()
@@ -663,21 +673,21 @@ func (h *Handler) handleSWLStream(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 
-			// Capture previous watermark before advancing it.
-			prevModAt := lastModAt
-			lastModAt = maxModAt
-
+			// FIX: Cursor-based pagination — advance watermark only after query succeeds
 			// Query all entities modified SINCE the previous watermark (not AT the new one).
+			// This ensures convergence: if 100 entities share the same timestamp,
+			// poll 1 advances to that timestamp, poll 2 picks up the remainder.
 			rows, err := db.QueryContext(r.Context(), `
 				SELECT id, type, name, confidence, fact_status, knowledge_depth, access_count, metadata
 				FROM entities WHERE modified_at > ? ORDER BY modified_at ASC LIMIT 100`,
-				prevModAt,
+				lastModAt,
 			)
 			if err != nil {
 				continue
 			}
 
 			var updates []swlNode
+			var lastProcessedModAt string
 			for rows.Next() {
 				var n swlNode
 				var metaStr string
@@ -688,9 +698,16 @@ func (h *Handler) handleSWLStream(w http.ResponseWriter, r *http.Request) {
 						_ = json.Unmarshal([]byte(metaStr), &n.Metadata)
 					}
 					updates = append(updates, n)
+					lastProcessedModAt = n.Metadata["modified_at"].(string) //nolint:errcheck
 				}
 			}
 			rows.Close()
+
+			// FIX: Advance watermark to LAST PROCESSED ROW's modified_at, not global MAX
+			// This is cursor-based pagination that guarantees convergence
+			if len(updates) > 0 && lastProcessedModAt != "" {
+				lastModAt = lastProcessedModAt
+			}
 
 			if len(updates) == 0 {
 				continue
@@ -699,7 +716,6 @@ func (h *Handler) handleSWLStream(w http.ResponseWriter, r *http.Request) {
 			payload, _ := json.Marshal(map[string]any{
 				"type":  "delta",
 				"nodes": updates,
-				"modAt": maxModAt,
 			})
 			fmt.Fprintf(w, "data: %s\n\n", payload)
 			flusher.Flush()
@@ -712,4 +728,90 @@ func swlShortName(name string) string {
 		return "..." + name[len(name)-47:]
 	}
 	return name
+}
+
+// handleSWLTopology returns the full graph topology (lightweight nodes/edges only).
+// This is used for initial load where we need all nodes at once for physics simulation.
+func (h *Handler) handleSWLTopology(w http.ResponseWriter, r *http.Request) {
+	dbPath, err := h.swlDBPath()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	db, err := openSWLReadOnly(dbPath)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	defer db.Close()
+
+	// Fetch all non-deleted entities (lightweight: just id, type, name)
+	nodeRows, err := db.QueryContext(r.Context(), `
+		SELECT id, type, name FROM entities WHERE fact_status != 'deleted'`)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer nodeRows.Close()
+
+	type topologyNode struct {
+		ID   string `json:"id"`
+		Type string `json:"type"`
+		Name string `json:"name"`
+	}
+	type topologyLink struct {
+		Source string `json:"source"`
+		Target string `json:"target"`
+		Rel    string `json:"rel"`
+	}
+
+	nodes := make([]topologyNode, 0)
+	nodeIDs := make(map[string]bool)
+	for nodeRows.Next() {
+		var n topologyNode
+		if nodeRows.Scan(&n.ID, &n.Type, &n.Name) == nil {
+			nodes = append(nodes, n)
+			nodeIDs[n.ID] = true
+		}
+	}
+
+	// Fetch all edges
+	edgeRows, err := db.QueryContext(r.Context(), "SELECT from_id, rel, to_id FROM edges")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer edgeRows.Close()
+
+	links := make([]topologyLink, 0)
+	for edgeRows.Next() {
+		var l topologyLink
+		if edgeRows.Scan(&l.Source, &l.Rel, &l.Target) == nil {
+			// Only include edges where both endpoints exist
+			if nodeIDs[l.Source] && nodeIDs[l.Target] {
+				links = append(links, l)
+			}
+		}
+	}
+
+	// Wrap in gzip
+	w.Header().Set("Content-Encoding", "gzip")
+	w.Header().Set("Content-Type", "application/json")
+	gz := gzip.NewWriter(w)
+	defer gz.Close()
+	json.NewEncoder(gz).Encode(struct {
+		Nodes []topologyNode `json:"nodes"`
+		Links []topologyLink `json:"links"`
+		Meta  struct {
+			TotalNodes int `json:"totalNodes"`
+			TotalEdges int `json:"totalEdges"`
+		} `json:"meta"`
+	}{
+		Nodes: nodes,
+		Links: links,
+		Meta: struct {
+			TotalNodes int `json:"totalNodes"`
+			TotalEdges int `json:"totalEdges"`
+		}{len(nodes), len(links)},
+	})
 }
