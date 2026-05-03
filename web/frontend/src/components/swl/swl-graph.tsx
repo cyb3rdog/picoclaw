@@ -154,14 +154,29 @@ export function SWLGraph({ data, hiddenTypes, focusNodeId, onNodeClick }: Props)
 
   // ── React Query data refresh ─────────────────────────────────────────────────
   // When the parent fetches a whole new graph (mode switch or neighborhood load),
-  // replace the node map wholesale rather than merging, so stale nodes from the
-  // previous mode don't bleed into the new view.
+  // merge the new nodes into allNodesRef in-place rather than replacing the map.
+  // This preserves the d3 simulation's object references — replacing breaks link resolution
+  // because d3-force resolves link.source/target to object references during initialization.
   useEffect(() => {
     if (isFirstMount.current) {
       isFirstMount.current = false
       return
     }
-    allNodesRef.current = new Map((data.nodes ?? []).map((n) => [n.id, { ...n }]))
+    // Merge new nodes into allNodesRef in-place
+    for (const n of data.nodes ?? []) {
+      const existing = allNodesRef.current.get(n.id)
+      if (existing) {
+        Object.assign(existing, n)
+      } else {
+        allNodesRef.current.set(n.id, { ...n })
+      }
+    }
+    // Remove nodes that are no longer in the data
+    for (const [id, node] of allNodesRef.current) {
+      if (!data.nodes?.some((n) => n.id === id)) {
+        allNodesRef.current.delete(id)
+      }
+    }
     allLinksRef.current = data.links ?? []
     applyFiltered()
   }, [data, applyFiltered])
@@ -315,19 +330,10 @@ export function SWLGraph({ data, hiddenTypes, focusNodeId, onNodeClick }: Props)
       }),
     )
 
-    // Add a ring halo around the focus node so it's immediately identifiable.
-    if (isFocus) {
-      const ring = new THREE.Mesh(
-        new THREE.RingGeometry(r * 1.6, r * 1.9, 32),
-        new THREE.MeshBasicMaterial({
-          color: 0xffffff,
-          transparent: true,
-          opacity: 0.35,
-          side: THREE.DoubleSide,
-        }),
-      )
-      mesh.add(ring)
-    }
+    // NOTE: Ring halo removed — it created a new THREE.Mesh per focus change,
+    // causing a memory leak. Focus is now indicated by:
+    //   - 1.5× radius scale (already applied above)
+    //   - Emissive color shift in updateNodeMaterial (handled separately)
 
     return mesh
   }, [])

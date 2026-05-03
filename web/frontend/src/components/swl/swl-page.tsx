@@ -11,11 +11,12 @@ import { cn } from "@/lib/utils"
 import { SWLGraph } from "./swl-graph"
 import { SWLStats } from "./swl-stats"
 
-// The three navigation modes exposed in the UI.
+// The two navigation modes exposed in the UI.
+// NOTE: Session mode has been removed per remediation plan — sessions are audit trail,
+// not a semantic organizing principle. Session edges remain in the graph as color differentiation.
 const VIEW_MODES: { id: SWLViewMode; label: string; title: string }[] = [
-  { id: "session",  label: "session",  title: "Nodes active in recent sessions — most relevant to current work" },
   { id: "overview", label: "overview", title: "Structural graph: files, directories, dependencies (~150 nodes, no Symbol/Section noise)" },
-  { id: "map",      label: "map",      title: "General graph: top 500 quality-ranked nodes" },
+  { id: "map",      label: "map",      title: "General graph: top quality-ranked nodes" },
 ]
 
 export function SWLPage() {
@@ -24,11 +25,11 @@ export function SWLPage() {
   const [selectedNode, setSelectedNode]   = useState<SWLNode | null>(null)
   const [hiddenTypes,  setHiddenTypes]    = useState<Set<string>>(new Set())
   const [showStats,    setShowStats]      = useState(false)
-  const [viewMode,     setViewMode]       = useState<SWLViewMode>("session")
+  const [viewMode,     setViewMode]       = useState<SWLViewMode>("overview")
   // focusNodeId drives the "neighborhood" subgraph fetch — null = not in focus mode.
   const [focusNodeId,  setFocusNodeId]    = useState<string | null>(null)
   // Breadcrumb: the mode the user was in before entering focus mode.
-  const [preNavMode,   setPreNavMode]     = useState<SWLViewMode>("session")
+  const [preNavMode,   setPreNavMode]     = useState<SWLViewMode>("overview")
 
   // Main graph query (session / overview / map).
   const {
