@@ -62,12 +62,14 @@ function resolveRadius(n: SWLNode): number {
 interface Props {
   data: SWLGraphData
   hiddenTypes?: Set<string>
+  /** When set, this node is the focus of a neighborhood subgraph view. */
+  focusNodeId?: string
   onNodeClick?: (node: SWLNode | null) => void
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
-export function SWLGraph({ data, hiddenTypes, onNodeClick }: Props) {
+export function SWLGraph({ data, hiddenTypes, focusNodeId, onNodeClick }: Props) {
   const graphRef     = useRef<any>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const bloomAdded   = useRef(false)
@@ -85,12 +87,18 @@ export function SWLGraph({ data, hiddenTypes, onNodeClick }: Props) {
   )
   const allLinksRef    = useRef<SWLLink[]>(data.links ?? [])
   const hiddenTypesRef = useRef<Set<string>>(hiddenTypes ?? new Set())
+  const focusNodeRef   = useRef<string | undefined>(focusNodeId)
 
   // graphState is the React prop fed to ForceGraph3D. Only updated via setGraphState.
   const [graphState, setGraphState] = useState<{ nodes: any[]; links: any[] }>(() => ({
     nodes: data.nodes ?? [],
     links: data.links ?? [],
   }))
+
+  // Keep focusNodeRef in sync so buildNodeObject can read it without stale closure.
+  useEffect(() => {
+    focusNodeRef.current = focusNodeId
+  }, [focusNodeId])
 
   // ── applyFiltered ────────────────────────────────────────────────────────────
   const applyFiltered = useCallback(() => {
@@ -117,16 +125,20 @@ export function SWLGraph({ data, hiddenTypes, onNodeClick }: Props) {
   //   - (the custom MeshBasicMaterial is not updated by the library's onUpdateObj)
   // For new nodes: adds to allNodesRef then triggers a filtered rebuild (which
   // does call setGraphState, adding the new node to the simulation).
+  //
+  // In neighborhood mode (focusNodeRef set): skip new-node expansion to avoid
+  // ballooning the focus graph with unrelated SSE arrivals.
   const applySSEUpdate = useCallback(
     (updates: SWLNode[]) => {
       const hidden = hiddenTypesRef.current
+      const isFocused = focusNodeRef.current !== undefined
       let hasNew = false
 
       for (const n of updates) {
         const existing = allNodesRef.current.get(n.id)
         if (existing) {
           Object.assign(existing, n) // keeps simulation's x/y/z; nodePositionUpdate handles visuals
-        } else {
+        } else if (!isFocused) {
           allNodesRef.current.set(n.id, { ...n })
           if (!hidden.has(n.type)) hasNew = true
         }
@@ -141,13 +153,16 @@ export function SWLGraph({ data, hiddenTypes, onNodeClick }: Props) {
   )
 
   // ── React Query data refresh ─────────────────────────────────────────────────
+  // When the parent fetches a whole new graph (mode switch or neighborhood load),
+  // replace the node map wholesale rather than merging, so stale nodes from the
+  // previous mode don't bleed into the new view.
   useEffect(() => {
     if (isFirstMount.current) {
       isFirstMount.current = false
       return
     }
-    for (const n of data.nodes ?? []) allNodesRef.current.set(n.id, n)
-    if (data.links?.length) allLinksRef.current = data.links
+    allNodesRef.current = new Map((data.nodes ?? []).map((n) => [n.id, { ...n }]))
+    allLinksRef.current = data.links ?? []
     applyFiltered()
   }, [data, applyFiltered])
 
@@ -268,23 +283,53 @@ export function SWLGraph({ data, hiddenTypes, onNodeClick }: Props) {
   // ── THREE node objects ────────────────────────────────────────────────────────
   // buildNodeObject creates the mesh once per node (on first appearance).
   // Color and visual state are kept live by updateNodeMaterial (nodePositionUpdate).
+  //
+  // LOD tiers (based on total visible node count):
+  //   < 100 nodes  → 14×10 sphere segs, full quality
+  //   100-300 nodes → 8×6 sphere segs
+  //   > 300 nodes  → 5×4 sphere segs (minimum readable sphere)
+  //
+  // Focus node gets a larger radius (+50%) and a ring halo to make it visually
+  // distinct as the center of a neighborhood subgraph.
   const buildNodeObject = useCallback((rawNode: any) => {
-    const n     = rawNode as SWLNode
-    const color = resolveColor(n)
-    const r     = resolveRadius(n)
+    const n        = rawNode as SWLNode
+    const isFocus  = n.id === focusNodeRef.current
+    const color    = resolveColor(n)
+    const baseR    = resolveRadius(n)
+    const r        = isFocus ? baseR * 1.5 : baseR
     const nodeCount = allNodesRef.current.size
-    const segs = nodeCount > 200 ? [6, 4] : [14, 10]
+
+    let wSeg: number, hSeg: number
+    if (nodeCount < 100)       { wSeg = 14; hSeg = 10 }
+    else if (nodeCount < 300)  { wSeg = 8;  hSeg = 6  }
+    else                       { wSeg = 5;  hSeg = 4  }
 
     const isStaleOrDeleted = n.factStatus === "stale" || n.factStatus === "deleted"
-    return new THREE.Mesh(
-      new THREE.SphereGeometry(r, segs[0], segs[1]),
+    const mesh = new THREE.Mesh(
+      new THREE.SphereGeometry(r, wSeg, hSeg),
       new THREE.MeshBasicMaterial({
         color,
         wireframe:   isStaleOrDeleted,
-        transparent: isStaleOrDeleted,
+        transparent: isStaleOrDeleted || isFocus,
         opacity:     n.factStatus === "deleted" ? 0.15 : n.factStatus === "stale" ? 0.4 : 1.0,
       }),
     )
+
+    // Add a ring halo around the focus node so it's immediately identifiable.
+    if (isFocus) {
+      const ring = new THREE.Mesh(
+        new THREE.RingGeometry(r * 1.6, r * 1.9, 32),
+        new THREE.MeshBasicMaterial({
+          color: 0xffffff,
+          transparent: true,
+          opacity: 0.35,
+          side: THREE.DoubleSide,
+        }),
+      )
+      mesh.add(ring)
+    }
+
+    return mesh
   }, [])
 
   // updateNodeMaterial is called every frame for every node via nodePositionUpdate.
@@ -331,9 +376,13 @@ export function SWLGraph({ data, hiddenTypes, onNodeClick }: Props) {
       : n.factStatus === "stale"  ? "#f5a623"
       : n.factStatus === "deleted"? "#ef5350"
       : "#5a6070"
+    const isFocus = n.id === focusNodeRef.current
+    const focusBadge = isFocus
+      ? `<div style="color:#ffffff88;font-size:9px;margin-bottom:4px;letter-spacing:1px">◎ FOCUS NODE</div>`
+      : ""
 
     return `<div style="background:rgba(14,15,20,0.97);padding:9px 12px;border-radius:8px;font-family:monospace;font-size:11px;color:#a0a8bc;line-height:1.65;border:1px solid ${hexCol}44;box-shadow:0 0 16px ${hexCol}28,0 4px 12px rgba(0,0,0,0.8);max-width:300px">
-  <div style="color:${hexCol};font-weight:700;font-size:12.5px;margin-bottom:5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${icon}&nbsp;${n.name}</div>
+  ${focusBadge}<div style="color:${hexCol};font-weight:700;font-size:12.5px;margin-bottom:5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${icon}&nbsp;${n.name}</div>
   <div style="display:flex;gap:7px;font-size:10px;margin-bottom:7px;color:#5a6070">
     <span style="color:${hexCol}cc">${n.type}</span><span>·</span>
     <span style="color:${sc}">${n.factStatus}</span>
@@ -343,6 +392,7 @@ export function SWLGraph({ data, hiddenTypes, onNodeClick }: Props) {
     <span style="color:#5a6070">depth</span><span style="color:#8bc34a;letter-spacing:2px">${bar}</span>
     <span style="color:#5a6070">accesses</span><span>${n.accessCount ?? 0}</span>
   </div>
+  <div style="margin-top:6px;font-size:9px;color:#5a6070">click to focus neighborhood</div>
 </div>`
   }, [])
 
@@ -387,7 +437,7 @@ export function SWLGraph({ data, hiddenTypes, onNodeClick }: Props) {
         showNavInfo={false}
         onNodeClick={handleNodeClick}
         onBackgroundClick={handleBgClick}
-        warmupTicks={60}
+        warmupTicks={40}
         cooldownTime={2500}
         d3AlphaDecay={0.03}
         d3VelocityDecay={0.3}

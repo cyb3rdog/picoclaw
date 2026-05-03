@@ -11,14 +11,26 @@ import { cn } from "@/lib/utils"
 import { SWLGraph } from "./swl-graph"
 import { SWLStats } from "./swl-stats"
 
+// The three navigation modes exposed in the UI.
+const VIEW_MODES: { id: SWLViewMode; label: string; title: string }[] = [
+  { id: "session",  label: "session",  title: "Nodes active in recent sessions — most relevant to current work" },
+  { id: "overview", label: "overview", title: "Structural graph: files, directories, dependencies (~150 nodes, no Symbol/Section noise)" },
+  { id: "map",      label: "map",      title: "General graph: top 500 quality-ranked nodes" },
+]
+
 export function SWLPage() {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
-  const [selectedNode, setSelectedNode] = useState<SWLNode | null>(null)
-  const [hiddenTypes,  setHiddenTypes]  = useState<Set<string>>(new Set())
-  const [showStats,    setShowStats]    = useState(false)
-  const [viewMode,     setViewMode]     = useState<SWLViewMode>("full")
+  const [selectedNode, setSelectedNode]   = useState<SWLNode | null>(null)
+  const [hiddenTypes,  setHiddenTypes]    = useState<Set<string>>(new Set())
+  const [showStats,    setShowStats]      = useState(false)
+  const [viewMode,     setViewMode]       = useState<SWLViewMode>("session")
+  // focusNodeId drives the "neighborhood" subgraph fetch — null = not in focus mode.
+  const [focusNodeId,  setFocusNodeId]    = useState<string | null>(null)
+  // Breadcrumb: the mode the user was in before entering focus mode.
+  const [preNavMode,   setPreNavMode]     = useState<SWLViewMode>("session")
 
+  // Main graph query (session / overview / map).
   const {
     data: graphData,
     isLoading,
@@ -27,9 +39,24 @@ export function SWLPage() {
   } = useQuery<SWLGraphData>({
     queryKey: ["swl-graph", viewMode],
     queryFn:  () => swlApi.getGraph(viewMode),
+    enabled:  focusNodeId === null,
     retry:    false,
     refetchInterval: 30_000,
   })
+
+  // Neighborhood query — only active when a node is focused.
+  const {
+    data: neighborData,
+    isLoading: neighborLoading,
+  } = useQuery<SWLGraphData>({
+    queryKey: ["swl-neighborhood", focusNodeId],
+    queryFn:  () => swlApi.getNeighborhood(focusNodeId!),
+    enabled:  focusNodeId !== null,
+    retry:    false,
+  })
+
+  const activeData = focusNodeId !== null ? neighborData : graphData
+  const activeLoading = focusNodeId !== null ? neighborLoading : isLoading
 
   const handleToggleType = useCallback((type: string) => {
     setHiddenTypes((prev) => {
@@ -40,19 +67,37 @@ export function SWLPage() {
     })
   }, [])
 
-  const handleToggleView = useCallback(() => {
-    const next: SWLViewMode = viewMode === "full" ? "overview" : "full"
-    setViewMode(next)
-    setSelectedNode(null)
+  const handleSelectMode = useCallback((mode: SWLViewMode) => {
+    if (focusNodeId !== null) {
+      // Exiting focus mode — clear the focused node.
+      setFocusNodeId(null)
+      setSelectedNode(null)
+    }
+    setViewMode(mode)
     setHiddenTypes(new Set())
-    // Prefetch the other view in the background for instant switching
+    // Warm up adjacent mode caches.
     queryClient.prefetchQuery({
-      queryKey: ["swl-graph", viewMode],
-      queryFn:  () => swlApi.getGraph(viewMode),
+      queryKey: ["swl-graph", mode],
+      queryFn:  () => swlApi.getGraph(mode),
     })
-  }, [viewMode, queryClient])
+  }, [focusNodeId, queryClient])
 
-  if (isLoading) {
+  const handleNodeClick = useCallback((node: SWLNode | null) => {
+    setSelectedNode(node)
+    if (node) {
+      // Enter focus mode for the clicked node.
+      setPreNavMode(focusNodeId !== null ? preNavMode : viewMode)
+      setFocusNodeId(node.id)
+    }
+  }, [focusNodeId, preNavMode, viewMode])
+
+  const handleExitFocus = useCallback(() => {
+    setFocusNodeId(null)
+    setSelectedNode(null)
+    setViewMode(preNavMode)
+  }, [preNavMode])
+
+  if (activeLoading && !activeData) {
     return (
       <div className="flex h-full items-center justify-center">
         <p className="text-muted-foreground text-sm">Loading knowledge graph…</p>
@@ -60,7 +105,7 @@ export function SWLPage() {
     )
   }
 
-  if (error) {
+  if (error && !activeData) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3">
         <p className="text-muted-foreground max-w-xs text-center text-sm">
@@ -79,10 +124,17 @@ export function SWLPage() {
     )
   }
 
-  const metaExtra = graphData && (
+  const meta = activeData?.meta
+  const scaleLabel = meta && meta.totalNodes > 0
+    ? `${meta.nodeCount} of ${meta.totalNodes.toLocaleString()} nodes · ${meta.linkCount} edges`
+    : meta
+    ? `${meta.nodeCount} nodes · ${meta.linkCount} edges`
+    : null
+
+  const metaExtra = scaleLabel && (
     <span className="text-muted-foreground text-sm font-normal">
-      {graphData.meta.nodeCount} nodes · {graphData.meta.linkCount} edges
-      {selectedNode && (
+      {scaleLabel}
+      {selectedNode && !focusNodeId && (
         <span className="ml-2 opacity-60">· {selectedNode.name}</span>
       )}
     </span>
@@ -94,29 +146,50 @@ export function SWLPage() {
         title={t("navigation.swl")}
         titleExtra={metaExtra}
       >
-        {/* View mode toggle */}
-        <button
-          onClick={handleToggleView}
-          className={cn(
-            "rounded border px-2.5 py-1 text-xs font-mono transition-colors",
-            viewMode === "overview"
-              ? "border-accent bg-accent text-foreground"
-              : "border-border text-muted-foreground hover:text-foreground",
-          )}
-          title={viewMode === "full" ? "Switch to overview (structural nodes only)" : "Switch to full view (all 500 nodes)"}
-        >
-          {viewMode === "overview" ? "overview" : "full"}
-        </button>
+        {/* Focus mode breadcrumb */}
+        {focusNodeId && selectedNode && (
+          <div className="flex items-center gap-1.5 text-xs font-mono">
+            <button
+              onClick={handleExitFocus}
+              className="text-muted-foreground hover:text-foreground transition-colors"
+              title={`Back to ${preNavMode} view`}
+            >
+              ← {preNavMode}
+            </button>
+            <span className="text-muted-foreground opacity-40">/</span>
+            <span className="text-foreground truncate max-w-[120px]" title={selectedNode.name}>
+              {selectedNode.name}
+            </span>
+          </div>
+        )}
+
+        {/* View mode selector — hidden while in focus mode */}
+        {!focusNodeId && (
+          <div className="flex items-center gap-1">
+            {VIEW_MODES.map(({ id, label, title }) => (
+              <button
+                key={id}
+                onClick={() => handleSelectMode(id)}
+                className={cn(
+                  "rounded border px-2.5 py-1 text-xs font-mono transition-colors",
+                  viewMode === id
+                    ? "border-accent bg-accent text-foreground"
+                    : "border-border text-muted-foreground hover:text-foreground",
+                )}
+                title={title}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        )}
 
         {/* Stats toggle */}
         <Button
           variant="ghost"
           size="icon"
           aria-label="Toggle stats panel"
-          className={cn(
-            "h-9 w-9",
-            showStats && "bg-accent text-foreground",
-          )}
+          className={cn("h-9 w-9", showStats && "bg-accent text-foreground")}
           onClick={() => setShowStats((v) => !v)}
         >
           <IconLayoutSidebarRight className="size-5" />
@@ -128,11 +201,12 @@ export function SWLPage() {
 
         {/* Graph */}
         <div className="flex-1 overflow-hidden">
-          {graphData && (
+          {activeData && (
             <SWLGraph
-              data={graphData}
+              data={activeData}
               hiddenTypes={hiddenTypes}
-              onNodeClick={setSelectedNode}
+              focusNodeId={focusNodeId ?? undefined}
+              onNodeClick={handleNodeClick}
             />
           )}
         </div>
