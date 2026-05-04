@@ -117,19 +117,18 @@ func (w *entityWriter) setFactStatus(entityID string, status FactStatus) error {
 	return nil
 }
 
-// invalidateChildrenLocked marks all entities derived from fileID as stale.
+// invalidateChildrenLocked marks direct child entities derived from fileID as stale.
 // Must be called with w.mu held.
+// Limits cascade to direct outgoing edges only (not transitive via UNION).
+// Skips already-stale entities to prevent re-cascading.
 func (w *entityWriter) invalidateChildrenLocked(fileID, now string) {
 	const invalidateSQL = `
 		UPDATE entities SET fact_status = 'stale', modified_at = ?
 		WHERE id IN (
-			SELECT to_id FROM edges
+			SELECT DISTINCT to_id FROM edges
 			WHERE from_id = ? AND rel IN ('defines','has_task','has_section','mentions')
-			UNION
-			SELECT from_id FROM edges
-			WHERE to_id = ? AND rel = 'describes'
-		) AND fact_status != 'deleted'`
-	w.db.Exec(invalidateSQL, now, fileID, fileID) //nolint:errcheck — best-effort cascade
+		) AND fact_status NOT IN ('deleted','stale')`
+	w.db.Exec(invalidateSQL, now, fileID) //nolint:errcheck — best-effort cascade
 }
 
 // checkAndInvalidate compares the current content_hash of entityID with a

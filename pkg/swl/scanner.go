@@ -61,9 +61,19 @@ func (m *Manager) ScanWorkspace(root string) (ScanStats, error) {
 			if skipDirs[name] || strings.HasPrefix(name, ".") && name != "." {
 				return filepath.SkipDir
 			}
-			dirID := entityID(KnownTypeDirectory, path)
+			// Normalize to workspace-relative for consistent entity IDs.
+			// Tool calls (via inference.go) use workspace-relative paths.
+			// Scanner uses absolute paths from WalkDir. Normalizing here
+			// ensures both paths to the same file produce the same entity ID.
+			relPath := path
+			if m.workspace != "" {
+				if r, err := filepath.Rel(m.workspace, path); err == nil && !strings.HasPrefix(r, "..") {
+					relPath = r
+				}
+			}
+			dirID := entityID(KnownTypeDirectory, relPath)
 			_ = m.writer.upsertEntity(EntityTuple{
-				ID: dirID, Type: KnownTypeDirectory, Name: path,
+				ID: dirID, Type: KnownTypeDirectory, Name: relPath,
 				Confidence: 1.0, ExtractionMethod: MethodObserved, KnowledgeDepth: 1,
 			})
 			return nil
@@ -73,6 +83,14 @@ func (m *Manager) ScanWorkspace(root string) (ScanStats, error) {
 		if skipExts[ext] {
 			stats.Skipped++
 			return nil
+		}
+
+		// Normalize to workspace-relative for consistent entity IDs.
+		relPath := path
+		if m.workspace != "" {
+			if r, err := filepath.Rel(m.workspace, path); err == nil && !strings.HasPrefix(r, "..") {
+				relPath = r
+			}
 		}
 
 		info, err := d.Info()
@@ -85,7 +103,7 @@ func (m *Manager) ScanWorkspace(root string) (ScanStats, error) {
 			return nil
 		}
 
-		fileID := entityID(KnownTypeFile, path)
+		fileID := entityID(KnownTypeFile, relPath)
 		visited[fileID] = true
 
 		isKnown := knownFiles[fileID]
@@ -116,11 +134,11 @@ func (m *Manager) ScanWorkspace(root string) (ScanStats, error) {
 		}
 		stats.Scanned++
 
-		// Upsert the File entity.
-		dirPath := filepath.Dir(path)
+		// Upsert the File entity (use relPath for consistent entity IDs).
+		dirPath := filepath.Dir(relPath)
 		dirID := entityID(KnownTypeDirectory, dirPath)
 		_ = m.writer.upsertEntity(EntityTuple{
-			ID: fileID, Type: KnownTypeFile, Name: path,
+			ID: fileID, Type: KnownTypeFile, Name: relPath,
 			Confidence: 1.0, ExtractionMethod: MethodObserved, KnowledgeDepth: 1,
 		})
 		_ = m.writer.upsertEdge(EdgeTuple{FromID: fileID, Rel: KnownRelInDir, ToID: dirID})

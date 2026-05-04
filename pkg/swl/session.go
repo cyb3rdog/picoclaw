@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 )
 
 // EnsureSession returns the SWL session UUID for the given picoclaw session key,
@@ -95,7 +96,12 @@ func (m *Manager) SessionSync(sessionID string) {
 	}
 
 	for _, f := range files {
-		info, err := os.Stat(f.name)
+		// Resolve workspace-relative paths before os.Stat.
+		absPath := f.name
+		if !filepath.IsAbs(f.name) && m.workspace != "" {
+			absPath = filepath.Join(m.workspace, f.name)
+		}
+		info, err := os.Stat(absPath)
 		if err != nil {
 			if os.IsNotExist(err) {
 				_ = m.SetFactStatus(f.id, FactDeleted)

@@ -5,6 +5,7 @@ import (
 	"math/rand"
 	"net/http"
 	"os"
+	"path/filepath"
 	"time"
 )
 
@@ -89,7 +90,14 @@ func (m *Manager) maybePrune() {
 // --- built-in decay handlers ---
 
 func decayFile(m *Manager, entityID, name string) error {
-	info, err := os.Stat(name)
+	// Resolve workspace-relative paths before os.Stat.
+	// The name field may store relative paths (e.g., "src/foo.go")
+	// but os.Stat requires absolute paths unless CWD is correct.
+	absPath := name
+	if !filepath.IsAbs(name) && m.workspace != "" {
+		absPath = filepath.Join(m.workspace, name)
+	}
+	info, err := os.Stat(absPath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return m.SetFactStatus(entityID, FactDeleted)
