@@ -1,6 +1,7 @@
 package swl
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -41,6 +42,26 @@ var skipExts = map[string]bool{
 // It also tombstones files that were previously indexed but no longer exist.
 func (m *Manager) ScanWorkspace(root string) (ScanStats, error) {
 	var stats ScanStats
+
+	// Resolve root to absolute path, validate within workspace
+	absRoot := root
+	if !filepath.IsAbs(root) {
+		if m.workspace != "" {
+			absRoot = filepath.Join(m.workspace, root)
+		} else {
+			absRoot, _ = filepath.Abs(root)
+		}
+	}
+
+	// Validate root is within workspace (prevent cross-workspace scans)
+	if m.workspace != "" {
+		absRoot, _ = filepath.Abs(absRoot)
+		if !strings.HasPrefix(absRoot, m.workspace) {
+			return stats, fmt.Errorf("scan root %q is outside workspace %q", root, m.workspace)
+		}
+		root = absRoot
+	}
+
 	maxSize := m.cfg.effectiveMaxFileSize()
 
 	// Build map of all known file entity IDs → paths from DB.
@@ -155,7 +176,7 @@ func (m *Manager) ScanWorkspace(root string) (ScanStats, error) {
 		m.writer.mu.Unlock()
 
 		if changed {
-			delta := m.ExtractContent(fileID, path, content)
+			delta := m.ExtractContent(fileID, relPath, content)
 			if delta != nil && !delta.IsEmpty() {
 				_ = m.writer.applyDelta(delta, "")
 			}
