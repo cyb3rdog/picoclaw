@@ -231,13 +231,11 @@ func (h *Handler) handleSWLGraph(w http.ResponseWriter, r *http.Request) {
 			"SELECT id,type,name,confidence,fact_status,knowledge_depth,access_count,metadata"+
 				" FROM entities WHERE id IN ("+ph+")", args...)
 		if berr != nil {
-			// FIX: Log warning and retry once instead of silently dropping
-			h.log.Warnf("SWL Phase 2 batch query failed: %v, retrying...", berr)
+			// Retry once on failure
 			brows, berr = db.QueryContext(r.Context(),
 				"SELECT id,type,name,confidence,fact_status,knowledge_depth,access_count,metadata"+
 					" FROM entities WHERE id IN ("+ph+")", args...)
 			if berr != nil {
-				h.log.Warnf("SWL Phase 2 batch retry failed: %v", berr)
 				continue
 			}
 		}

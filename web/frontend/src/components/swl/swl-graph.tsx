@@ -175,7 +175,7 @@ export function SWLGraph({ data, hiddenTypes, focusNodeId, onNodeClick }: Props)
       }
     }
     // Remove nodes that are no longer in the data
-    for (const [id, node] of allNodesRef.current) {
+    for (const [id, _node] of allNodesRef.current) {
       if (!data.nodes?.some((n) => n.id === id)) {
         allNodesRef.current.delete(id)
       }
