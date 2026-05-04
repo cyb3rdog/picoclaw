@@ -394,7 +394,8 @@ func TestExtractContent_AntiBloomLimits(t *testing.T) {
 func TestScanWorkspace(t *testing.T) {
 	m := newTestManager(t)
 
-	root := t.TempDir()
+	// Scan root must be inside the manager's workspace.
+	root := m.workspace
 
 	// Create some files
 	_ = os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\nfunc main() {}"), 0644)

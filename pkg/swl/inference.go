@@ -6,6 +6,31 @@ import (
 	"sync"
 )
 
+// stripToolHeader removes the metadata header lines that read_file prepends to its
+// ForLLM output. Headers look like:
+//
+//	[file: foo.go | total: 4096 bytes | read: bytes 0-4095]
+//	[END OF FILE - no further content.]
+//
+// These lines pollute content-hash checks (making paginated reads of unchanged
+// content appear as changes) and regex-based symbol extraction.
+// Only lines at the start of the result that begin with '[' are stripped.
+func stripToolHeader(result string) string {
+	i := 0
+	for i < len(result) {
+		if result[i] != '[' {
+			break
+		}
+		nl := strings.IndexByte(result[i:], '\n')
+		if nl < 0 {
+			// entire remaining string is a header line
+			return ""
+		}
+		i += nl + 1
+	}
+	return result[i:]
+}
+
 // normalizePath converts any path to a canonical workspace-relative form so that
 // all references to the same file ("/abs/path/f.go", "./rel/f.go", "rel/f.go")
 // produce the same entity ID.  Paths outside the workspace are returned as cleaned
@@ -164,15 +189,24 @@ func postApplyReadFile(m *Manager, fileID, sessionID string, args map[string]any
 		_ = m.writer.setFactStatus(fileID, FactStale)
 		return
 	}
+	// Strip the [file: ...] / [END OF FILE] header added by read_file before
+	// hashing or extracting — otherwise paginated reads of unchanged content
+	// produce spurious cache misses and header text pollutes symbol extraction.
+	content := stripToolHeader(result)
+	if content == "" {
+		_ = m.writer.setFactStatus(fileID, FactVerified)
+		return
+	}
+
 	m.writer.mu.Lock()
-	changed := m.writer.checkAndInvalidateLocked(fileID, result)
+	changed := m.writer.checkAndInvalidateLocked(fileID, content)
 	if changed {
 		m.writer.bumpKnowledgeDepthLocked(fileID, 3)
 	}
 	m.writer.mu.Unlock()
 
 	filePath := m.normalizePath(argString(args, "path"))
-	if delta := m.ExtractContent(fileID, filePath, result); delta != nil && !delta.IsEmpty() {
+	if delta := m.ExtractContent(fileID, filePath, content); delta != nil && !delta.IsEmpty() {
 		_ = m.writer.applyDelta(delta, sessionID)
 	}
 	_ = m.writer.setFactStatus(fileID, FactVerified)

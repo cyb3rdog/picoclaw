@@ -109,7 +109,8 @@ func (m *Manager) ExtractContent(fileID, filePath, content string) *GraphDelta {
 	}
 	maxSize := m.cfg.effectiveMaxFileSize()
 	if int64(len(content)) > maxSize {
-		content = content[:maxSize]
+		// Truncate to a valid UTF-8 boundary to avoid splitting multi-byte sequences.
+		content = strings.ToValidUTF8(content[:maxSize], "")
 	}
 
 	// Normalize filePath so Symbol entity IDs are consistent whether the file

@@ -381,7 +381,8 @@ func TestScanWorkspace_PicksUpNewFiles(t *testing.T) {
 	m, cleanup := newQueryTestManager(t)
 	defer cleanup()
 
-	dir := t.TempDir()
+	// Scan root must be inside the manager's workspace.
+	dir := m.workspace
 	if err := os.WriteFile(filepath.Join(dir, "hello.go"), []byte("package main\nfunc main(){}"), 0o644); err != nil {
 		t.Fatal(err)
 	}

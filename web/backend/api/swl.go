@@ -676,7 +676,7 @@ func (h *Handler) handleSWLStream(w http.ResponseWriter, r *http.Request) {
 			// This ensures convergence: if 100 entities share the same timestamp,
 			// poll 1 advances to that timestamp, poll 2 picks up the remainder.
 			rows, err := db.QueryContext(r.Context(), `
-				SELECT id, type, name, confidence, fact_status, knowledge_depth, access_count, metadata
+				SELECT id, type, name, confidence, fact_status, knowledge_depth, access_count, metadata, modified_at
 				FROM entities WHERE modified_at > ? ORDER BY modified_at ASC LIMIT 100`,
 				lastModAt,
 			)
@@ -689,36 +689,22 @@ func (h *Handler) handleSWLStream(w http.ResponseWriter, r *http.Request) {
 			for rows.Next() {
 				var n swlNode
 				var metaStr string
+				var rowModAt string
 				if rows.Scan(&n.ID, &n.Type, &n.Name, &n.Confidence,
-					&n.FactStatus, &n.KnowledgeDepth, &n.AccessCount, &metaStr) == nil {
+					&n.FactStatus, &n.KnowledgeDepth, &n.AccessCount, &metaStr, &rowModAt) == nil {
 					n.Name = swlShortName(n.Name)
 					if metaStr != "" && metaStr != "{}" {
-						var meta map[string]any
-						if json.Unmarshal([]byte(metaStr), &meta) == nil {
-							// FIX: Safe metadata access - don't assume modified_at exists
-							if v, ok := meta["modified_at"]; ok {
-								if s, ok := v.(string); ok {
-									lastProcessedModAt = s
-								}
-							}
-							if v, ok := meta["access_count"]; ok {
-								// Access count can come from metadata as fallback
-								switch val := v.(type) {
-								case float64:
-									n.AccessCount = int(val)
-								case int:
-									n.AccessCount = val
-								}
-							}
-						}
+						_ = json.Unmarshal([]byte(metaStr), &n.Metadata)
+					}
+					if rowModAt != "" {
+						lastProcessedModAt = rowModAt
 					}
 					updates = append(updates, n)
 				}
 			}
 			rows.Close()
 
-			// FIX: Advance watermark to LAST PROCESSED ROW's modified_at, not global MAX
-			// This is cursor-based pagination that guarantees convergence
+			// Advance watermark to the last processed row's modified_at from the DB column.
 			if len(updates) > 0 && lastProcessedModAt != "" {
 				lastModAt = lastProcessedModAt
 			}
@@ -816,8 +802,8 @@ func (h *Handler) handleSWLTopology(w http.ResponseWriter, r *http.Request) {
 	edgeOffset := 0
 	for {
 		edgeRows, err := db.QueryContext(r.Context(), `
-			SELECT from_id, rel, to_id FROM edges 
-			ORDER BY id LIMIT ? OFFSET ?`, edgesPerPage, edgeOffset)
+			SELECT from_id, rel, to_id FROM edges
+			ORDER BY from_id, rel, to_id LIMIT ? OFFSET ?`, edgesPerPage, edgeOffset)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return

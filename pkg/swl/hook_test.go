@@ -145,6 +145,72 @@ func TestPostHook_ReadFile_MarksStaleOnEmptyResult(t *testing.T) {
 	}
 }
 
+func TestStripToolHeader(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "normal read_file output",
+			input: "[file: server.go | total: 4096 bytes | read: bytes 0-4095]\n[END OF FILE - no further content.]\npackage main\n\nfunc main() {}",
+			want:  "package main\n\nfunc main() {}",
+		},
+		{
+			name:  "truncated read_file output",
+			input: "[file: big.go | total: 65536 bytes | read: bytes 0-4095]\n[TRUNCATED - file has more content. Call read_file again with offset=4096 to continue.]\npackage main\n",
+			want:  "package main\n",
+		},
+		{
+			name:  "no header — raw content unchanged",
+			input: "package main\nfunc main() {}",
+			want:  "package main\nfunc main() {}",
+		},
+		{
+			name:  "only header line, no content",
+			input: "[END OF FILE - no content at this offset]",
+			want:  "",
+		},
+		{
+			name:  "empty string",
+			input: "",
+			want:  "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := stripToolHeader(tc.input)
+			if got != tc.want {
+				t.Errorf("stripToolHeader(%q)\n  got  %q\n  want %q", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestPostHook_ReadFile_StripsHeader_ExtractsSymbols(t *testing.T) {
+	m, cleanup := newHookTestManager(t)
+	defer cleanup()
+
+	// Simulate the full ForLLM output that read_file produces, including the header.
+	result := "[file: main.go | total: 50 bytes | read: bytes 0-49]\n[END OF FILE - no further content.]\npackage main\n\nfunc DoWork() {}\n"
+	m.PostHook("sess1", "read_file", map[string]any{"path": "main.go"}, result)
+	time.Sleep(20 * time.Millisecond)
+
+	// Entity must be verified
+	var status string
+	_ = m.db.QueryRow("SELECT fact_status FROM entities WHERE name = ?", "main.go").Scan(&status)
+	if status != string(FactVerified) {
+		t.Errorf("expected verified, got %q", status)
+	}
+
+	// Symbol must have been extracted from content (not confused by header)
+	var symCount int
+	_ = m.db.QueryRow("SELECT COUNT(*) FROM entities WHERE type = 'Symbol' AND name = 'DoWork'").Scan(&symCount)
+	if symCount == 0 {
+		t.Error("expected Symbol entity for DoWork to be extracted")
+	}
+}
+
 // --- PostHook: append_file ---
 
 func TestPostHook_AppendFile_NullsContentHash(t *testing.T) {
