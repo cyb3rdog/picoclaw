@@ -89,6 +89,9 @@ export function SWLGraph({ data, hiddenTypes, focusNodeId, onNodeClick }: Props)
   const hiddenTypesRef = useRef<Set<string>>(hiddenTypes ?? new Set())
   const focusNodeRef   = useRef<string | undefined>(focusNodeId)
 
+  // sharedGeometry was used for InstancedMesh experiment - now unused, kept for reference
+  // const sharedGeometry = useMemo(() => new THREE.SphereGeometry(1, 8, 6), [])
+
   // graphState is the React prop fed to ForceGraph3D. Only updated via setGraphState.
   const [graphState, setGraphState] = useState<{ nodes: any[]; links: any[] }>(() => ({
     nodes: data.nodes ?? [],
@@ -154,14 +157,29 @@ export function SWLGraph({ data, hiddenTypes, focusNodeId, onNodeClick }: Props)
 
   // ── React Query data refresh ─────────────────────────────────────────────────
   // When the parent fetches a whole new graph (mode switch or neighborhood load),
-  // replace the node map wholesale rather than merging, so stale nodes from the
-  // previous mode don't bleed into the new view.
+  // merge the new nodes into allNodesRef in-place rather than replacing the map.
+  // This preserves the d3 simulation's object references — replacing breaks link resolution
+  // because d3-force resolves link.source/target to object references during initialization.
   useEffect(() => {
     if (isFirstMount.current) {
       isFirstMount.current = false
       return
     }
-    allNodesRef.current = new Map((data.nodes ?? []).map((n) => [n.id, { ...n }]))
+    // Merge new nodes into allNodesRef in-place
+    for (const n of data.nodes ?? []) {
+      const existing = allNodesRef.current.get(n.id)
+      if (existing) {
+        Object.assign(existing, n)
+      } else {
+        allNodesRef.current.set(n.id, { ...n })
+      }
+    }
+    // Remove nodes that are no longer in the data
+    for (const [id, _node] of allNodesRef.current) {
+      if (!data.nodes?.some((n) => n.id === id)) {
+        allNodesRef.current.delete(id)
+      }
+    }
     allLinksRef.current = data.links ?? []
     applyFiltered()
   }, [data, applyFiltered])
@@ -284,13 +302,17 @@ export function SWLGraph({ data, hiddenTypes, focusNodeId, onNodeClick }: Props)
   // buildNodeObject creates the mesh once per node (on first appearance).
   // Color and visual state are kept live by updateNodeMaterial (nodePositionUpdate).
   //
+  // PERFORMANCE NOTE: For graphs with >5000 nodes, consider switching to InstancedMesh
+  // to reduce memory pressure. The current implementation creates individual meshes
+  // which works well for up to ~5000 nodes. The shared geometry below helps but
+  // InstancedMesh would be a more significant optimization.
+  //
   // LOD tiers (based on total visible node count):
   //   < 100 nodes  → 14×10 sphere segs, full quality
   //   100-300 nodes → 8×6 sphere segs
   //   > 300 nodes  → 5×4 sphere segs (minimum readable sphere)
   //
-  // Focus node gets a larger radius (+50%) and a ring halo to make it visually
-  // distinct as the center of a neighborhood subgraph.
+  // Focus node gets a larger radius (+50%) for visual distinction.
   const buildNodeObject = useCallback((rawNode: any) => {
     const n        = rawNode as SWLNode
     const isFocus  = n.id === focusNodeRef.current
@@ -314,20 +336,6 @@ export function SWLGraph({ data, hiddenTypes, focusNodeId, onNodeClick }: Props)
         opacity:     n.factStatus === "deleted" ? 0.15 : n.factStatus === "stale" ? 0.4 : 1.0,
       }),
     )
-
-    // Add a ring halo around the focus node so it's immediately identifiable.
-    if (isFocus) {
-      const ring = new THREE.Mesh(
-        new THREE.RingGeometry(r * 1.6, r * 1.9, 32),
-        new THREE.MeshBasicMaterial({
-          color: 0xffffff,
-          transparent: true,
-          opacity: 0.35,
-          side: THREE.DoubleSide,
-        }),
-      )
-      mesh.add(ring)
-    }
 
     return mesh
   }, [])

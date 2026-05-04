@@ -112,6 +112,10 @@ func (m *Manager) ExtractContent(fileID, filePath, content string) *GraphDelta {
 		content = content[:maxSize]
 	}
 
+	// Normalize filePath so Symbol entity IDs are consistent whether the file
+	// was indexed via scanner (absolute path) or inference (relative path).
+	normFilePath := m.normalizePath(filePath)
+
 	// Run with a 2-second timeout to guard against catastrophic backtracking.
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -130,7 +134,7 @@ func (m *Manager) ExtractContent(fileID, filePath, content string) *GraphDelta {
 	}
 
 	if m.cfg.effectiveExtractSymbols() {
-		extractSymbols(ctx, fileID, filePath, content, delta)
+		extractSymbols(ctx, fileID, normFilePath, content, delta)
 	}
 	if m.cfg.effectiveExtractImports() {
 		extractImports(ctx, fileID, content, delta)

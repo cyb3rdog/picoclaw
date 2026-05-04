@@ -1,6 +1,7 @@
 package swl
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -41,6 +42,26 @@ var skipExts = map[string]bool{
 // It also tombstones files that were previously indexed but no longer exist.
 func (m *Manager) ScanWorkspace(root string) (ScanStats, error) {
 	var stats ScanStats
+
+	// Resolve root to absolute path, validate within workspace
+	absRoot := root
+	if !filepath.IsAbs(root) {
+		if m.workspace != "" {
+			absRoot = filepath.Join(m.workspace, root)
+		} else {
+			absRoot, _ = filepath.Abs(root)
+		}
+	}
+
+	// Validate root is within workspace (prevent cross-workspace scans)
+	if m.workspace != "" {
+		absRoot, _ = filepath.Abs(absRoot)
+		if !strings.HasPrefix(absRoot, m.workspace) {
+			return stats, fmt.Errorf("scan root %q is outside workspace %q", root, m.workspace)
+		}
+		root = absRoot
+	}
+
 	maxSize := m.cfg.effectiveMaxFileSize()
 
 	// Build map of all known file entity IDs → paths from DB.
@@ -61,9 +82,19 @@ func (m *Manager) ScanWorkspace(root string) (ScanStats, error) {
 			if skipDirs[name] || strings.HasPrefix(name, ".") && name != "." {
 				return filepath.SkipDir
 			}
-			dirID := entityID(KnownTypeDirectory, path)
+			// Normalize to workspace-relative for consistent entity IDs.
+			// Tool calls (via inference.go) use workspace-relative paths.
+			// Scanner uses absolute paths from WalkDir. Normalizing here
+			// ensures both paths to the same file produce the same entity ID.
+			relPath := path
+			if m.workspace != "" {
+				if r, err := filepath.Rel(m.workspace, path); err == nil && !strings.HasPrefix(r, "..") {
+					relPath = r
+				}
+			}
+			dirID := entityID(KnownTypeDirectory, relPath)
 			_ = m.writer.upsertEntity(EntityTuple{
-				ID: dirID, Type: KnownTypeDirectory, Name: path,
+				ID: dirID, Type: KnownTypeDirectory, Name: relPath,
 				Confidence: 1.0, ExtractionMethod: MethodObserved, KnowledgeDepth: 1,
 			})
 			return nil
@@ -73,6 +104,14 @@ func (m *Manager) ScanWorkspace(root string) (ScanStats, error) {
 		if skipExts[ext] {
 			stats.Skipped++
 			return nil
+		}
+
+		// Normalize to workspace-relative for consistent entity IDs.
+		relPath := path
+		if m.workspace != "" {
+			if r, err := filepath.Rel(m.workspace, path); err == nil && !strings.HasPrefix(r, "..") {
+				relPath = r
+			}
 		}
 
 		info, err := d.Info()
@@ -85,7 +124,7 @@ func (m *Manager) ScanWorkspace(root string) (ScanStats, error) {
 			return nil
 		}
 
-		fileID := entityID(KnownTypeFile, path)
+		fileID := entityID(KnownTypeFile, relPath)
 		visited[fileID] = true
 
 		isKnown := knownFiles[fileID]
@@ -116,11 +155,11 @@ func (m *Manager) ScanWorkspace(root string) (ScanStats, error) {
 		}
 		stats.Scanned++
 
-		// Upsert the File entity.
-		dirPath := filepath.Dir(path)
+		// Upsert the File entity (use relPath for consistent entity IDs).
+		dirPath := filepath.Dir(relPath)
 		dirID := entityID(KnownTypeDirectory, dirPath)
 		_ = m.writer.upsertEntity(EntityTuple{
-			ID: fileID, Type: KnownTypeFile, Name: path,
+			ID: fileID, Type: KnownTypeFile, Name: relPath,
 			Confidence: 1.0, ExtractionMethod: MethodObserved, KnowledgeDepth: 1,
 		})
 		_ = m.writer.upsertEdge(EdgeTuple{FromID: fileID, Rel: KnownRelInDir, ToID: dirID})
@@ -137,7 +176,7 @@ func (m *Manager) ScanWorkspace(root string) (ScanStats, error) {
 		m.writer.mu.Unlock()
 
 		if changed {
-			delta := m.ExtractContent(fileID, path, content)
+			delta := m.ExtractContent(fileID, relPath, content)
 			if delta != nil && !delta.IsEmpty() {
 				_ = m.writer.applyDelta(delta, "")
 			}
