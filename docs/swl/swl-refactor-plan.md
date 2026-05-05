@@ -1,547 +1,450 @@
-# SWL Refactor: Comprehensive Plan v2
+# SWL Refactor: Implementation Plan v3
 
-> Verbatim requirements: `docs/swl/swl-refactor-requirements.md`
-> v1 (rejected as superficial): commit history
-> This document confronts the actual conceptual tensions in the requirement set, derives the architectural model from first principles, and only then proposes phases.
-
----
-
-## Part 1 — What Went Wrong with v1, and What the Real Problem Is
-
-The v1 plan failed because it treated the five visible drifts (bloat, hardcoding, missing description, query gaps, no feedback) as five independent fixes. They are not. They are **symptoms** of three deeper architectural failures, and any quick-win plan must engage with the *failures*, not just patch the symptoms.
-
-### The three architectural failures
-
-**Failure 1 — No notion of *value***
-The current extractor treats every regex match as equal. A file's role in the project (e.g., "main entry point", "configuration loader", "test harness") is the same kind of fact as a one-line `// TODO: refactor`. The graph cannot distinguish high-signal facts (the project's purpose) from low-signal ones (a function name buried in a generated file). Without a value gradient, "extract less" inevitably becomes "extract less of *everything*", which kills immediate intelligence — exactly the trap v1 fell into.
-
-**Failure 2 — No notion of *this workspace***
-Every workspace is treated as a generic blob of source files in known languages. The extractor doesn't know whether it's looking at a CLI tool, a library, a microservice, a research repo, an embedded firmware project, a documentation site. Yet the *meaning* of "important file" is entirely workspace-dependent. The hardcoded `projectTypeFiles` map is the degenerate, build-tool-only proxy for this.
-
-**Failure 3 — No notion of *what the LLM is doing***
-SWL extracts on tool call but never asks "is this extraction worth keeping?". It never observes whether what it stored was used, whether queries succeeded, whether the LLM had to re-derive facts SWL should already have known. The infrastructure for this exists (`access_count`, `events`, `constraints`, `infLog`) but is dormant, dead, or misused.
-
-### Restating the goal in terms of the failures
-
-A correct SWL must:
-1. **Stratify knowledge by value**, so it can be cheap *and* immediately useful (failure 1)
-2. **Adapt extraction to the workspace's actual shape**, not a fixed taxonomy (failure 2)
-3. **Close the loop between what the LLM asks and what SWL extracts**, so it gets sharper over time without LLM calls (failure 3)
-
-These three properties together produce: an *invisible brain* that gives the LLM verified, workspace-shaped semantic knowledge with bounded cost, on constrained hardware.
+> Requirements: `docs/swl/swl-refactor-requirements.md`
+> Refined through collaborative dialogue: 2026-05-05
+> Previous versions (v1, v2) rejected as symptom-patching and overengineered respectively.
 
 ---
 
-## Part 2 — Confronting the Tensions Directly
+## Part 1 — Root Causes
 
-The v1 plan buried these. They must be solved on the surface, because the right answer is non-obvious in each case.
+Previous plans addressed symptoms. This plan addresses the three architectural failures they revealed.
 
-### Tension A — Immediate intelligence vs. avoiding bloat
+**Failure 1 — No value gradient**
+Every extracted fact is treated as equally important. The graph cannot distinguish "this workspace exists to do X" (high signal, needed immediately) from "this file has a TODO on line 47" (low signal, only useful if asked). Without a value gradient, extraction is either everything-or-nothing. Current result: 20k entities on a small codebase, none answering "what is this workspace for?".
 
-**These are not opposed if extraction is stratified by value.** The 20k symbols that nobody asks about are a *quantity* problem; the LLM's need-to-know-immediately is a *quality* problem. Solving them with the same mechanism (extract everything / extract nothing) is wrong. The right resolution is a manifest-first model: scan-time extraction produces a small (~50–500 entity) **semantic profile** of the workspace — its purpose, its top-level structure, its key files, its language stack, its README content, its module manifest, its entry points. Per-file granular detail (every symbol, every import) is *not* part of immediate intelligence; it is detail that is extracted lazily, on demand, when the LLM actually touches the file.
+**Failure 2 — No workspace identity**
+Every workspace is treated as a generic blob of source files. The extractor hardcodes meaning for software project shapes (go.mod → "go project", `cmd/` → "entry points") and is useless for everything else: research datasets, legal document collections, firmware, documentation sites, config management repos. SWL must be workspace-content agnostic.
 
-This is the opposite of what scanning does today, which treats every `func` as equally important to extract upfront.
-
-### Tension B — Generic vs. effective
-
-A configuration system that lets the user define everything tends to require the user to *know* everything; a hardcoded system that knows everything tends to be useless outside the cases it was hardcoded for. Resolution: the system ships with a **default ontology and ruleset** that produces correct behavior on common workspaces with zero configuration; the workspace can **extend or override** any rule via a `swl.rules.yaml`; and the system can **propose new rules to the LLM** when it detects gaps (failed queries, repeated unknown patterns).
-
-The key shift: rules are *data*, not code. A rule has a selector (when does it apply), an action (what entity / edge / metadata does it produce), a confidence weight, and a source (built-in / workspace / learned). The extractor becomes a small generic engine that walks rules. New languages and new semantics are added by writing rules, not by recompiling.
-
-### Tension C — Self-improving vs. local + cheap
-
-"Self-improving" must not mean "calls an LLM to improve itself" or "trains a model". On RPi-class hardware that's a non-starter. It means **deterministic feedback signals from observable events**:
-
-- A query succeeded (returned ≥1 result the LLM didn't immediately re-query) → the rule that produced those entities gets a +1 useful signal
-- A query failed (returned nothing, or LLM immediately re-asks variant) → the gap is recorded; if the same gap appears N times, SWL proposes a new rule
-- An entity is *read* (returned by a query) → its `access_count` increments; entities with high read-count become "hot" and get prioritized for richer extraction
-- A rule fires often but produces entities that are never queried → the rule is *cold*, demoted in priority and eventually pruned
-
-No ML, no LLM calls. Just counters, ratios, and threshold-driven adjustments. The `events`, `access_count`, and `constraints` tables already exist for exactly this; they're just not wired up.
-
-### Tension D — Quick win vs. fundamental redesign
-
-The user explicitly asked for a quick-win refactoring that preserves strengths. Resolution: the plan refactors **internals** while preserving every public API, every existing invariant, and every integration surface. Nothing breaks for callers. The Manager / QuerySWLTool / hooks system stays. Inside, the extractor becomes a rules engine; the scanner becomes manifest+detail; the query system gets a multi-signal scorer.
+**Failure 3 — No feedback loop**
+The infrastructure for self-improvement exists (`access_count`, `events`, `constraints`, inference ring buffer) but is dormant, misused, or never written to. SWL never observes whether what it stored was useful, never detects which agent produced which facts, never converges across multiple agents. `access_count` counts *writes*, not reads. The events table is never written. Constraints are never enforced.
 
 ---
 
-## Part 3 — Architectural Model
+## Part 2 — Design Principles
 
-The proposed architecture is six layers; each addressable independently; each with a clean interface.
+1. **Generic over specific** — the workspace can be anything. Every design decision holds for code, docs, research, config, firmware, or mixed content.
+2. **Cheap before expensive** — extraction runs in cost tiers; expensive tiers are opt-in and off by default.
+3. **LLM-agnostic signals** — self-improvement is grounded in workspace actions (tool calls, assertions), never in inferences about LLM behavior. Different LLMs and agents exhibit different tendencies, drifts, and hallucinations; SWL cannot depend on any of them behaving predictably.
+4. **Multi-agent neutral** — multiple different LLMs may work the same workspace. SWL is a shared semantic layer; convergence across agents is stronger signal than any single agent's output.
+5. **Autonomous** — the feedback loop runs without human or LLM intervention. It adjusts weights, promotes/demotes facts, surfaces gaps. It does not rewrite rules automatically.
+6. **Additive** — all existing public APIs, upsert invariants, and integration surfaces (Manager, QuerySWLTool, hooks) are preserved throughout.
+
+---
+
+## Part 3 — Conceptual Model
+
+Two moving parts, both driven by configuration:
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                     query_swl tool (preserved)                   │
-└─────────────────────────────────────────────────────────────────┘
-                                │
-┌───────────────────────────────▼─────────────────────────────────┐
-│  Layer 6 — Feedback Loop                                         │
-│   • observes queries, results, rule firings, entity reads        │
-│   • adjusts rule weights, entity hotness                         │
-│   • detects gaps → proposes rules                                │
-└───────────────────────────────┬─────────────────────────────────┘
-                                │
-┌───────────────────────────────▼─────────────────────────────────┐
-│  Layer 5 — Query Engine (multi-signal)                           │
-│   • intent decomposition (what is the LLM asking?)               │
-│   • multi-signal scoring (name/location/imports/asserts/usage)   │
-│   • returns ranked, confidence-weighted answers                  │
-└───────────────────────────────┬─────────────────────────────────┘
-                                │
-┌───────────────────────────────▼─────────────────────────────────┐
-│  Layer 4 — Ontology                                              │
-│   • typed entity vocabulary (Project, Module, EntryPoint, …)    │
-│   • typed relations (defines, depends_on, owns, implements, …)   │
-│   • workspace-extensible; drives query templates                 │
-└───────────────────────────────┬─────────────────────────────────┘
-                                │
-┌───────────────────────────────▼─────────────────────────────────┐
-│  Layer 3 — Rules Engine (generic extractor)                      │
-│   • selector → action rules, declarative                         │
-│   • built-in defaults + workspace overrides + learned rules      │
-│   • each rule has confidence weight, source, fire counter        │
-└───────────────────────────────┬─────────────────────────────────┘
-                                │
-┌───────────────────────────────▼─────────────────────────────────┐
-│  Layer 2 — Detail Extraction (lazy, on tool call)                │
-│   • triggered by tool calls (read/write/list/exec)               │
-│   • extraction depth proportional to entity hotness              │
-│   • respects confidence-weighted budget                          │
-└───────────────────────────────┬─────────────────────────────────┘
-                                │
-┌───────────────────────────────▼─────────────────────────────────┐
-│  Layer 1 — Manifest Layer (immediate intelligence at scan)       │
-│   • workspace identity (name, purpose, kind)                     │
-│   • top-level structure (key dirs, their roles)                  │
-│   • entry points, build manifest, README content                 │
-│   • language/tech stack, conventions                             │
-│   • bounded: 50–500 entities total, regardless of repo size      │
-└─────────────────────────────────────────────────────────────────┘
-                                │
-                  Storage: existing entity/edge SQLite (preserved)
+  swl.rules.yaml                    swl.query.yaml
+  ──────────────                    ──────────────
+  what to extract                   how to answer
+  when, how, cost tier              intent patterns
+  semantic label rules              label weights
+  tool interception                 graph traversal templates
+  feedback thresholds               (NOTE: revisit unification in v4)
+         │                                  │
+         ▼                                  ▼
+    EXTRACTION                        QUERY ENGINE
+    ──────────                        ────────────
+    scan → semantic snapshot          intent decomposition
+    (bounded, generic)                label-weighted scoring
+    + lazy per-file detail            graph traversal
+    on tool call                      + feedback observation
+         │                                  │
+         └──────────────┬───────────────────┘
+                        ▼
+               Shared Entity Graph
+               (SQLite — preserved)
 ```
+
+**Semantic labels** are the bridge. A label is a structured tag a rule assigns to an entity and stores in `metadata`: `role: "authentication"`, `domain: "data-access"`, `kind: "anchor-document"`, `content_type: "sql"`. Labels are what make queries answerable — "where is the file that handles authentication?" becomes a label search, not a name match.
 
 ---
 
-## Part 4 — Each Layer in Concrete Detail
+## Part 4 — Extraction Model
 
-### Layer 1 — Manifest Layer (NEW)
+### 4.1 Workspace Semantic Snapshot (scan-time, bounded)
 
-**Purpose:** Give the LLM immediately useful semantic intelligence on session start, with bounded entity count regardless of workspace size.
+The scanner no longer extracts per-file symbols. Instead it produces a **workspace semantic snapshot**: a bounded set of high-signal entities that answer the LLM's session-start questions before any tool call has happened.
 
-**What it produces (deterministic, no LLM):**
+The snapshot answers: *"what is this workspace for?"*, *"what areas does it have and what do they do?"*, *"what are the key documents?"*, *"what goals are stated?"*, *"what kinds of content exist here?"*
 
-| Entity Type | How it's derived |
-|-------------|------------------|
-| `Project` | One per workspace. Name from manifest file (`go.mod` module path, `package.json` name, `Cargo.toml` package name, or directory basename). |
-| `ProjectDescription` | From README's first paragraph after H1 + manifest description fields + comment header in main entry. Stored on `Project.metadata["description"]`. |
-| `ProjectKind` | From signals: presence of cmd/, main.go, package.json bin → CLI / app; pkg/ + no main → library; firmware indicators → embedded; etc. Rule-driven, not hardcoded. |
-| `LanguageStack` | Aggregated from extension counts across the workspace. Top 3 by file count. |
-| `BuildManifest` | The actual go.mod / package.json / Cargo.toml / pyproject.toml / Makefile content as one entity with parsed metadata (deps, scripts, bin, version, license). |
-| `EntryPoint` | Files matching configured patterns: `main.go`, `cmd/*/main.go`, `index.{ts,js}`, `__main__.py`, `bin/*` script files, files matching `package.json#bin`. |
-| `KeyDirectory` | Top-level dirs with known semantic role: `pkg/`, `cmd/`, `src/`, `internal/`, `lib/`, `web/`, `docs/`, `tests/`, `examples/`. Rule defines role. |
-| `Convention` | Detected from structure: "uses Go modules", "has Docker setup", "uses GitHub Actions", "has CI", etc. From file presence patterns. |
-| `Document` | Top-level docs: README files, LICENSE, CONTRIBUTING, ARCHITECTURE.md, etc. Their first paragraph stored as description. |
+**What the snapshot contains:**
 
-**Bounded by design:**
-- Max 1 Project, 1 ProjectKind, 1 LanguageStack, 1 BuildManifest
-- Max 10 EntryPoint, 20 KeyDirectory, 30 Convention, 50 Document — configurable per workspace
-- Total upper bound: ~100–200 entities for any workspace, no matter the size
+| Entity | Derived from | How |
+|--------|-------------|-----|
+| Semantic areas | Significant directories | Rules classify by: anchor document presence and content, file type distribution, naming signals, child relationships. A directory becomes a semantic area only when a rule fires — empty dirs and generated-file dirs produce nothing. |
+| Anchor documents | Purpose-stating files | Rules define patterns: `README*`, `OVERVIEW*`, `ARCHITECTURE*`, manifest files, files with structured header comments. Extracted: first paragraph, section headings, stated goals. |
+| Content profile | Extension distribution | Aggregated counts → dominant content types. Not hardcoded language names — generic content-type labels. |
+| Key relations | Top-level connections | Rules define signals: cross-reference patterns, import conventions, naming proximity. |
+| Explicit goals | Human-stated intent | Extracted from anchor documents wherever present; stored as entity metadata. |
 
-**This is what enables `query_swl {question:"what is the project goal?"}` and `query_swl {resume:true}` to give immediate, useful answers without any per-file extraction.** It directly resolves the v1 conflict.
+**Bounded by design:** configurable max per entity class in `swl.rules.yaml`. Default upper bound: ~100–300 entities for any workspace, regardless of size.
 
-**Files:** new `pkg/swl/manifest.go`; refactor of `scanner.go` to call manifest builder before/instead of recursive content extraction; new section in `session.go SessionResume()` to surface manifest in the resume digest.
+### 4.2 Four Extraction Tiers (cost-ordered)
 
-### Layer 2 — Detail Extraction (REFACTOR)
+| Tier | Name | Cost | Default | Runs when |
+|------|------|------|---------|-----------|
+| 0 | Structural / derivative | Near-zero | Always on | Scan-time: file names, dir structure, extension distribution, naming patterns, anchor document presence |
+| 1 | Ontological inference | Cheap (SQL only) | Always on | Scan + after writes: rule-driven derivations from existing graph facts — "if entity A has label X and relates to entity B, derive label Y on B" |
+| 2 | Passive LLM capture | Free (happens anyway) | Always on | During tool use: existing `AfterLLM` hook captures semantic facts from LLM reasoning and responses. This is the *expected* deep learning channel during real work. |
+| 3 | Active LLM indexing | Expensive | Off by default | Scan-time only, if configured: SWL asks a configured LLM to summarize/classify anchor documents. Configurable model, token budget, which file classes. Never expected on constrained hardware (RPi 0 2W). |
 
-**Purpose:** Per-file granular knowledge (symbols, imports, tasks, sections), extracted only when an LLM tool call actually touches the file, with depth proportional to the file's measured importance.
+Tier 2 requires no additional infrastructure — it is the existing `AfterLLM` / `ExtractLLMResponse` path. The LLM's deep understanding of files it works with flows into SWL naturally during real sessions, for free. Active LLM indexing (Tier 3) is the explicit opt-in version of this, paid for upfront.
 
-**Triggers (not new — already exist):**
-- `write_file` / `edit_file` → full extraction (highest priority — LLM is actively shaping this file)
-- `read_file` → full extraction (LLM cares about this file *now*)
-- `list_dir` → directory enumeration only (no per-file extraction)
-- `exec` with file paths in stdout → opportunistic shallow indexing of mentioned files
+### 4.3 Lazy Per-File Detail
 
-**What changes from today:**
+Per-file granular knowledge (symbols, imports, tasks, sections) is extracted only when a tool call touches the file. The scanner's walk loop no longer calls `ExtractContent()`.
 
-1. **Scanner no longer triggers detail extraction.** `ScanWorkspace()` runs only the manifest layer. (This is what kills the 20k-symbol bloat.)
+Extraction depth scales with **entity hotness** (read frequency, cross-agent access count). Cold files get a minimum symbol budget; hot files get a configurable multiplier.
 
-2. **Detail extraction respects a per-file budget that scales with hotness.** Hotness = entity's `access_count` (which we will fix to actually mean read-count, see Layer 6). A cold file gets the default budget (say, 20 symbols); a hot file gets 5× the budget. Budgets are configurable per FileRule in `swl.rules.yaml`.
+When a query asks for per-file detail on an unread file, the response includes an explicit notice: *"[filename] has not been read in detail — use read_file to populate its contents."* Silent empty answers are eliminated.
 
-3. **Detail extraction is gated by the rules engine (Layer 3), not hardcoded patterns.** No more `symPatterns`, `importPatterns` arrays compiled into Go.
-
-4. **The result of Layer 2 is always written through the same upsert invariants that exist today** (confidence monotonicity, method priority, fact_status discipline). No regression here.
-
-**Files:** refactor `extractor.go` to consume rules from Layer 3; remove direct calls from `scanner.go`; preserve all `ExtractContent` / `ExtractDirectory` / `ExtractExec` / `ExtractWeb` / `ExtractLLMResponse` *signatures* but rewrite their internals to be rules-driven.
-
-### Layer 3 — Rules Engine (NEW, replaces hardcoded extractor logic)
-
-**Purpose:** Make extraction behavior fully configurable as data; eliminate the 123 hardcoded items audited.
-
-**Rule schema (YAML for human authoring; JSON-equivalent on disk):**
+### 4.4 `swl.rules.yaml` Schema
 
 ```yaml
-# swl.rules.yaml — workspace-level overrides; built-in defaults same shape
 version: 1
 
-ontology:
-  entity_types:
-    # Built-in inherited; workspace can add custom types here
-    - name: Service
-      parents: [Module]   # optional inheritance
-      semantics: "deployable unit"
-  relations:
-    - name: deploys_to
-      from: [Service]
-      to: [Environment]
+limits:
+  max_semantic_areas: 50
+  max_anchor_documents: 30
+  max_entities_per_scan: 300
+  detail_budget_cold: 20          # symbols/imports extracted for unread files
+  detail_budget_hot_multiplier: 5 # multiplier when entity is hot
+
+tiers:
+  structural: true
+  ontological: true
+  passive_llm: true
+  active_llm:
+    enabled: false
+    model: ""                     # e.g. "claude-haiku-4-5-20251001"
+    token_budget_per_file: 200
+    apply_to: ["anchor_documents"]
 
 ignores:
   dirs: [".git", "node_modules", "vendor", "dist", "build"]
-  extensions: [".png", ".pdf", ".so", ".exe"]
-  patterns: ["*_generated.go", "*.pb.go"]
-  # globs evaluated against workspace-relative path
+  extensions: [".png", ".pdf", ".so", ".exe", ".db", ".sqlite"]
+  patterns: []                    # glob patterns, workspace-relative
 
-manifest_rules:
-  # Layer 1 rules
-  - id: detect_project_kind_cli
+anchor_patterns:
+  - "README*"
+  - "OVERVIEW*"
+  - "ARCHITECTURE*"
+  - "CONTRIBUTING*"
+  - "*.meta.md"
+
+area_signals:
+  - id: dir_has_anchor
     when:
-      file_exists_any: ["cmd/*/main.go", "main.go", "package.json:bin"]
+      contains_file_matching: anchor_patterns
     produce:
-      entity:
-        type: ProjectKind
-        name: cli
-        confidence: 0.9
-        method: extracted
+      label: {kind: "documented-area"}
+      confidence: 0.9
 
-  - id: project_description_from_readme
+  - id: dir_dominant_content_type
     when:
-      file_match: "README.md"
-    extract:
-      description:
-        from: first_paragraph_after_h1
-        max_length: 280
-    bind_to: Project
+      dominant_extension_ratio: 0.6
+    produce:
+      label: {content_type: "$dominant_extension"}
+      confidence: 0.7
 
 file_rules:
-  # Layer 2 / per-file extraction
   - id: go_files
     when:
       extension: [".go"]
     extract:
       symbols:
-        patterns:
-          - 'func\s+(?:\(\w+\s+\*?\w+\)\s+)?(\w+)\s*\('
-          - 'type\s+(\w+)\s+(?:struct|interface)'
-        max: 60
-        budget_multiplier_when_hot: 5
+        patterns: ['(?m)^func\s+(?:\(\w+\s+\*?\w+\)\s+)?(\w+)\s*\(']
+        max: 20
       imports:
-        patterns: ['^\t"([^"]+)"']
-        max: 40
+        patterns: ['(?m)^\t"([^"]+)"']
+        max: 20
       tasks:
         patterns: ['(?i)(TODO|FIXME|HACK)[:\s]+(.+)']
-        max: 30
+        max: 10
 
   - id: markdown_files
     when:
       extension: [".md"]
     extract:
       sections:
-        patterns: ['^(#{1,3})\s+(.+)']
-        max: 30
+        patterns: ['(?m)^(#{1,3})\s+(.+)']
+        max: 20
       description:
         from: first_paragraph_after_h1
 
-tool_rules:
-  # Layer 2 / tool interception
-  - id: read_file_intercept
-    when:
-      tool_name: read_file
-    actions:
-      - upsert_entity:
-          type: File
-          name_from: args.path
-      - extract_content:
-          content_from: result
-          strip_header_pattern: '^\['
-          rule_set: file_rules
+  # workspace adds its own file_rules here for custom types
 
-  - id: web_fetch_intercept
-    when:
-      tool_name: web_fetch
+tool_rules:
+  - id: read_file
+    when: {tool_name: "read_file"}
     actions:
-      - upsert_entity:
-          type: URL
-          name_from: args.url
-      - extract_content:
-          content_from: result
-          rule_set: web_rules
+      - upsert_entity: {type: File, name_from: "args.path"}
+      - extract_content: {content_from: result, rule_set: file_rules, strip_header: true}
+      - record_event: {kind: file_read}
+
+  - id: write_file
+    when: {tool_name: "write_file"}
+    actions:
+      - upsert_entity: {type: File, name_from: "args.path"}
+      - extract_content: {content_from: "args.content", rule_set: file_rules}
+      - record_event: {kind: file_write}
+
+  - id: exec
+    when: {tool_name: "exec"}
+    actions:
+      - upsert_entity: {type: Command, name_from: "args.command"}
+      - extract_generic: {content_from: result}
+      - record_event: {kind: exec}
+
+  - id: web_fetch
+    when: {tool_name: "web_fetch"}
+    actions:
+      - upsert_entity: {type: URL, name_from: "args.url"}
+      - extract_web: {content_from: result}
+      - record_event: {kind: web_fetch}
+
+  # workspace adds custom tool_rules for domain-specific tools
 
 semantic_rules:
-  # Layer 4 inference (ontology-driven derivations)
-  - id: imports_imply_dep_on_module
+  # Tier 1: ontological inference from existing graph facts
+  - id: imports_signal_domain
     when:
       pattern: "(File)-[imports]->(Dependency)"
+      dependency_label_matches: "domain:*"
     derive:
-      edge:
-        from: $File
-        rel: depends_on
-        to: $Module(of $Dependency)
+      entity_label: {domain: "$matched_domain", confidence: 0.6}
 
-constraints:
-  # Layer 6 — invariants and quality gates
-  - name: every_service_has_owner
-    query: "Service entities without 'owns' edge from User"
-    action: WARN
-```
+feedback_thresholds:
+  promote_after_agent_count: 3
+  demote_after_contradiction_count: 2
+  cluster_after_session_count: 4
+  prune_cold_rule_after_firings: 200
+  prune_cold_rule_useful_ratio: 0.05
+  gap_surface_after_repeat_count: 3
+  hotness_decay_after_sessions: 10
 
-**Rule application engine:**
-- Rules are loaded once at `Manager` init: built-in defaults from embedded `rules_default.yaml`, then deep-merged with `{workspace}/.swl/rules.yaml` if present
-- Each rule has a `fire_count`, `useful_count`, `confidence` tracked in a new `rule_stats` table
-- Rule selection at extraction time is sorted by `(confidence × useful_ratio)` descending
-- A rule with `useful_ratio < 0.05` after N>50 firings is *cold* and demoted; after 200 firings still cold, removed from active set (kept in DB for audit)
+---
 
-**Built-in defaults reproduce current behavior exactly** — so this is a strict refactor with no behavioral regression at the default config.
+## Part 5 — Query Model
 
-**Files:** new `pkg/swl/rules.go` (engine), `pkg/swl/rules_default.yaml` (embedded), `pkg/swl/rule_stats.go` (telemetry); rewrite `extractor.go` and `inference.go` to consume rules; new `rule_stats` table in `db.go`.
+### 5.1 How queries work
 
-### Layer 4 — Ontology (NEW)
+1. **Intent recognition** — match the question against intent patterns in `swl.query.yaml`
+2. **Label-weighted scoring** — score entities by signal strength: exact label match > partial label match > name match > path match > session co-occurrence. Weights configurable per intent.
+3. **Graph traversal** — for relational questions ("what is in the auth area?", "what depends on X?"), walk edges from matched entities
+4. **Fallback** — existing Tier 3 text search on entity names for unmatched intents
 
-**Purpose:** Give entity types and relations *meaning*, so the query engine can reason across them rather than string-matching on names.
+The key insight: **queries become answerable because extraction was semantic, not because the query engine is smart.** A well-labelled graph with a simple scorer beats a clever scorer on a name-only graph every time.
 
-The current open-enum string types (`File`, `Symbol`, `Task`, `URL`, etc.) are kept for backward compatibility, but a typed registry is added on top:
-
-```go
-type EntityTypeDef struct {
-    Name        string
-    Parent      string         // inheritance: Service → Module → Entity
-    Description string
-    Required    []string       // metadata keys that must be present
-    Indexable   []string       // metadata keys to create indexes on
-}
-
-type RelationDef struct {
-    Name         string
-    FromTypes    []string      // valid source types
-    ToTypes      []string      // valid target types
-    Symmetric    bool
-    Transitive   bool          // for closure queries
-    Inverse      string        // optional inverse relation name
-}
-```
-
-The ontology is **advisory in v2 (logs warnings on violations) and enforceable in a future version (rejects writes that violate)**. Quick win: just having the types declared lets the query engine treat `is_a Module` (matching Service, Library, Package, etc.) as a single concept.
-
-The ontology lives in the same `swl.rules.yaml` (as shown above). Built-in defaults declare the existing 15 entity types and 25 edge relations. Workspace can add domain types: `Service`, `APIEndpoint`, `Database`, `Migration`, `Test`, etc.
-
-**Files:** new `pkg/swl/ontology.go`; loaded by `manager.go` at startup; consumed by Layers 5 and 6.
-
-### Layer 5 — Query Engine (REWRITE of `query.go`)
-
-**Purpose:** Answer the LLM's questions semantically — combining multiple signals — instead of regex-on-keywords + LIKE-on-name.
-
-The current Tier 1/2/3 system stays as the *interface*; its internals are replaced by an **intent-driven, multi-signal scorer**.
-
-**Intent decomposition:**
-
-A question like "where is the file that does authentication?" decomposes to:
-- Intent: `find_entity_by_purpose`
-- Target type (constraint, from ontology): `File` (or any subtype)
-- Purpose terms: `["authentication"]`
-- Result count: top N
-
-Intent recognition is done via a small set of declarative intent templates (also in `swl.rules.yaml`):
+### 5.2 `swl.query.yaml` Schema
 
 ```yaml
-query_intents:
+version: 1
+
+# NOTE: consider unifying with swl.rules.yaml in next version/iteration
+
+intents:
+  - id: workspace_purpose
+    patterns:
+      - "what is this (?:workspace|project|repo) (?:for|about|doing)"
+      - "what (?:does this|is the) (?:project|workspace) (?:do|goal|purpose|aim)"
+      - "(?:describe|summarise|summarize) (?:this|the) workspace"
+    handler: manifest_summary
+    entities: [AnchorDocument, SemanticArea]
+    labels: [kind: "workspace-root", kind: "documented-area"]
+
   - id: find_by_purpose
     patterns:
-      - "where is the (?P<type>\w+) that (?:does|handles|implements) (?P<purpose>.+)"
-      - "find (?P<type>\w+s?) for (?P<purpose>.+)"
-    handler: scoring.find_by_purpose
+      - "where is (?:the )?(?P<type>\\w+) that (?:does|handles|implements|manages) (?P<purpose>.+)"
+      - "find (?P<type>\\w+s?) (?:for|that) (?P<purpose>.+)"
+      - "which (?P<type>\\w+) (?:handles|does|is responsible for) (?P<purpose>.+)"
+    handler: label_search
+    search_on: [metadata.role, metadata.domain, metadata.description, name, path]
 
-  - id: project_goal
+  - id: area_contents
     patterns:
-      - "what is the (?:project )?(?:goal|purpose|aim)"
-      - "what does this project do"
-    handler: manifest.project_purpose
+      - "what is in (?:the )?(?P<area>.+?)(?:\\s+area)?"
+      - "show (?:me )?(?:the )?(?P<area>.+?) (?:area|section|directory|folder)"
+      - "what files are in (?P<area>.+)"
+    handler: area_traverse
+    traverse: {from: SemanticArea, match_name: "$area", depth: 1}
 
-  - id: file_summary
+  - id: file_detail
     patterns:
-      - "what does (?P<name>.+) do"
+      - "what does (?P<name>.+?) do"
       - "describe (?P<name>.+)"
-    handler: scoring.file_summary
+      - "explain (?P<name>.+)"
+    handler: file_summary
+    includes: [symbols, tasks, metadata.description, metadata.role, metadata.domain]
+
+  - id: workspace_goals
+    patterns:
+      - "what (?:are the |is the )?goals?"
+      - "what (?:are we|is this) trying to (?:do|achieve|build)"
+    handler: goals_summary
+    entities: [AnchorDocument, Session]
+    fields: [metadata.goals, goal]
+
+  - id: content_type_distribution
+    patterns:
+      - "what (?:kind of|types? of) (?:content|files?) (?:are|is) (?:here|in this workspace)"
+      - "what (?:language|tech|stack|technology) (?:is|does) this"
+    handler: content_profile
+
+  # workspace adds custom intents here
+
+label_weights:
+  exact_label_match: 1.0
+  partial_label_match: 0.6
+  name_match: 0.4
+  path_match: 0.3
+  session_co_occurrence: 0.2
+  cross_agent_confirmation: 0.5   # bonus for cross-agent confirmed labels
 ```
 
-**Scoring across multiple signals:**
+---
 
-For `find_by_purpose("authentication")`, the scorer queries the graph with weighted contributions from:
+## Part 6 — Autonomous Feedback Loop
 
-| Signal | Weight | What it does |
-|--------|--------|--------------|
-| Name match | 0.25 | File name / path contains "auth" |
-| Path match | 0.15 | File is in a directory named `auth/` |
-| Description match | 0.30 | `metadata["description"]` contains "authentication" — set by manifest extraction OR LLM's `assert` |
-| Import signals | 0.15 | File imports things matching `*auth*`, `*jwt*`, `*oauth*`, `crypto/*` (configurable signal hints in rules.yaml) |
-| Symbol match | 0.10 | File defines symbols matching the term |
-| Hotness (read freq) | 0.05 | File has been read often when authentication topics were queried (Layer 6 feedback) |
+### 6.1 Why signals must be LLM-agnostic
 
-Weights are **configurable** in `swl.rules.yaml`. The scorer returns top-K with their score breakdown so the LLM (and humans) can see why each result was chosen.
+Different LLMs and agents working the same workspace exhibit different tendencies: some re-ask when results are poor, some accept wrong answers silently, some hallucinate on top of stale SWL data, some ignore SWL entirely. Any signal derived from LLM behavioral inference ("it didn't re-ask, so the result was useful") is unreliable across the agent population and would corrupt the feedback loop.
 
-**This is what actually answers "where is the file that does X?" in a workspace-agnostic way** — and it does so without a description column, without LLM calls, and without any hardcoded language assumption. Multiple signals compensate for any single one being absent.
+All signals are grounded in **workspace actions** — what actually happened to files and entities — not in observations of LLM decision-making.
 
-**Files:** rewrite `query.go`; new `pkg/swl/scorer.go`; intent patterns in `rules_default.yaml`; preserved query_swl tool surface.
+### 6.2 Observable signals
 
-### Layer 6 — Feedback Loop (NEW + activates dormant infra)
+| Signal | Observable fact | How captured |
+|--------|----------------|--------------|
+| Tool follow-through | After SWL returns entity X, agent calls `read_file(X)` or `write_file(X)` | `PostHook` correlates prior query results with subsequent tool calls in the same session |
+| Assertion event | Agent calls `query_swl {assert:...}` | Explicit fact injection; tagged with source agent session ID |
+| Assertion confirmation | Later agent asserts same fact independently | Confidence strengthened; source agents recorded |
+| Contradiction | Agent B asserts fact conflicting with Agent A's assertion | Both recorded with agent ID; confidence of conflicting fact halved; surfaced in gaps |
+| Cross-agent convergence | ≥N distinct agents touch same entity under same semantic context | Label promoted toward `verified` |
+| Decay signal | Entity not touched by any agent in M sessions | Label confidence decays; candidate for gap surfacing |
 
-**Purpose:** Make SWL self-improving in a deterministic, local, cheap way.
+### 6.3 Autonomous adjustment loop
 
-**What gets observed:**
+Runs on the same probabilistic cadence as existing `maybeDecay()`. No human or LLM intervention required.
 
-Three event streams, all written to existing `events` table (currently dormant):
+| Trigger | Action |
+|---------|--------|
+| Entity touched by ≥3 distinct agents with same label | Label confidence → `verified` |
+| Assertion contradicted by ≥2 subsequent agents | Confidence halved; `fact_status: stale`; surfaced in `query_swl {gaps:true}` |
+| Entities co-occurring in ≥4 sessions | Auto `co_occurs_with` edge recorded (relationship noted, no label forced) |
+| Rule fired ≥200× with useful_ratio < 0.05 | Rule removed from active set; retained in DB for audit |
+| Query returning 0 results, repeated ≥3× | Appears in `query_swl {gaps:true}` with suggestion to assert or add rule |
+| Entity hotness not renewed for M sessions | Hotness decays; detail extraction budget returns to cold baseline |
 
-1. `tool_call` events (already triggered, just need INSERT) — every tool call flows through `PostHook`; record it
-2. `query` events — every `query_swl` invocation, with the question, intent matched, results count, top result IDs
-3. `assert` events — every `query_swl {assert:...}` records a fact; capture this for confidence calibration
+All thresholds are configurable under `feedback_thresholds` in `swl.rules.yaml`.
 
-**What gets adjusted (deterministic rules, no ML):**
+### 6.4 Multi-agent awareness
 
-| Observation | Adjustment |
-|-------------|------------|
-| Query returned ≥1 result, LLM didn't immediately re-query the same thing | Mark top-K result entities as "useful" (+1 useful_count); rules that produced them get +1 useful firing |
-| Query returned 0 results | Record gap: `(question, intent, terms)` in `query_gaps` table. If same gap appears N≥3 times, surface it in `query_swl {gaps:true}` as a candidate for `assert` or rule extension |
-| Entity returned by ≥M queries in a session | Promote to "hot" — `hotness` field in metadata; future detail-extraction passes use larger budget |
-| Rule fired N≥50 times with useful_ratio < 0.05 | Demote: drop from active rule set (remains in DB) |
-| LLM `asserts` a description for entity X | Store as high-confidence fact; if X already had an extracted description, mark conflict for review |
-| File's content_hash changed since last useful query | Re-trigger Layer 2 detail extraction proactively (only if hot) |
+Each tool call, query, and assertion is tagged with the source agent session ID. The graph accumulates per-agent evidence. Convergence across agents — not any single agent's confidence — is the primary signal of verified semantic knowledge.
 
-**No ML, no LLM calls.** Just counters in SQLite, threshold checks at query time, and adjustments at extraction time.
-
-**Self-improvement materializes as:**
-- The graph gets richer where the LLM is actively working (hot files), shallower where it isn't
-- Rules that work get stronger; rules that don't get pruned
-- Repeated query failures become explicit gaps the LLM can fill via `assert`
-- The system shape *adapts to the workspace and the work* over time
-
-**Files:** new `pkg/swl/feedback.go`; new `query_gaps` and `rule_stats` tables in `db.go`; INSERT calls in `inference.go` and `query.go`; periodic adjustment runs from `decay.go`-style background loops.
+> **Next iteration remark:** per-agent reliability profiles. SWL accumulates enough cross-agent evidence (assertion confirmation rates, contradiction frequency, hallucination vs. verified-fact alignment) to build per-model quality scores over time. This enables weighted initial confidence for assertions (higher-reliability agent's facts start higher) and surfaces as a standalone LLM quality diagnostic capability.
 
 ---
 
-## Part 5 — Phased Execution
+## Part 7 — Phase Sequencing
 
-Three phases, each independently shippable. Order chosen so each phase delivers immediate user-visible value.
+### Phase A — Correct behavior, hardcoded internally
+**Goal:** immediate value. Fix extraction and query so the system works correctly. Logic is still in code; rules are not yet externalized.
 
-### Phase A — Manifest + Lazy Detail (the immediate quick win)
+**Changes:**
 
-**Delivers:**
-- Immediate semantic intelligence at session start (Layer 1)
-- Eliminates the 20k-symbol bloat (Layer 2 lazy)
-- These two are designed *together* because the v1 conflict only resolves when both ship at once
+| File | Change |
+|------|--------|
+| `pkg/swl/snapshot.go` (new) | `BuildSnapshot(workspace) *GraphDelta`: produces bounded semantic snapshot — semantic areas, anchor documents, content profile, key relations, explicit goals |
+| `pkg/swl/scanner.go` | Replace per-file `ExtractContent()` call in walk loop with `BuildSnapshot()` + structural file/dir indexing only |
+| `pkg/swl/inference.go` | Preserve all existing `postApplyReadFile`, `postApplyWriteFile` etc. call sites — detail still extracted on tool touch |
+| `pkg/swl/session.go` | Augment `SessionResume()` to surface snapshot entities in the digest |
+| `pkg/swl/query.go` | Add intent-aware Tier 1 patterns: workspace purpose, area contents, file detail, stated goals, content profile. Fix `askSymbols` etc. to return "not yet read" notice for unread files |
+| `pkg/swl/entity.go` | Fix `access_count`: increment on entity *reads* (returned by query), not on upsert |
+| `pkg/swl/inference.go` | Activate `events` table INSERT from `PostHook` for every tool call |
+| `pkg/swl/db.go` | Add `query_gaps` table |
 
-**Concrete changes:**
-1. New `pkg/swl/manifest.go` with `BuildManifest(workspace)` returning a `GraphDelta` of ≤200 entities
-2. Refactor `scanner.go ScanWorkspace()`: drop the per-file `ExtractContent` call inside the walk loop; replace with a manifest pass + structural file/dir indexing only
-3. Preserve `ExtractContent` and keep its existing call sites in `inference.go` (`postApplyReadFile`, `postApplyWriteFile`) — detail still gets extracted on tool touch
-4. Augment `session.go SessionResume()` to surface manifest entities in the resume digest
-5. Add `query_swl {manifest:true}` mode that returns the manifest entities formatted for LLM consumption
-6. Add Tier 1 patterns in `query.go` for "what is the project goal/purpose/about", "what kind of project is this", "what are the entry points" — backed by manifest entities
-
-**What's preserved:** All existing entity types, all existing public APIs, all upsert invariants, all hooks integration. Detail extraction still happens — just on tool call, not on scan.
-
-**Verification:**
-- Scan picoclaw itself with `query_swl {scan:true}` → entity count ≤ 500 (vs. 20k+ today)
-- `query_swl {question:"what is the project goal?"}` → returns project description
-- `query_swl {question:"functions in pkg/swl/manager.go"}` after `read_file` on it → returns symbols
-- Same query *before* `read_file` → returns "file not yet read in detail; ask the agent to read it" notice
-- Performance: manifest build on a 1000-file workspace completes in < 2s on rpi 0 2w (target)
-
-### Phase B — Rules Engine + Ontology (eliminates hardcoding)
-
-**Delivers:**
-- All extraction logic becomes data-driven (Layer 3)
-- Workspace-level rules.yaml override
-- Ontology declares typed vocabulary (Layer 4)
-- 123 hardcoded items move to `rules_default.yaml`
-
-**Concrete changes:**
-1. New `pkg/swl/rules.go` engine: parses YAML, applies selectors, runs actions
-2. New `pkg/swl/rules_default.yaml` embedded via `go:embed` — reproduces current behavior bit-for-bit
-3. Workspace override: `{workspace}/.swl/rules.yaml` deep-merges with defaults
-4. Rewrite `extractor.go` internals to consume rules; preserve all function signatures
-5. Rewrite `inference.go toolMap` as a rules section (`tool_rules`); preserve `RegisterToolHandler` for programmatic Layer 0 escape hatch
-6. Rewrite `scanner.go` skip logic to consume `ignores` section
-7. New `pkg/swl/ontology.go` loaded from rules.yaml
-8. New `rule_stats` table to track fire/useful counters
-
-**What's preserved:** Default behavior identical to v1 SWL when no workspace rules.yaml present. All existing config.go fields continue to work (mapped to rules engine internally).
+**Preserved:** all public APIs, all upsert invariants, all hooks integration, all existing `query_swl` modes.
 
 **Verification:**
-- Diff of entities produced by current SWL vs. rules-engine SWL on the same scan → identical
-- Add a `.tf` (Terraform) FileRule in workspace rules.yaml with `resource\s+"[^"]+"\s+"([^"]+)"` symbol pattern → scanner extracts Terraform resources without code change
-- Add an ignore pattern `examples/**` → next scan respects it
-- Define a new ontology type `APIEndpoint` with required `metadata.method` → assert one via `query_swl {assert:..., type:"APIEndpoint"}` → ontology validates
-
-### Phase C — Multi-signal Query + Feedback (semantic + self-improving)
-
-**Delivers:**
-- Query engine answers semantic questions via signal scoring (Layer 5)
-- Activates events, access tracking, rule stats for feedback (Layer 6)
-- Gaps detection surfaces what SWL doesn't know
-
-**Concrete changes:**
-1. New `pkg/swl/scorer.go` implementing multi-signal scoring with configurable weights
-2. Rewrite `query.go` Ask(): intent decomposition → scorer dispatch → ranked results
-3. Preserve all existing Tier 1 patterns; they become intent templates
-4. New `pkg/swl/feedback.go` observing queries, inserting events, adjusting hotness
-5. Fix `access_count`: increment on every entity *returned by query* (not on upsert)
-6. Activate `events` table writes from `inference.go PostHook`
-7. New `query_gaps` table; surface gaps in `query_swl {gaps:true}` (replaces / extends current KnowledgeGaps)
-8. Periodic adjustment: rule cold/hot promotion runs alongside `maybeDecay()`
-
-**What's preserved:** All existing query_swl modes, all existing Tier 1/2/3 dispatch logic remains as fallback for unmatched intents.
-
-**Verification:**
-- `query_swl {question:"where is the file that does authentication?"}` returns scored results with breakdown, even when no file has "auth" literally in its name
-- After 5 sessions of working in `pkg/swl/`, querying `query_swl {stats:true}` shows hot entities biased toward swl files
-- Asking for a known-impossible thing 3 times → appears in `query_swl {gaps:true}` with suggestion to assert
-- A custom rule that fires 100× but never produces queried entities is auto-demoted on next manager init
+- Scan the picoclaw workspace → entity count ≤ 300
+- `query_swl {question:"what is this workspace for?"}` → returns description from README
+- `query_swl {question:"what does pkg/swl/manager.go do?"}` before `read_file` → "not yet read in detail" notice
+- Same query after `read_file` on that file → returns symbols and content
+- `query_swl {stats:true}` after querying several entities → `access_count` on returned entities > 0
+- `query_swl {snapshot:true}` → structured semantic overview
 
 ---
 
-## Part 6 — What Is Explicitly NOT in Scope
+### Phase B — Configurable (generic)
+**Goal:** move all hardcoded extraction and query logic to `swl.rules.yaml` and `swl.query.yaml`. Zero behavioral change when no workspace overrides present.
 
-These are deliberately deferred, even though they're tempting:
+**Changes:**
 
-- LLM-call-at-scan-time for richer descriptions (violates "minimize LLM requests")
-- Vector embeddings / semantic search beyond multi-signal scoring (RPi-class hardware budget)
-- Constraint enforcement that blocks writes (Phase 4 ontology is advisory; enforcement is post-quick-win)
+| File | Change |
+|------|--------|
+| `pkg/swl/rules.go` (new) | Rules engine: loads `swl.rules.yaml`, deep-merges workspace `{workspace}/.swl/rules.yaml`, applies selectors and actions |
+| `pkg/swl/rules_default.yaml` (new, embedded) | Built-in defaults reproducing Phase A behavior exactly |
+| `pkg/swl/query_engine.go` (new) | Intent dispatcher consuming `swl.query.yaml`; replaces hardcoded Tier 1 pattern slice |
+| `pkg/swl/swl_query_default.yaml` (new, embedded) | Built-in query intents reproducing Phase A query behavior |
+| `pkg/swl/extractor.go` | Rewrite internals to consume file_rules from rules engine; all function signatures preserved |
+| `pkg/swl/scanner.go` | Rewrite skip logic, anchor detection, area classification to consume rules |
+| `pkg/swl/inference.go` | Rewrite `toolMap` as `tool_rules` consumed from rules engine; preserve `RegisterToolHandler` as Layer 0 escape hatch |
+| `pkg/swl/db.go` | Add `rule_stats` table: `rule_id`, `fire_count`, `useful_count` |
+| `pkg/config/swl.go` | Add `RulesPath`, `QueryPath` fields; existing Config fields mapped to rules engine internally |
+
+**Verification:**
+- Entity diff: Phase A vs Phase B on same workspace scan → identical output
+- Add `.tf` `file_rule` with Terraform `resource\s+"[^"]+"\s+"([^"]+)"` symbol pattern → extracts Terraform resources, no code change
+- Add `ignores.patterns: ["examples/**"]` → respected on next scan
+- Add new intent pattern in `swl.query.yaml` → dispatched correctly
+- Add workspace-specific semantic area signal → fires on matching directories
+
+---
+
+### Phase C — Self-improving
+**Goal:** activate the autonomous feedback loop; make SWL improve with use across sessions and agents.
+
+**Changes:**
+
+| File | Change |
+|------|--------|
+| `pkg/swl/feedback.go` (new) | Observes tool follow-through, records signals, runs adjust loop alongside `maybeDecay()` |
+| `pkg/swl/session.go` | Tag each tool call and assertion with source agent session ID |
+| `pkg/swl/entity.go` | Contradiction detection in `UpsertEntity`: flag conflicting assertions from different agents |
+| `pkg/swl/query.go` | Gap recording: failed queries → `query_gaps` table; `query_swl {gaps:true}` surfaces them |
+| `pkg/swl/db.go` | Add `agent_stats` table for per-agent fact tracking (foundation for next-iteration quality profiles) |
+| `pkg/swl/tool.go` | Add `query_swl {convergence:true}` mode: shows cross-agent confirmed facts |
+
+**Verification:**
+- Work in the same file across 3 sessions with different agent configs → labels promoted to `verified`
+- Assert contradictory facts from two sessions → conflict appears in `query_swl {gaps:true}`
+- Query something SWL doesn't know 3× → surfaces as gap with suggestion
+- Cold rule after 200 firings → removed from active rule set
+
+---
+
+## Part 8 — Not In Scope (this refactoring)
+
+- LLM calls at scan time for descriptions (Tier 2 passive capture covers this for free during real work)
+- Vector embeddings / semantic similarity (RPi memory budget)
+- Strict ontology enforcement with write rejection (advisory labelling is sufficient for v2)
 - Cross-workspace federation
-- Rule-learning from LLM responses (would require an LLM); workspace authors and feedback-driven demotion are sufficient for v2
-- Schema migration framework (manual upgrade is fine for now; tables are additive)
+- Schema migration framework (tables are additive; manual upgrade is fine)
+- Automatic rule generation (SWL surfaces gaps and suggestions; a human or the LLM writes new rules)
 
 ---
 
-## Part 7 — Open Questions to Resolve Before Phase A
+## Part 9 — Next Iteration Remarks
 
-These need user input. Each affects design choices that ripple through the plan.
+> These are design-level decisions deferred to the next version, not forgotten.
 
-1. **Manifest depth:** Should the manifest layer parse README/markdown content into Document entities (richer description, but more entities), or only treat them as opaque files with extracted descriptions (leaner)?
-2. **Rule format:** YAML or JSON for `swl.rules.yaml`? YAML is more authorable for humans/LLM; JSON is faster to parse and matches existing config style.
-3. **Backward compatibility horizon:** Should the v1 `Config.ExtractSymbolPatterns` etc. continue to work as-is forever, or is there an opportunity to deprecate them in favour of pure rules.yaml after Phase B?
-4. **Rule learning:** In Phase C feedback, when SWL detects a recurring gap, should it (a) just surface it for the LLM to handle via `assert`, or (b) propose a candidate rule (selector + action) for the LLM/user to accept? (b) is more powerful but more complex.
-5. **Hotness reset:** Should hotness counters reset per session, decay over time, or persist forever? Decay matches the rest of SWL's philosophy.
-6. **Ontology strictness:** Advisory (warn-only) for v2 is proposed; confirm this is acceptable, or do you want enforcement (reject writes) from the start?
-
----
-
-## Summary of Why This Plan Is Different from v1
-
-| Concern | v1 Approach | v2 Approach |
-|---------|-------------|-------------|
-| Bloat fix | "Don't extract on scan" → killed immediate intelligence | Manifest layer + lazy detail; both ship together |
-| Hardcoding fix | "Add config fields" → still leaves regex/tool-map in code | Rules engine: behavior is data; rules.yaml drives everything |
-| Description gap | "Add a description column, extract first comment" | Multi-signal scoring across name+path+imports+symbols+asserts+usage; description is one signal among many, never required |
-| Query gap | "Add Tier 1 patterns for project goal" | Intent-driven decomposition + scoring; covers an open-ended class of questions, not a few new patterns |
-| Self-improvement | "Fix access_count to count reads" | Full feedback loop: query/result/firing observations → rule weight + entity hotness → adaptive extraction depth + gap surfacing |
-| Ontology | not addressed | Typed vocabulary (advisory v2, enforceable later); foundation for semantic reasoning |
-
-The v1 plan was a list of patches; v2 confronts the architectural failures. Each layer is independently shippable, none breaks existing APIs, and the three phases together close the gap between current SWL and the original vision: a generic, configurable, self-improving invisible brain.
+1. **Unify `swl.rules.yaml` and `swl.query.yaml`** into a single configuration file once the separation has proven itself in practice
+2. **Per-agent reliability profiles** — use accumulated assertion confirmation/contradiction evidence to build per-model confidence weights; surfaces as standalone LLM quality diagnostic
+3. **Ontology enforcement** — promote from advisory label warnings to write-rejection for declared type/relation constraints
+4. **Pattern learning** — promote frequently-useful LLM assertions into candidate rules; surface for human/LLM review and promotion
+5. **Active LLM indexing on capable hardware** — expose Tier 3 configuration properly; test on workspaces where pre-indexing pays off
