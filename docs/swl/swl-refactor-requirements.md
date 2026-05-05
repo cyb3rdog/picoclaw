@@ -10,3 +10,5 @@ the swl was meant to be generic, universal, adaptable and configurable, self imp
 ## Addendum 1
 
 design should understand the reality of how different LLMs can behave. it should systematically cover the understanding that different agents/LLM models working in same workspace might have different tentions and keen to different drifts and halucinations and actions, and outcomes. the SWL should smartly address this fact by design. aim is to implement a systematic autonomous semantic layer with autonomous self-improvement loops.
+
+> Next iteration remark: consider SWL observability extension for independent per-model/agent quality rating and evaluation — SWL accumulates enough cross-agent evidence (assertion confirmation rates, contradiction frequency, hallucination vs. verified-fact alignment) to build a per-model reliability profile over time. This could be used to weight assertions from different models differently, and surfaces as a standalone diagnostic capability.
