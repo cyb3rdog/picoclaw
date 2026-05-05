@@ -23,6 +23,7 @@ func (h *Handler) registerSWLRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/swl/stats", h.handleSWLStats)
 	mux.HandleFunc("GET /api/swl/health", h.handleSWLHealth)
 	mux.HandleFunc("GET /api/swl/sessions", h.handleSWLSessions)
+	mux.HandleFunc("GET /api/swl/overview", h.handleSWLOverview)
 	mux.HandleFunc("GET /api/swl/stream", h.handleSWLStream)
 }
 
@@ -702,6 +703,139 @@ func (h *Handler) handleSWLSessions(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(sessions) //nolint:errcheck
 }
 
+// --- Overview endpoint (combined stats + health + sessions in one DB connection) ---
+
+type swlOverviewData struct {
+	Stats    swlStatsData    `json:"stats"`
+	Health   swlHealthData   `json:"health"`
+	Sessions []swlSessionRow `json:"sessions"`
+}
+
+func (h *Handler) handleSWLOverview(w http.ResponseWriter, r *http.Request) {
+	dbPath, err := h.swlDBPath()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	out := swlOverviewData{
+		Stats:    swlStatsData{DBPath: dbPath, Rows: make([]swlStatRow, 0)},
+		Health:   swlHealthData{Level: "empty", Message: "SWL database not found."},
+		Sessions: make([]swlSessionRow, 0),
+	}
+
+	db, err := openSWLReadOnly(dbPath)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(out) //nolint:errcheck
+		return
+	}
+	defer db.Close()
+
+	// Stats
+	srows, serr := db.QueryContext(r.Context(), `
+		SELECT type,
+		       COUNT(*),
+		       SUM(CASE WHEN fact_status='verified' THEN 1 ELSE 0 END),
+		       SUM(CASE WHEN fact_status='stale'    THEN 1 ELSE 0 END),
+		       SUM(CASE WHEN fact_status='unknown'  THEN 1 ELSE 0 END)
+		FROM entities GROUP BY type ORDER BY COUNT(*) DESC
+	`)
+	if serr == nil {
+		defer srows.Close()
+		for srows.Next() {
+			var sr swlStatRow
+			if srows.Scan(&sr.Type, &sr.Total, &sr.Verified, &sr.Stale, &sr.Unknown) == nil {
+				out.Stats.Rows = append(out.Stats.Rows, sr)
+			}
+		}
+	}
+	db.QueryRowContext(r.Context(), "SELECT COUNT(*) FROM edges").Scan(&out.Stats.EdgeCount) //nolint:errcheck
+
+	// Health
+	var totalEntities, verified, stale, unknown int
+	db.QueryRowContext(r.Context(), `
+		SELECT
+			COUNT(*),
+			SUM(CASE WHEN fact_status='verified' THEN 1 ELSE 0 END),
+			SUM(CASE WHEN fact_status='stale'    THEN 1 ELSE 0 END),
+			SUM(CASE WHEN fact_status='unknown'  THEN 1 ELSE 0 END)
+		FROM entities WHERE fact_status != 'deleted'
+	`).Scan(&totalEntities, &verified, &stale, &unknown) //nolint:errcheck
+
+	var edgeCount int
+	db.QueryRowContext(r.Context(), "SELECT COUNT(*) FROM edges").Scan(&edgeCount) //nolint:errcheck
+
+	var dbSize int64
+	if info, statErr := os.Stat(dbPath); statErr == nil {
+		dbSize = info.Size()
+	}
+
+	var verifiedPct, stalePct float64
+	if totalEntities > 0 {
+		verifiedPct = float64(verified) / float64(totalEntities) * 100
+		stalePct = float64(stale) / float64(totalEntities) * 100
+	}
+
+	score := 0.0
+	if totalEntities > 0 {
+		staleFrac := float64(stale) / float64(totalEntities)
+		unknownFrac := float64(unknown) / float64(totalEntities)
+		score = 1.0 - (staleFrac * 0.5) - (unknownFrac * 0.2)
+		if score < 0 {
+			score = 0
+		}
+	}
+
+	level := "good"
+	switch {
+	case totalEntities == 0:
+		level = "empty"
+	case score < 0.5:
+		level = "poor"
+	case score < 0.75:
+		level = "fair"
+	case score < 0.9:
+		level = "good"
+	default:
+		level = "excellent"
+	}
+
+	out.Health = swlHealthData{
+		Score:       score,
+		Level:       level,
+		EntityCount: totalEntities,
+		VerifiedPct: verifiedPct,
+		StalePct:    stalePct,
+		EdgeCount:   edgeCount,
+		DBSizeBytes: dbSize,
+		Message:     fmt.Sprintf("%d entities, %.0f%% verified, %.0f%% stale", totalEntities, verifiedPct, stalePct),
+	}
+
+	// Sessions
+	rrows, rerr := db.QueryContext(r.Context(), `
+		SELECT id, started_at, ended_at, goal, summary
+		FROM sessions ORDER BY started_at DESC LIMIT 50
+	`)
+	if rerr == nil {
+		defer rrows.Close()
+		for rrows.Next() {
+			var s swlSessionRow
+			var endedAt, goal, summary sql.NullString
+			if rrows.Scan(&s.ID, &s.StartedAt, &endedAt, &goal, &summary) != nil {
+				continue
+			}
+			s.EndedAt = endedAt.String
+			s.Goal = goal.String
+			s.Summary = summary.String
+			out.Sessions = append(out.Sessions, s)
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(out) //nolint:errcheck
+}
+
 // --- SSE stream endpoint ---
 
 func (h *Handler) handleSWLStream(w http.ResponseWriter, r *http.Request) {
@@ -742,79 +876,90 @@ func (h *Handler) handleSWLStream(w http.ResponseWriter, r *http.Request) {
 		db.QueryRowContext(r.Context(), "SELECT COALESCE(MAX(modified_at),'') FROM entities").Scan(&lastModAt) //nolint:errcheck
 	}
 
-	ticker := time.NewTicker(2 * time.Second)
-	defer ticker.Stop()
+	const (
+		minInterval = 2 * time.Second
+		maxInterval = 10 * time.Second
+	)
+	interval := minInterval
 
 	for {
 		select {
 		case <-r.Context().Done():
 			return
-		case <-ticker.C:
-			// Reconnect if DB became available after initial connection attempt.
-			if db == nil {
-				if db2, _ := openSWLReadOnly(dbPath); db2 != nil {
-					db = db2
-					db.QueryRowContext(r.Context(), "SELECT COALESCE(MAX(modified_at),'') FROM entities").Scan(&lastModAt) //nolint:errcheck
-				}
-				continue
-			}
-
-			var maxModAt string
-			db.QueryRowContext(r.Context(), "SELECT COALESCE(MAX(modified_at),'') FROM entities").Scan(&maxModAt) //nolint:errcheck
-
-			if maxModAt == "" || maxModAt == lastModAt {
-				continue
-			}
-
-			// FIX: Cursor-based pagination — advance watermark only after query succeeds
-			// Query all entities modified SINCE the previous watermark (not AT the new one).
-			// This ensures convergence: if 100 entities share the same timestamp,
-			// poll 1 advances to that timestamp, poll 2 picks up the remainder.
-			rows, err := db.QueryContext(r.Context(), `
-				SELECT id, type, name, confidence, fact_status, knowledge_depth, access_count, metadata, modified_at
-				FROM entities WHERE modified_at > ? ORDER BY modified_at ASC LIMIT 100`,
-				lastModAt,
-			)
-			if err != nil {
-				continue
-			}
-
-			var updates []swlNode
-			var lastProcessedModAt string
-			for rows.Next() {
-				var n swlNode
-				var metaStr string
-				var rowModAt string
-				if rows.Scan(&n.ID, &n.Type, &n.Name, &n.Confidence,
-					&n.FactStatus, &n.KnowledgeDepth, &n.AccessCount, &metaStr, &rowModAt) == nil {
-					n.Name = swlShortName(n.Name)
-					if metaStr != "" && metaStr != "{}" {
-						_ = json.Unmarshal([]byte(metaStr), &n.Metadata)
-					}
-					if rowModAt != "" {
-						lastProcessedModAt = rowModAt
-					}
-					updates = append(updates, n)
-				}
-			}
-			rows.Close()
-
-			// Advance watermark to the last processed row's modified_at from the DB column.
-			if len(updates) > 0 && lastProcessedModAt != "" {
-				lastModAt = lastProcessedModAt
-			}
-
-			if len(updates) == 0 {
-				continue
-			}
-
-			payload, _ := json.Marshal(map[string]any{
-				"type":  "delta",
-				"nodes": updates,
-			})
-			fmt.Fprintf(w, "data: %s\n\n", payload)
-			flusher.Flush()
+		case <-time.After(interval):
 		}
+
+		// Reconnect if DB became available after initial connection attempt.
+		if db == nil {
+			if db2, _ := openSWLReadOnly(dbPath); db2 != nil {
+				db = db2
+				db.QueryRowContext(r.Context(), "SELECT COALESCE(MAX(modified_at),'') FROM entities").Scan(&lastModAt) //nolint:errcheck
+			}
+			continue
+		}
+
+		var maxModAt string
+		db.QueryRowContext(r.Context(), "SELECT COALESCE(MAX(modified_at),'') FROM entities").Scan(&maxModAt) //nolint:errcheck
+
+		if maxModAt == "" || maxModAt == lastModAt {
+			// No change — back off up to maxInterval
+			if interval < maxInterval {
+				interval *= 2
+				if interval > maxInterval {
+					interval = maxInterval
+				}
+			}
+			continue
+		}
+
+		// Cursor-based pagination — advance watermark only after query succeeds.
+		// Query entities modified SINCE the previous watermark (not AT the new one).
+		rows, err := db.QueryContext(r.Context(), `
+			SELECT id, type, name, confidence, fact_status, knowledge_depth, access_count, metadata, modified_at
+			FROM entities WHERE modified_at > ? ORDER BY modified_at ASC LIMIT 100`,
+			lastModAt,
+		)
+		if err != nil {
+			continue
+		}
+
+		var updates []swlNode
+		var lastProcessedModAt string
+		for rows.Next() {
+			var n swlNode
+			var metaStr string
+			var rowModAt string
+			if rows.Scan(&n.ID, &n.Type, &n.Name, &n.Confidence,
+				&n.FactStatus, &n.KnowledgeDepth, &n.AccessCount, &metaStr, &rowModAt) == nil {
+				n.Name = swlShortName(n.Name)
+				if metaStr != "" && metaStr != "{}" {
+					_ = json.Unmarshal([]byte(metaStr), &n.Metadata)
+				}
+				if rowModAt != "" {
+					lastProcessedModAt = rowModAt
+				}
+				updates = append(updates, n)
+			}
+		}
+		rows.Close()
+
+		if len(updates) > 0 && lastProcessedModAt != "" {
+			lastModAt = lastProcessedModAt
+		}
+
+		if len(updates) == 0 {
+			continue
+		}
+
+		// Activity detected — reset to minimum interval
+		interval = minInterval
+
+		payload, _ := json.Marshal(map[string]any{
+			"type":  "delta",
+			"nodes": updates,
+		})
+		fmt.Fprintf(w, "data: %s\n\n", payload)
+		flusher.Flush()
 	}
 }
 

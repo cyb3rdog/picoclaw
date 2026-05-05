@@ -69,6 +69,12 @@ export interface SWLHealth {
   message: string
 }
 
+export interface SWLOverview {
+  stats: SWLStats
+  health: SWLHealth
+  sessions: SWLSession[]
+}
+
 /** UI view modes.
  *  "map"          — general graph, top 500 quality-ranked nodes
  *  "overview"     — structural graph, no Symbol/Section, ~150 nodes
@@ -108,6 +114,12 @@ export const swlApi = {
   async getHealth(): Promise<SWLHealth> {
     const res = await launcherFetch("/api/swl/health")
     if (!res.ok) throw new Error(`SWL health: ${res.status}`)
+    return res.json()
+  },
+
+  async getOverview(): Promise<SWLOverview> {
+    const res = await launcherFetch("/api/swl/overview")
+    if (!res.ok) throw new Error(`SWL overview: ${res.status}`)
     return res.json()
   },
 

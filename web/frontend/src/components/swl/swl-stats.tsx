@@ -6,6 +6,7 @@ import {
   type SWLNode,
   type SWLSession,
   type SWLStats as SWLStatsData,
+  type SWLOverview,
 } from "@/api/swl"
 import { NODE_COLORS } from "./swl-graph"
 
@@ -29,26 +30,16 @@ interface Props {
 }
 
 export function SWLStats({ selectedNode, hiddenTypes, onToggleType, onClearFilter }: Props) {
-  const { data: stats } = useQuery<SWLStatsData>({
-    queryKey:       ["swl-stats"],
-    queryFn:        swlApi.getStats,
-    refetchInterval: 15_000,
+  const { data: overview } = useQuery<SWLOverview>({
+    queryKey:        ["swl-overview"],
+    queryFn:         swlApi.getOverview,
+    refetchInterval: 20_000,
     retry:           false,
   })
 
-  const { data: health } = useQuery<SWLHealth>({
-    queryKey:       ["swl-health"],
-    queryFn:        swlApi.getHealth,
-    refetchInterval: 30_000,
-    retry:           false,
-  })
-
-  const { data: sessions } = useQuery<SWLSession[]>({
-    queryKey:       ["swl-sessions"],
-    queryFn:        swlApi.getSessions,
-    refetchInterval: 30_000,
-    retry:           false,
-  })
+  const stats    = overview?.stats
+  const health   = overview?.health
+  const sessions = overview?.sessions
 
   return (
     <div className="space-y-4 p-3 text-xs">
