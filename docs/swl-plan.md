@@ -1,15 +1,22 @@
 # SWL Development Plan
 **Branch:** `claude/merge-swl-fixes-assessment-Y67DP`
 **Based on:** `swl-fixes` merge + full codebase audit + optimization assessment review
+**Last updated:** 2026-05-05
 
 ---
 
 ## Scope & Non-Goals
 
-This plan covers what to fix and build next in the Semantic Workspace Layer.
-Items explicitly excluded are marked **[SKIP]** with rationale.
+SWL is a **lightweight SQLite knowledge graph** that extracts entities and edges
+from agent tool calls to give the agent spatial awareness of the workspace.
+It is **not** a search engine, embedding store, AST parser, or UI dashboard.
+
+All plan items are evaluated against that purpose. Over-engineered or
+architecturally invasive items are skipped with explicit rationale.
+
 Items confirmed complete are marked **[DONE]**.
 Items partially done are marked **[PARTIAL]**.
+Items excluded are marked **[SKIP]** with rationale.
 
 ---
 
@@ -41,29 +48,33 @@ unchanged files no longer cause spurious cache misses.
 
 ## Phase 2 — Agent Awareness (Configurable, Experimental)
 
-### 2.1 Agent awareness ping [TODO — last, experimental]
-Short per-turn inline ping when `tools.swl.inject_awareness: true` (default false).
-Deferred — needs stable graph quality first.
+### 2.1 Agent awareness ping [TODO — experimental, last]
+Short per-turn inline ping injected when `tools.swl.inject_awareness: true`
+(default false). **Do not implement until graph quality is stable.**
+
+**Concrete scope when ready:**
+- In `session.go:SessionResume()`, after updating the session row, if the config
+  flag is on, return a 1–2 sentence hint string (top 3 stale files + entity count)
+  to be prepended to the system prompt. No new DB tables.
+- Gate entirely behind `InjectSessionHint *bool` (already in `SWLToolConfig`).
 
 ### 2.2 [SKIP] Richer SessionResume output
-Intentional. Injecting entity lists expands context without guaranteed relevance.
+Injecting entity lists expands context without guaranteed relevance. Rejected.
 
 ### 2.3 [SKIP] PreHook constraint system
-Deferred until 2.1 is proven stable.
+Depends on 2.1 being proven useful first. Deferred indefinitely.
 
 ### 2.4 Query freetext fallback — Tier 3 [DONE]
-`Ask()` now dispatches through Tier 1 (18 regex patterns) → Tier 2 (named SQL
-templates) → Tier 3 (freetext: multi-AND LIKE on entity names, stop-words filtered,
-≤3 terms, 15 results). Implemented in `query.go`.
+`Ask()` dispatches Tier 1 (18 regex patterns) → Tier 2 (named SQL templates)
+→ Tier 3 (multi-AND LIKE on entity names, ≤3 terms, 15 results). In `query.go`.
 
 ---
 
 ## Phase 3 — Data Quality
 
 ### 3.1 Path normalization end-to-end [DONE]
-`TestPathNormalizationIdempotency` confirms all three path forms (absolute, `./rel`,
-bare rel) produce the same entity ID. Scanner boundary check rejects out-of-workspace
-roots.
+`TestPathNormalizationIdempotency` confirms all three path forms produce the same
+entity ID. Scanner boundary check rejects out-of-workspace roots.
 
 ### 3.2 Extraction uniformity [DONE]
 - `postApplyExec`: secondary `ExtractGeneric` pass after `ExtractExec`
@@ -71,278 +82,280 @@ roots.
 - `postApplyAppendFile`: content hash nulled (triggers re-extraction on next read)
 
 ### 3.3 Configurable symbol extraction patterns [DONE]
-`Config.ExtractSymbolPatterns []string` added. `compileSymPatterns()` in `manager.go`
-builds compiled pattern list from config; falls back to package defaults if empty or
-all-invalid. `extractSymbols()` accepts the pattern slice as a parameter.
+`Config.ExtractSymbolPatterns []string` → `compileSymPatterns()` in `manager.go`.
+Falls back to package defaults if empty or all-invalid. Pattern slice threaded
+through to `extractSymbols()`.
 
 ### 3.4 Generic extraction: URL bloat fix + unknown-tool coverage [DONE]
-- `isNoisyURL()` filters localhost, 127.0.0.1, example.com, example.org, example.net,
-  .local at all 5 extraction sites in `extractor.go`
-- URL cap reduced 20→5 per tool call for Layer 3; confidence 0.8→0.75
+- `isNoisyURL()` filters localhost, private IP ranges (10., 192.168., 172.,
+  169.254., 0.0.0.0), [::1], example.com/org/net, placeholder domains (.local,
+  your-domain, yourdomain, mydomain, acme.com) at all 5 extraction sites
+- URL cap reduced 20→5 per tool call; confidence 0.8→0.75
 - `filePathRE` and `backtickFileRE` extract file paths from exec/generic output
 
-### 3.4a URL noise expansion [TODO — quick win from optimization assessment]
-Current `noisyURLHosts` is missing several classes called out in the assessment:
-- IP address ranges: `://0.`, `://1.`, `://10.`, `://192.168.`, `://172.`
-- Non-HTTP schemes: `mailto:`, `tel:`, `data:`, `javascript:`
-- Common CI/CD placeholder domains: `your-domain.com`, `yourdomain.`
-
-**Fix:** Extend `noisyURLHosts` slice with the above. Also add a scheme prefix
-check: reject any URL whose scheme is not `http://` or `https://` (unless it's
-the explicitly fetched URL from `web_fetch`, which has already been validated).
-
 ### 3.5 Stale cascade [HOLD]
-Conservative one-hop cascade retained intentionally. Do not widen until a batch
-re-verification path exists. See open questions.
+Conservative one-hop cascade retained. Do not widen until a batch re-verification
+path exists (requires 2.1 or a background scheduler — neither is implemented).
 
-### 3.6 Relationship inference [TODO — P1 from optimization assessment]
-Currently only `defines`, `imports`, `has_task`, `has_section`, `mentions`,
-`in_dir`, and session-activity edges exist. Several valuable structural edges
-are missing:
+### 3.6 Symbol usage edge [DONE]
+`KnownRelUses EdgeRel = "uses"` added to `types.go`.
+`extractSymbols()` emits a `uses` edge (file→symbol) when `symbolName(` appears
+in the file content more than once (definition + at least one call site). Capped
+at 20 uses-edges per file to prevent hub inflation.
 
-**A. Symbol usage (`uses` edge)**
-When file content mentions a known symbol name followed by `(`, record a lightweight
-`uses` edge from the file to the symbol entity. Cap at 20 uses-edges per file.
-Add `KnownRelUses EdgeRel = "uses"` to `types.go`.
+### 3.7 Confidence calibration [DONE]
+`upsertEntitySQL` in `entity.go` now uses a 3-way CASE for confidence updates:
+- Higher-priority incoming method → adopt incoming confidence
+- Same method → average the two (bounded at 1.0)
+- Lower-priority incoming method → keep higher of the two
+Tests: `TestConfidenceCalibration` covers all three branches.
 
-**B. Directory tree completeness**
-Already have `in_dir` edges (file→dir). Add the inverse: `contains` edge from
-dir to child (already implied; confirm `ExtractDirectory` emits `in_dir`).
-**No new work — already correct.**
+### 3.8 Context-aware symbol patterns — Go only [TODO — P2]
+The generic `symPatterns` list matches too broadly: in Go files it captures struct
+field names (which look like `FieldName Type`) and in Python it matches decorator
+names (e.g. `property`, `staticmethod`) as symbols.
 
-**C. `similar_to` / `related_to` edges [SKIP for now]**
-Requires embedding or Levenshtein; too expensive at extraction time. Defer.
+**Concrete fix (Go only — the most common language in picoclaw's own codebase):**
 
-**D. Dependency chains (transitive imports) [SKIP for now]**
-Tier 2 SQL template `dependency_chain` already computes this at query time with
-a recursive CTE. No graph-level storage needed.
+In `extractor.go`, add a `goSymPatterns []*regexp.Regexp` package-level var:
+```go
+var goSymPatterns = []*regexp.Regexp{
+    regexp.MustCompile(`(?m)^func\s+(?:\([^)]+\)\s+)?([A-Z][A-Za-z0-9_]*)\s*\(`),  // exported func/method
+    regexp.MustCompile(`(?m)^func\s+(?:\([^)]+\)\s+)?([a-z][A-Za-z0-9_]*)\s*\(`),  // unexported func/method
+    regexp.MustCompile(`(?m)^type\s+([A-Za-z][A-Za-z0-9_]*)\s+(?:struct|interface)\b`), // named types only
+    regexp.MustCompile(`(?m)^const\s+([A-Z][A-Za-z0-9_]*)\s*=`),                   // exported const
+}
+```
 
-**Implementation scope for 3.6:** only the `uses` edge (A). Emit it in
-`extractSymbols()` when a symbol name appears in content as `symbolName(`.
+In `extractSymbols()`, check if `lang == "go"` (from `extTopics` detection on
+file extension `.go`) and use `goSymPatterns` instead of the generic list.
+If `m.compiledSymPatterns` is non-empty (operator override), it always takes
+precedence over both lang-specific and generic defaults — no change there.
 
-### 3.7 Confidence calibration [TODO — P1 from optimization assessment]
-Current confidence is monotonically non-decreasing but static at insertion time.
-The assessment correctly identifies that same-method re-observations should
-average rather than just max.
+**Do not add Python patterns yet.** Python's decorator and indentation-based
+scoping make patterns more fragile; add only after Go is verified.
 
-**Fix:** In `upsertEntity` SQL (entity.go), change the `observed`/`stated`/
-`extracted` confidence update rule:
-- If incoming `extraction_method` priority > existing: replace confidence
-- If same priority: `new_conf = (existing + incoming) / 2.0` (bounded at 1.0)
-- If lower priority: no update (existing is better-sourced)
-
-This requires a small extension to the conflict-resolution SQL in `entity.go`.
-
-### 3.8 Context-aware extraction patterns [PARTIAL — TODO]
-`extTopics` map already detects language from file extension and creates a `Topic`
-entity. Symbol extraction uses a single multi-language pattern list (`symPatterns`).
-
-**What's missing:** language-specific pattern tuning. The generic patterns extract
-struct field names in Go as "symbols", and Python decorators create false positives.
-
-**Design:** Add a `langSymPatterns map[string][]*regexp.Regexp` in `extractor.go`
-keyed by lang string from `extTopics`. When present, use the lang-specific slice
-instead of `m.compiledSymPatterns`. Falls back to generic if no lang-specific entry.
-Ship with Go and Python overrides only (the two most common in picoclaw's own codebase).
-Keep the existing `ExtractSymbolPatterns` config override as the operator escape hatch —
-it takes precedence over both lang-specific and generic defaults.
-
-**Do not add more than 2 lang-specific pattern sets initially.** Avoid the language
-bloat the original plan warned about.
+**No new config fields.** The existing `ExtractSymbolPatterns` override is the
+operator escape hatch.
 
 ---
 
-## Phase 4 — Observability [ALL DONE]
+## Phase 4 — Observability
 
 ### 4.1 Inference event logging [DONE]
-- 64-slot ring buffer (`infLog`) on `Manager`
-- `logInferenceEvent()` called in `postApplyReadFile`, `postApplyWriteFile`,
-  `postApplyExec`, and Layer 3 generic path
-- `query_swl {"debug":true}` returns ring buffer as formatted text
-- `recoverSWLHook` logs panics at WARN with `runtime.Stack` dump
+64-slot ring buffer (`infLog`) on `Manager`. `logInferenceEvent()` called in
+`postApplyReadFile`, `postApplyWriteFile`, `postApplyExec`, Layer 3 generic.
+`query_swl {"debug":true}` returns ring buffer. `recoverSWLHook` logs panics at
+WARN with stack dump.
 
 ### 4.2 [SKIP] Events table as inference audit log
-Deferred. Adds write overhead without a clear consumer yet.
+Adds write overhead without a clear consumer. Rejected.
 
 ### 4.3 Graph health endpoint [DONE]
-- `GET /api/swl/health` returns: score (0–1), level (empty/poor/fair/good/excellent),
-  entity count, verified/stale %, edge count, DB size
-- `HealthBadge` component in frontend SWLStats panel polls every 30s
+`GET /api/swl/health` returns score, level, entityCount, verified/stale %,
+edgeCount, dbSizeBytes, message. `HealthBadge` in frontend SWLStats.
 
-### 4.4 Isolated node visibility [TODO — P2 from optimization assessment]
-The assessment notes isolated nodes (no edges) are visually indistinguishable from
-connected nodes. The health score currently uses verified/stale ratios only.
+### 4.4 Isolated node count in health [TODO — P2]
+Isolated nodes (entities with zero edges in either direction) inflate entity
+counts without contributing to graph connectivity. Currently invisible in health.
 
-**Fix:**
-- Backend: Add `isolated_count` to `/api/swl/health` (entities with 0 edges in either
-  direction). Include in health score: penalise isolated nodes mildly
-  (`isolated_frac * 0.15`).
-- Frontend: No change needed to graph rendering (the 3D physics engine already pushes
-  isolated nodes to the periphery). Add isolated count to `HealthBadge` tooltip.
+**Concrete fix:**
+
+Backend — add `IsolatedCount int` to `swlHealthData` (in `swl.go`). Populate it
+with:
+```sql
+SELECT COUNT(*) FROM entities
+WHERE fact_status != 'deleted'
+  AND id NOT IN (SELECT DISTINCT from_id FROM edges
+                 UNION SELECT DISTINCT to_id FROM edges)
+```
+Add to health score: `isolatedFrac * 0.15` penalty (alongside existing stale and
+unknown penalties). Update this query in **both** `handleSWLHealth` and
+`handleSWLOverview` (they share the same logic).
+
+Frontend — in `HealthBadge`, add a second line:
+```
+{health.isolatedCount > 0 && (
+  <span className="opacity-50">{health.isolatedCount} isolated</span>
+)}
+```
+No tooltip required. No graph rendering change needed (3D physics already pushes
+isolated nodes to the periphery).
 
 ---
 
 ## Phase 5 — Frontend & API Optimizations
 
-*New phase added from optimization assessment.*
+### 5.1 Combined overview endpoint [DONE]
+`GET /api/swl/overview` returns `{ stats, health, sessions }` in one DB
+connection. `swl-stats.tsx` uses a single `useQuery(["swl-overview"])` at 20s.
+Individual endpoints (`/stats`, `/health`, `/sessions`) kept for backward compat.
 
-### 5.1 Combined overview endpoint — `/api/swl/overview` [TODO — P0]
-Three separate React Query subscriptions (`/stats`, `/health`, `/sessions`) each open
-a SQLite read connection and run separate queries every 15–30 seconds. On a workspace
-with 20k+ entities this is three separate DB round-trips per poll cycle.
+### 5.2 SSE adaptive polling backoff [DONE]
+Fixed `time.NewTicker(2s)` replaced with `time.After(interval)` adaptive loop:
+- No change: interval doubles (2s → 4s → 8s → 10s cap)
+- Change detected: interval resets to 2s
 
-**Fix:** Add `GET /api/swl/overview` that returns all three payloads in a single
-response and a single DB connection:
-```json
-{ "stats": {...}, "health": {...}, "sessions": [...] }
+### 5.3 Two-phase graph loading [TODO — P3, frontend-only]
+For workspaces with 5000+ entities, the initial graph load can be slow. This is
+a frontend-only change using **existing backend modes** — no new backend mode.
+
+**Concrete fix (swl-page.tsx only):**
+1. On mount, fetch `mode=overview` first (10k nodes max, no Symbol/Section,
+   already exists). Render immediately.
+2. After 1 second (`setTimeout`), fetch `mode=map` in background. On success,
+   replace the graph data wholesale (`setGraphData(mapData)`).
+3. Show a subtle "Loading full graph…" indicator (text, not spinner) during
+   the background fetch, using React Query's `isFetching` on the map query.
+4. No new server-side `mode=fast`. No partial-merge logic. Full replacement only.
+
+**Skip if:** the typical workspace stays under 3000 entities. Re-evaluate when
+there is evidence of actual rendering lag complaints.
+
+### 5.4 Focus mode manual refresh [TODO — P2]
+In focus (neighborhood) mode, new edges to the focused node are missed because
+auto-refresh is off. A manual button fixes this without adding continuous polling.
+
+**Concrete fix:**
+- In `swl-page.tsx`, expose `refetch` from the `useQuery` call for the
+  neighborhood graph.
+- Add a `<button onClick={refetch}>↻</button>` to the focus mode toolbar —
+  visible only when `viewMode === 'neighborhood'`.
+- No auto-refresh. No polling timer. No state beyond what `useQuery` already
+  provides (`isFetching` for loading state on the button).
+
+### 5.5 Fetch-in-progress indicator [TODO — P2]
+Silent updates confuse users on slow connections.
+
+**Concrete fix:** In `swl-stats.tsx`, destructure `isFetching` from the
+`useQuery(["swl-overview"])` call. Append a pulsing `●` to the "Graph Health"
+section header while `isFetching` is true:
+```tsx
+<span className={isFetching ? "animate-pulse opacity-50 ml-1" : "hidden"}>●</span>
 ```
-Replace the three separate `useQuery` calls in `swl-stats.tsx` with a single
-`useQuery(["swl-overview"])` call with a 20s interval. Keep the individual endpoints
-for backward compatibility (other consumers, curl diagnostics).
-
-### 5.2 SSE polling interval backoff [TODO — P1]
-The 2-second SSE poll is aggressive. Most workspaces have extraction bursts (during
-active tool use) followed by quiet periods.
-
-**Fix:** Implement exponential backoff in the SSE stream handler:
-- When `maxModAt == lastModAt` (no change): double the sleep, capped at 10s
-- When a change is detected: reset interval to 2s
-- Signal the client of the current server-side interval via an SSE comment
-  (`: poll-interval=N`) so the frontend can adjust its reconnect timer if needed.
-
-This replaces the fixed `time.NewTicker(2 * time.Second)` with a dynamic interval.
-
-### 5.3 Progressive graph loading [TODO — P0]
-Large graphs (5000+ nodes) block the UI thread during the initial JSON parse and
-3D layout computation. The topology endpoint already paginates server-side but the
-frontend loads everything at once.
-
-**Fix — phased load:**
-- Phase 1 (immediate): Load top 500 highest-quality nodes (existing `/api/swl/graph`
-  with `mode=overview` already does this for ~150 nodes; extend to 500 with a new
-  `mode=fast` that includes symbols but caps at 500 nodes/1000 edges)
-- Phase 2 (background, 1s delay): Upgrade to full `mode=map` silently, merge into
-  existing graph data without re-rendering from scratch
-- Keep `mode=overview` as the user-selectable structural view
-
-This requires a new `SWLGraphMeta.isPartial: boolean` field to signal phase 1 state
-to the frontend, and a `useEffect` in `swl-page.tsx` to trigger the phase 2 load.
-
-### 5.4 Focus mode refresh [TODO — P2]
-Focus mode (`neighborhood` query) currently disables auto-refresh entirely. A long-
-running session that adds new edges to a focused node silently misses them.
-
-**Fix:** Add a manual "Refresh" button to the focus mode toolbar that re-fetches the
-neighborhood query for the current focus node. Auto-refresh remains off (correct —
-continuous neighborhood re-fetches are expensive). The button appears only in focus
-mode.
-
-### 5.5 Refresh indicators [TODO — P2]
-Graphs and stats update silently. On slow connections users see no indication.
-
-**Fix:** Use React Query's `isFetching` state to show a subtle animated dot next to
-the "Graph Health" section header while any SWL query is in flight. No spinners on
-the 3D canvas itself (causes jarring re-renders).
+No other change. No canvas-level indicators (causes re-renders).
 
 ### 5.6 [SKIP] Virtual rendering / WebGL instancing
-The 3D graph already uses WebGL (Three.js via react-force-graph-3d). Adding separate
-instancing logic duplicates work the library already does. The LOD tiers already
-reduce geometry for large graphs. Skip.
+Three.js already handles instancing. Duplicating this adds complexity with no
+measurable gain. Rejected.
 
 ### 5.7 [SKIP] Unified cache layer with ETag validation
-SQLite's WAL mode and React Query's stale-while-revalidate already provide adequate
-caching. Adding a custom `SWLCache` class would duplicate cache logic without
-measurable benefit at current scale. Skip.
+React Query's stale-while-revalidate + SQLite WAL mode already provides adequate
+caching. A custom `SWLCache` class duplicates that without benefit. Rejected.
 
 ### 5.8 [SKIP] Offline support / localStorage fallback
-The graph visualization requires live data to be useful (stale graph = misleading).
-Showing a stale 3D graph offline adds complexity with negative user value. Skip.
+A stale graph is misleading. Showing it offline has negative user value. Rejected.
 
 ---
 
 ## Phase 6 — LLM Context Quality
 
-*New phase added from optimization assessment — filtered for viability.*
+### 6.1 Intent entity from TurnStart [DONE]
+`swl_hook.go` records user message as an `Intent` entity with an `intended_for`
+edge to the session on `KindAgentTurnStart`.
 
-### 6.1 Intent entity from TurnStart [PARTIAL — DONE]
-`swl_hook.go` already records user message as an `Intent` entity with a
-`intended_for` edge to the session. Confirmed working.
+### 6.2 Session outcome tagging from TurnEnd [TODO — P2]
+Currently `endAllSessions()` is called only from `Manager.Close()` and writes a
+generic `"entities=N edges=M"` summary. The hook never handles `KindAgentTurnEnd`,
+so error/abort outcomes are invisible in the sessions table.
 
-### 6.2 Historical outcome tagging [TODO — P2]
-When a session ends (`TurnEnd` with `status = error` or `status = aborted`), tag
-the session entity with `fact_status = stale` and record the turn outcome in the
-session's `summary` field. This surfaces failed attempts in `SessionResume`.
+**Concrete fix:**
 
-Currently `endAllSessions()` sets `summary = "entities=N edges=M"`. Enhance with
-outcome: `"entities=N edges=M status=error reason=..."` where available.
+`TurnEndPayload` (in `pkg/agent/event_payloads.go`) has `Status TurnEndStatus`
+(completed/error/aborted) and `Iterations int`. `KindAgentTurnEnd` exists in
+`pkg/events/kind.go`. Both are usable.
 
-**Implementation:** In `swl_hook.go`, handle `runtimeevents.KindAgentTurnEnd`
-similarly to `KindAgentTurnStart`. Extract `TurnEndPayload.Status` and append to
-the session record.
+1. Add `EndSession(sessionKey, outcome string)` to `pkg/swl/session.go`:
+   ```go
+   func (m *Manager) EndSession(sessionKey, outcome string) {
+       m.sessionsMu.Lock()
+       id := m.activeSessions[sessionKey]
+       delete(m.activeSessions, sessionKey)
+       m.sessionsMu.Unlock()
+       if id == "" { return }
+       now := nowSQLite()
+       summary := m.autoSummary() + " status=" + outcome
+       m.mu.Lock()
+       m.db.Exec("UPDATE sessions SET ended_at=?, summary=? WHERE id=? AND ended_at IS NULL",
+           now, summary, id)
+       m.mu.Unlock()
+   }
+   ```
+2. In `swl_hook.go`, add a `case runtimeevents.KindAgentTurnEnd:` branch:
+   ```go
+   case runtimeevents.KindAgentTurnEnd:
+       payload, ok := evt.Payload.(TurnEndPayload)
+       if !ok { return nil }
+       h.manager.EndSession(evt.Scope.SessionKey, string(payload.Status))
+   ```
+3. `endAllSessions()` on `Close()` stays as the catch-all for sessions not yet
+   ended by the hook (e.g. process kill).
 
-### 6.3 Internal reference mapping — doc sections [TODO — P2]
-When a markdown file is extracted (`has_section` edges already exist from headings),
-and another file `mentions` a heading string verbatim (e.g. a README heading that
-matches a function name), add a `references` edge from the file to the section entity.
+**Only** `Status` is recorded. `Iterations` and `Duration` are not stored —
+they'd require schema changes.
 
-This is a lightweight post-extraction pass in `ExtractContent`: after extracting
-sections from a `.md` file, check if any section heading matches an existing Symbol
-or Task entity name (SQL lookup, max 10 matches). Emit `references` edge.
+### 6.3 [SKIP] Markdown section → symbol cross-reference edges
+The plan was: after extracting sections from a `.md` file, SQL-lookup existing
+Symbols with the same name and emit `references` edges.
 
-Cap at 5 cross-references per file. Only for markdown files.
+**Reason for skip:** `ExtractContent` is a pure function with no DB access. To
+query existing symbols during extraction requires either (a) passing a DB handle
+into the extractor (breaks the pure-function model) or (b) a post-apply pass in
+the Manager (requires the delta to be committed first, then a second write
+transaction). Both approaches add architectural complexity for a feature that
+primarily benefits markdown-heavy workspaces, which are not the primary use case
+for picoclaw. The cross-reference value is marginal compared to the cost.
+
+Rejected.
 
 ### 6.4 [SKIP] Code flow / AST analysis
-Requires per-language parsers. Too expensive, too language-specific. The generic
-regex-based approach covers 80% of value at 5% of the cost.
+Per-language parsers are too expensive and language-specific. Rejected.
 
 ### 6.5 [SKIP] Semantic clustering / embeddings
-Requires embedding model inference at extraction time. Out of scope for a
-lightweight knowledge graph. Defer indefinitely.
+Requires embedding model inference at extraction time. Out of scope. Rejected.
 
 ### 6.6 [SKIP] Cross-session entity merging
-The assessment proposes linking same-named entities across sessions. The entity model
-already deduplicates by `entityID(type, name)` — same name + type = same entity
-regardless of session. Cross-session edges are unnecessary.
+The entity model already deduplicates by `entityID(type, name)` — same name +
+type = same entity regardless of session. Cross-session edges are unnecessary.
+Rejected.
 
 ---
 
-## Execution Order
+## Execution Order (Remaining Items)
 
 ```
-# Quick wins first (from optimization assessment)
-3.4a  URL noise expansion — extend noisyURLHosts (30 min)
-3.6   Symbol usage edge — KnownRelUses in extractSymbols (2h)
-3.7   Confidence calibration — same-priority averaging in upsertEntity SQL (1h)
+# Straightforward, bounded, high-signal
+4.4   Isolated node count in health + overview (45 min)
+       — SQL query + IsolatedCount field + HealthBadge line
+6.2   Session outcome tagging from TurnEnd (45 min)
+       — EndSession() method + case in swl_hook.go OnRuntimeEvent
 
-# Frontend / API (P0 items from assessment)
-5.1   Combined /api/swl/overview endpoint + frontend query consolidation (3h)
-5.2   SSE adaptive polling backoff (1h)
-5.3   Progressive graph loading (mode=fast + phase 2 background upgrade) (4h)
+# Extraction quality (low risk, bounded patterns)
+3.8   Go-specific symbol patterns in extractor.go (1h)
+       — goSymPatterns var + lang check in extractSymbols(); no new config
 
-# Extraction quality
-3.8   Context-aware patterns — Go + Python lang-specific symbol patterns (2h)
-4.4   Isolated node count in health endpoint + badge tooltip (1h)
+# UI polish (trivial, isolated to single component)
+5.5   isFetching indicator in swl-stats.tsx (15 min)
+5.4   Focus mode refresh button in swl-page.tsx (30 min)
 
-# UX & observability
-5.4   Focus mode refresh button (1h)
-5.5   Refresh indicators via isFetching (30 min)
-6.2   Historical outcome tagging from TurnEnd events (2h)
-6.3   Internal reference mapping for markdown sections (2h)
+# Larger, conditional on evidence of need
+5.3   Two-phase graph load (frontend-only, mode=overview then mode=map) (2h)
+       — Only if workspace grows past ~3k entities with visible lag
 
-# Experimental, last
-2.1   Agent awareness ping — inject_awareness flag (gated, experimental)
+# Experimental — gates on graph quality
+2.1   Agent awareness ping (inject_awareness flag, default off) (2h)
+       — Blocked: needs proven graph quality + a design spike first
 ```
 
 ---
 
 ## Open Questions (carry forward)
 
-- What is the right duplicate-suppression boundary for paginated reads of the same file?
-  Currently each page re-extracts. Should extraction be gated on content-hash change
-  per file entity, not per result string (which includes page-specific headers)?
-- Is there a meaningful signal from `exec` results that warrants deep extraction, or
-  does exec produce too much noise to be worth the effort?
-- What does a "recovery path" for stale entities look like — lazy re-read on agent
-  access, or a background scheduler? This unblocks 3.5.
-- For 5.3 progressive loading: should `mode=fast` be a server-side concept or should
-  the frontend simply call `mode=overview` first and `mode=map` second?
+- Paginated reads re-extract on each page. Should extraction be gated on
+  content-hash change per file entity, not per result string?
+- Is there a meaningful signal from `exec` results that warrants deep extraction,
+  or does exec produce too much noise?
+- What does a recovery path for stale entities look like — lazy re-read on agent
+  access, or a background scheduler? Unblocks 3.5.
+- For 5.3: measure actual rendering time on a 3k-entity workspace before
+  implementing. It may be a non-problem.
