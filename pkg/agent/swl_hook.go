@@ -6,11 +6,12 @@ import (
 	"runtime"
 	"sync"
 
+	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/swl"
 )
 
-// SWLHook implements ToolInterceptor, LLMInterceptor, and EventObserver.
+// SWLHook implements ToolInterceptor, LLMInterceptor, and RuntimeEventObserver.
 // One instance is mounted per agent via mountAgentSWLHooks().
 type SWLHook struct {
 	manager *swl.Manager
@@ -21,7 +22,7 @@ type SWLHook struct {
 // Compile-time interface checks.
 var _ ToolInterceptor = (*SWLHook)(nil)
 var _ LLMInterceptor = (*SWLHook)(nil)
-var _ EventObserver = (*SWLHook)(nil)
+var _ RuntimeEventObserver = (*SWLHook)(nil)
 
 // Close drains all pending async goroutines.
 func (h *SWLHook) Close() error {
@@ -29,24 +30,24 @@ func (h *SWLHook) Close() error {
 	return nil
 }
 
-// --- EventObserver ---
+// --- RuntimeEventObserver ---
 
-func (h *SWLHook) OnEvent(ctx context.Context, evt Event) error {
-	if !h.matchesAgent(evt.Meta.AgentID) {
+func (h *SWLHook) OnRuntimeEvent(ctx context.Context, evt runtimeevents.Event) error {
+	if !h.matchesAgent(evt.Scope.AgentID) {
 		return nil
 	}
 
 	switch evt.Kind {
-	case EventKindTurnStart:
+	case runtimeevents.KindAgentTurnStart:
 		payload, ok := evt.Payload.(TurnStartPayload)
 		if !ok || payload.UserMessage == "" {
 			return nil
 		}
-		sessionKey := evt.Meta.SessionKey
+		sessionKey := evt.Scope.SessionKey
 		h.wg.Add(1)
 		go func() {
 			defer h.wg.Done()
-			defer recoverSWLHook("OnEvent/TurnStart")
+			defer recoverSWLHook("OnRuntimeEvent/TurnStart")
 			sessionID := h.manager.EnsureSession(sessionKey)
 			h.manager.SetSessionGoal(sessionID, truncateSWL(payload.UserMessage, 200))
 
@@ -65,16 +66,16 @@ func (h *SWLHook) OnEvent(ctx context.Context, evt Event) error {
 			}
 		}()
 
-	case EventKindSubTurnSpawn:
+	case runtimeevents.KindAgentSubTurnSpawn:
 		payload, ok := evt.Payload.(SubTurnSpawnPayload)
 		if !ok {
 			return nil
 		}
-		sessionKey := evt.Meta.SessionKey
+		sessionKey := evt.Scope.SessionKey
 		h.wg.Add(1)
 		go func() {
 			defer h.wg.Done()
-			defer recoverSWLHook("OnEvent/SubTurnSpawn")
+			defer recoverSWLHook("OnRuntimeEvent/SubTurnSpawn")
 			sessionID := h.manager.EnsureSession(sessionKey)
 			subID := swl.EntityIDFor(swl.KnownTypeSubAgent, payload.AgentID+":"+payload.Label)
 			_ = h.manager.UpsertEntity(swl.EntityTuple{
