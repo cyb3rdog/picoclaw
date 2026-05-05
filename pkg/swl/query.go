@@ -65,6 +65,11 @@ func (m *Manager) Ask(question string) string {
 		return result
 	}
 
+	// Tier 3: freetext entity name search
+	if result := m.tryTier3(q); result != "" {
+		return result
+	}
+
 	return fmt.Sprintf("[SWL] No pattern matched %q. Try: stats, gaps, resume, or sql:SELECT ...", q)
 }
 
@@ -325,6 +330,53 @@ var sqlTemplates = map[string]tier2Template{
 		keywords: []string{"orphan", "unreferenced"},
 		query:    `SELECT e.name FROM entities e WHERE e.type = 'Symbol' AND NOT EXISTS (SELECT 1 FROM edges WHERE to_id = e.id OR from_id = e.id) LIMIT 20`,
 	},
+}
+
+func (m *Manager) tryTier3(question string) string {
+	// Split into words, skip common stop-words, cap at 3 terms.
+	stop := map[string]bool{
+		"the": true, "a": true, "an": true, "is": true, "in": true, "of": true,
+		"for": true, "to": true, "and": true, "or": true, "what": true, "how": true,
+		"where": true, "find": true, "show": true, "list": true, "get": true,
+	}
+	var terms []string
+	for _, w := range strings.Fields(strings.ToLower(question)) {
+		if !stop[w] && len(w) > 2 {
+			terms = append(terms, w)
+		}
+		if len(terms) == 3 {
+			break
+		}
+	}
+	if len(terms) == 0 {
+		return ""
+	}
+
+	q := `SELECT type, name, fact_status FROM entities WHERE fact_status != 'deleted'`
+	args := make([]any, 0, len(terms))
+	for _, t := range terms {
+		q += ` AND name LIKE ?`
+		args = append(args, "%"+t+"%")
+	}
+	q += " ORDER BY knowledge_depth DESC, access_count DESC LIMIT 15"
+
+	rows, err := m.db.Query(q, args...)
+	if err != nil {
+		return ""
+	}
+	defer rows.Close()
+
+	var out []string
+	for rows.Next() {
+		var etype, name, status string
+		if rows.Scan(&etype, &name, &status) == nil {
+			out = append(out, fmt.Sprintf("  [%s] %s (%s)", etype, name, status))
+		}
+	}
+	if len(out) == 0 {
+		return ""
+	}
+	return "[SWL] Freetext matches for " + strings.Join(terms, "+") + ":\n" + strings.Join(out, "\n")
 }
 
 func (m *Manager) tryTier2(question string) string {

@@ -58,6 +58,17 @@ export interface SWLSession {
   summary?: string
 }
 
+export interface SWLHealth {
+  score: number
+  level: "empty" | "poor" | "fair" | "good" | "excellent"
+  entityCount: number
+  verifiedPct: number
+  stalePct: number
+  edgeCount: number
+  dbSizeBytes: number
+  message: string
+}
+
 /** UI view modes.
  *  "map"          — general graph, top 500 quality-ranked nodes
  *  "overview"     — structural graph, no Symbol/Section, ~150 nodes
@@ -91,6 +102,12 @@ export const swlApi = {
   async getSessions(): Promise<SWLSession[]> {
     const res = await launcherFetch("/api/swl/sessions")
     if (!res.ok) throw new Error(`SWL sessions: ${res.status}`)
+    return res.json()
+  },
+
+  async getHealth(): Promise<SWLHealth> {
+    const res = await launcherFetch("/api/swl/health")
+    if (!res.ok) throw new Error(`SWL health: ${res.status}`)
     return res.json()
   },
 

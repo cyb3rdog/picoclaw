@@ -1,6 +1,7 @@
 package swl
 
 import (
+	"fmt"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -148,6 +149,7 @@ func (m *Manager) runInference(sessionID, toolName string, args map[string]any, 
 	if result != "" {
 		if delta := m.ExtractGeneric(toolName, result); delta != nil && !delta.IsEmpty() {
 			_ = m.writer.applyDelta(delta, sessionID)
+			m.logInferenceEvent(toolName, fmt.Sprintf("generic extracted %d entities", len(delta.Entities)))
 		}
 	}
 }
@@ -173,6 +175,7 @@ func postApplyWriteFile(m *Manager, fileID, sessionID string, args map[string]an
 		filePath := m.normalizePath(argString(args, "path"))
 		if delta := m.ExtractContent(fileID, filePath, content); delta != nil && !delta.IsEmpty() {
 			_ = m.writer.applyDelta(delta, sessionID)
+			m.logInferenceEvent("write_file", fmt.Sprintf("extracted %d entities from %s", len(delta.Entities), filePath))
 		}
 	}
 	_ = m.writer.setFactStatus(fileID, FactVerified)
@@ -212,6 +215,7 @@ func postApplyReadFile(m *Manager, fileID, sessionID string, args map[string]any
 		filePath := m.normalizePath(argString(args, "path"))
 		if delta := m.ExtractContent(fileID, filePath, content); delta != nil && !delta.IsEmpty() {
 			_ = m.writer.applyDelta(delta, sessionID)
+			m.logInferenceEvent("read_file", fmt.Sprintf("extracted %d entities from %s", len(delta.Entities), filePath))
 		}
 	}
 	_ = m.writer.setFactStatus(fileID, FactVerified)
@@ -245,15 +249,21 @@ func postApplyExec(m *Manager, cmdID, sessionID string, args map[string]any, res
 			command = action
 		}
 	}
+	total := 0
 	if delta := ExtractExec(sessionID, command, result, ""); delta != nil && !delta.IsEmpty() {
 		_ = m.writer.applyDelta(delta, sessionID)
+		total += len(delta.Entities)
 	}
 	// Secondary generic pass: picks up file paths and tasks that ExtractExec
 	// doesn't cover (e.g. grep/cat/go doc output referencing workspace files).
 	if result != "" {
 		if delta := m.ExtractGeneric("exec:"+command, result); delta != nil && !delta.IsEmpty() {
 			_ = m.writer.applyDelta(delta, sessionID)
+			total += len(delta.Entities)
 		}
+	}
+	if total > 0 {
+		m.logInferenceEvent("exec", fmt.Sprintf("extracted %d entities from %q", total, truncate(command, 40)))
 	}
 }
 

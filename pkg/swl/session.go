@@ -190,7 +190,23 @@ func (m *Manager) SessionResume(sessionKey string) string {
 	}
 
 	if len(stats) == 0 {
-		return "[SWL] Graph is empty. Knowledge will build as you work."
+		return "[SWL] Graph is empty — cold start.\n" +
+			"Use query_swl {\"scan\":true} to index the workspace, then work normally.\n" +
+			"The graph will grow automatically as you read, write, and execute tools."
+	}
+
+	// Cold-start threshold: fewer than 10 non-session entities means the graph
+	// is essentially fresh. Give a short bootstrap hint.
+	var nonSessionCount int
+	for _, s := range stats {
+		if s.entityType != string(KnownTypeSession) {
+			nonSessionCount += s.count
+		}
+	}
+	if nonSessionCount < 10 {
+		return "[SWL] Knowledge graph is nearly empty (" + fmt.Sprintf("%d", nonSessionCount) + " entities).\n" +
+			"Run query_swl {\"scan\":true} to index the workspace, then proceed normally.\n" +
+			"Entities accumulate automatically from tool calls."
 	}
 
 	var staleCount int

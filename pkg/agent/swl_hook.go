@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"runtime"
 	"sync"
 
 	"github.com/sipeed/picoclaw/pkg/logger"
@@ -183,7 +184,11 @@ func (h *SWLHook) matchesAgent(agentID string) bool {
 
 func recoverSWLHook(label string) {
 	if r := recover(); r != nil {
-		logger.ErrorCF("swl", fmt.Sprintf("panic in %s", label), map[string]any{"panic": fmt.Sprintf("%v", r)})
+		buf := make([]byte, 4096)
+		n := runtime.Stack(buf, false)
+		logger.WarnCF("swl", fmt.Sprintf("panic in %s: %v", label, r), map[string]any{
+			"stack": string(buf[:n]),
+		})
 	}
 }
 

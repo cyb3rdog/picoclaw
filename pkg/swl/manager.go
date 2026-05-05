@@ -6,7 +6,9 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"sync"
+	"time"
 )
 
 // Manager is the top-level SWL object. One instance per workspace.
@@ -38,6 +40,20 @@ type Manager struct {
 	// compiledSymPatterns holds the compiled symbol extraction regexes.
 	// Initialised once in NewManager from cfg.ExtractSymbolPatterns (or defaults).
 	compiledSymPatterns []*regexp.Regexp
+
+	// inferenceLog is a fixed-size ring buffer of recent extraction events.
+	// Useful for diagnosing why entities were or were not extracted.
+	infLogMu  sync.Mutex
+	infLog    [inferenceLogCap]inferenceEvent
+	infLogIdx int
+}
+
+const inferenceLogCap = 64
+
+type inferenceEvent struct {
+	ts   time.Time
+	tool string
+	note string
 }
 
 // DecayHandlerFunc checks whether an entity is still valid. It should update
@@ -149,6 +165,37 @@ func (m *Manager) maybeVacuum() {
 		m.db.Exec("VACUUM") //nolint:errcheck
 		m.mu.Unlock()
 	}
+}
+
+// logInferenceEvent appends a structured event to the in-memory ring buffer.
+func (m *Manager) logInferenceEvent(tool, note string) {
+	m.infLogMu.Lock()
+	m.infLog[m.infLogIdx%inferenceLogCap] = inferenceEvent{ts: time.Now(), tool: tool, note: note}
+	m.infLogIdx++
+	m.infLogMu.Unlock()
+}
+
+// DebugInferenceLog returns the last N inference events as a formatted string.
+func (m *Manager) DebugInferenceLog() string {
+	m.infLogMu.Lock()
+	total := m.infLogIdx
+	log := m.infLog
+	m.infLogMu.Unlock()
+
+	start := 0
+	if total > inferenceLogCap {
+		start = total - inferenceLogCap
+	}
+	if total == 0 {
+		return "[SWL] No inference events recorded yet."
+	}
+
+	lines := make([]string, 0, total-start)
+	for i := start; i < total; i++ {
+		ev := log[i%inferenceLogCap]
+		lines = append(lines, fmt.Sprintf("  %s  [%s] %s", ev.ts.Format("15:04:05.000"), ev.tool, ev.note))
+	}
+	return fmt.Sprintf("[SWL] Last %d inference events:\n", len(lines)) + strings.Join(lines, "\n")
 }
 
 func resolveDBPath(workspace string, cfg *Config) string {

@@ -35,6 +35,7 @@ Input formats (pick one):
   {"schema":true}                          — DB schema and known types
   {"sql":"SELECT ..."}                     — raw read-only SQL (200-row cap)
   {"scan":true,"root":"/path"}             — incremental workspace index scan
+  {"debug":true}                           — last 64 inference events (ring buffer)
 
 Returns a text summary. Always consult SWL before re-reading files.`
 }
@@ -58,6 +59,7 @@ func (t *QuerySWLTool) Parameters() map[string]any {
 			"root":     map[string]any{"type": "string", "description": "Root path for scan (default: workspace root)"},
 			"decay":    map[string]any{"type": "boolean", "description": "If true, run decay check"},
 			"entity_id": map[string]any{"type": "string", "description": "Entity ID for targeted decay check"},
+			"debug":     map[string]any{"type": "boolean", "description": "If true, return last 64 inference events from in-memory ring buffer"},
 		},
 	}
 }
@@ -122,6 +124,11 @@ func (t *QuerySWLTool) Execute(ctx context.Context, args map[string]any) *toolsh
 			"[SWL] Scan complete: scanned=%d new=%d changed=%d deleted=%d skipped=%d",
 			stats.Scanned, stats.New, stats.Changed, stats.Deleted, stats.Skipped,
 		))
+	}
+
+	// debug
+	if v, _ := args["debug"].(bool); v {
+		return toolshared.SilentResult(m.DebugInferenceLog())
 	}
 
 	// decay

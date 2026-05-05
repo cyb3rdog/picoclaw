@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query"
 
 import {
   swlApi,
+  type SWLHealth,
   type SWLNode,
   type SWLSession,
   type SWLStats as SWLStatsData,
@@ -35,6 +36,13 @@ export function SWLStats({ selectedNode, hiddenTypes, onToggleType, onClearFilte
     retry:           false,
   })
 
+  const { data: health } = useQuery<SWLHealth>({
+    queryKey:       ["swl-health"],
+    queryFn:        swlApi.getHealth,
+    refetchInterval: 30_000,
+    retry:           false,
+  })
+
   const { data: sessions } = useQuery<SWLSession[]>({
     queryKey:       ["swl-sessions"],
     queryFn:        swlApi.getSessions,
@@ -53,6 +61,9 @@ export function SWLStats({ selectedNode, hiddenTypes, onToggleType, onClearFilte
           Click a node to inspect
         </div>
       )}
+
+      {/* ── Graph health ── */}
+      {health && <HealthBadge health={health} />}
 
       {/* ── Entity type filter / counts ── */}
       {stats && (
@@ -174,6 +185,42 @@ function NodeInspector({ node }: { node: SWLNode }) {
           ))}
         </div>
       )}
+    </section>
+  )
+}
+
+// ── Health badge ───────────────────────────────────────────────────────────────
+
+const HEALTH_META: Record<string, { color: string; icon: string }> = {
+  excellent: { color: "text-emerald-400", icon: "●" },
+  good:      { color: "text-emerald-600", icon: "●" },
+  fair:      { color: "text-amber-400",   icon: "●" },
+  poor:      { color: "text-red-500",     icon: "●" },
+  empty:     { color: "text-muted-foreground", icon: "○" },
+}
+
+function HealthBadge({ health }: { health: SWLHealth }) {
+  const meta = HEALTH_META[health.level] ?? HEALTH_META.empty
+  const pct  = Math.round(health.score * 100)
+  const bar  = Math.round(health.score * 8)
+  const filled = "█".repeat(bar)
+  const empty  = "░".repeat(8 - bar)
+
+  return (
+    <section className="rounded-md border border-border/30 bg-muted/10 px-2.5 py-2 space-y-1">
+      <div className="flex items-center justify-between">
+        <span className="text-muted-foreground font-semibold uppercase tracking-wide">
+          Graph Health
+        </span>
+        <span className={`font-mono text-[11px] ${meta.color}`}>
+          {meta.icon} {health.level} {pct}%
+        </span>
+      </div>
+      <div className="font-mono text-[10px] text-muted-foreground">
+        <span style={{ color: "#8bc34a" }}>{filled}</span>
+        <span className="opacity-30">{empty}</span>
+        <span className="ml-2">{health.message}</span>
+      </div>
     </section>
   )
 }
