@@ -552,13 +552,13 @@ func TestRegistrySharedManager(t *testing.T) {
 	}
 
 	// Release once — manager should still be alive (ref=1)
-	ReleaseManager(dir, cfg)
+	ReleaseManager(m1)
 	if m1.db == nil {
 		t.Error("manager should still be open after first release")
 	}
 
 	// Release again — manager should be closed
-	ReleaseManager(dir, cfg)
+	ReleaseManager(m1)
 
 	// Registry entry should be gone
 	regMu.Lock()

@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 )
 
@@ -12,6 +13,18 @@ import (
 type entityWriter struct {
 	db *sql.DB
 	mu *sync.Mutex
+}
+
+// cascadeRelIn is the SQL IN fragment built once from CascadeRels.
+// Example: ('defines','has_task','has_section','mentions')
+var cascadeRelIn string
+
+func init() {
+	parts := make([]string, len(CascadeRels))
+	for i, r := range CascadeRels {
+		parts[i] = "'" + string(r) + "'"
+	}
+	cascadeRelIn = "(" + strings.Join(parts, ",") + ")"
 }
 
 const upsertEntitySQL = `
@@ -122,11 +135,13 @@ func (w *entityWriter) setFactStatus(entityID string, status FactStatus) error {
 // Limits cascade to direct outgoing edges only (not transitive via UNION).
 // Skips already-stale entities to prevent re-cascading.
 func (w *entityWriter) invalidateChildrenLocked(fileID, now string) {
-	const invalidateSQL = `
+	// cascadeRelIn is built from CascadeRels at package init — add new ownership
+	// relations to types.go:CascadeRels, not here.
+	invalidateSQL := `
 		UPDATE entities SET fact_status = 'stale', modified_at = ?
 		WHERE id IN (
 			SELECT DISTINCT to_id FROM edges
-			WHERE from_id = ? AND rel IN ('defines','has_task','has_section','mentions')
+			WHERE from_id = ? AND rel IN ` + cascadeRelIn + `
 		) AND fact_status NOT IN ('deleted','stale')`
 	w.db.Exec(invalidateSQL, now, fileID) //nolint:errcheck — best-effort cascade
 }

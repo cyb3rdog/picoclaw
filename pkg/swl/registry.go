@@ -37,11 +37,16 @@ func AcquireManager(workspace string, cfg *Config) (*Manager, error) {
 	return mgr, nil
 }
 
-// ReleaseManager decrements the reference count for the Manager associated
-// with workspace. When the count reaches zero, Manager.Close() is called and
-// the entry is removed from the registry.
-func ReleaseManager(workspace string, cfg *Config) {
-	dbPath := resolveDBPath(workspace, cfg)
+// ReleaseManager decrements the reference count for mgr.
+// When the count reaches zero, Manager.Close() is called and the entry is
+// removed from the registry.  Using the Manager's own DBPath() as the key
+// avoids re-resolving from config, which could diverge if the config pointer
+// is reused across different Manager lifetimes.
+func ReleaseManager(mgr *Manager) {
+	if mgr == nil {
+		return
+	}
+	dbPath := mgr.DBPath()
 
 	regMu.Lock()
 	defer regMu.Unlock()

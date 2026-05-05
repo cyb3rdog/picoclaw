@@ -40,7 +40,13 @@ var skipExts = map[string]bool{
 // ScanWorkspace does an incremental mtime-based walk of root, upserting
 // File and Directory entities and extracting content for new/changed files.
 // It also tombstones files that were previously indexed but no longer exist.
-func (m *Manager) ScanWorkspace(root string) (ScanStats, error) {
+// sessionKey, if non-empty, is used as the session context for all edges written
+// during this scan so they are visible in session-scoped queries.
+func (m *Manager) ScanWorkspace(root string, sessionKey ...string) (ScanStats, error) {
+	sk := ""
+	if len(sessionKey) > 0 {
+		sk = sessionKey[0]
+	}
 	var stats ScanStats
 
 	// Resolve root to absolute path, validate within workspace
@@ -178,7 +184,7 @@ func (m *Manager) ScanWorkspace(root string) (ScanStats, error) {
 		if changed {
 			delta := m.ExtractContent(fileID, relPath, content)
 			if delta != nil && !delta.IsEmpty() {
-				_ = m.writer.applyDelta(delta, "")
+				_ = m.writer.applyDelta(delta, sk)
 			}
 			_ = m.writer.setFactStatus(fileID, FactVerified)
 		}

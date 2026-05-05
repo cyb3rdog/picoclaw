@@ -114,7 +114,7 @@ func (t *QuerySWLTool) Execute(ctx context.Context, args map[string]any) *toolsh
 		if root == "" {
 			root = m.workspace
 		}
-		stats, err := m.ScanWorkspace(root)
+		stats, err := m.ScanWorkspace(root, sessionKey)
 		if err != nil {
 			return toolshared.SilentResult("[SWL] Scan error: " + err.Error())
 		}

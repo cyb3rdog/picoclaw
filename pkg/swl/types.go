@@ -52,6 +52,17 @@ const (
 	KnownRelIntendedFor  EdgeRel = "intended_for"
 )
 
+// CascadeRels lists the ownership relations that propagate stale status from a
+// parent entity to its direct children when the parent is deleted or its content
+// changes.  These are "derived-from" relations: the child only makes sense in the
+// context of the parent.  Add new ownership relations here when they are introduced.
+var CascadeRels = []EdgeRel{
+	KnownRelDefines,
+	KnownRelHasTask,
+	KnownRelHasSection,
+	KnownRelMentions,
+}
+
 // FactStatus governs correctness invariants — closed enum.
 type FactStatus string
 

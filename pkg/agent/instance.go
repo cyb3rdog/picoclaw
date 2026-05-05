@@ -149,7 +149,7 @@ func NewAgentInstance(
 	}
 	swlReleaseFn := func() {
 		if swlManager != nil {
-			swl.ReleaseManager(workspace, swlManager.Config())
+			swl.ReleaseManager(swlManager)
 		}
 	}
 
