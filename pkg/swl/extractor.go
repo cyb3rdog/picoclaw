@@ -58,8 +58,14 @@ var (
 	// noisyURLHosts lists host fragments that produce low-value URL entities.
 	// Checked via strings.Contains on the lower-cased URL — no net/url parse needed.
 	noisyURLHosts = []string{
+		// Loopback / any-interface
 		"://localhost", "://127.0.0.1", "://0.0.0.0", "://[::1]",
+		// RFC-1918 private ranges and link-local
+		"://10.", "://192.168.", "://172.", "://169.254.",
+		// Placeholder / example domains
 		"example.com", "example.org", "example.net",
+		"your-domain", "yourdomain", "mydomain", "acme.com",
+		// mDNS / .local
 		".local/",
 	}
 
@@ -491,25 +497,43 @@ func (m *Manager) ExtractGeneric(toolName, result string) *GraphDelta {
 // --- internal helpers ---
 
 func extractSymbols(ctx context.Context, fileID, filePath, content string, patterns []*regexp.Regexp, delta *GraphDelta) {
-	seen := map[string]bool{}
+	// symIDs maps name → entity ID for the post-extraction uses pass.
+	symIDs := map[string]string{}
 	count := 0
 	for _, re := range patterns {
 		for _, m := range re.FindAllStringSubmatch(content, -1) {
 			if isDone(ctx) || count >= maxSymbols {
-				return
+				goto emitUses
 			}
 			name := strings.TrimSpace(m[1])
-			if name == "" || noiseSymbols[name] || seen[name] {
+			if name == "" || noiseSymbols[name] || symIDs[name] != "" {
 				continue
 			}
-			seen[name] = true
 			symID := entityID(KnownTypeSymbol, filePath+":"+name)
+			symIDs[name] = symID
 			delta.Entities = append(delta.Entities, EntityTuple{
 				ID: symID, Type: KnownTypeSymbol, Name: name,
 				Confidence: 0.9, ExtractionMethod: MethodExtracted, KnowledgeDepth: 2,
 			})
 			delta.Edges = append(delta.Edges, EdgeTuple{FromID: fileID, Rel: KnownRelDefines, ToID: symID})
 			count++
+		}
+	}
+
+emitUses:
+	// Emit uses edges for symbols that are called (not just defined) within the
+	// same file.  A symbol defined and called in the same file appears at least
+	// twice as "name(" — once at the definition site and once at the call site.
+	// Cap at maxUses to avoid flooding the graph from files with many self-calls.
+	const maxUses = 20
+	usesCount := 0
+	for name, symID := range symIDs {
+		if isDone(ctx) || usesCount >= maxUses {
+			break
+		}
+		if strings.Count(content, name+"(") > 1 {
+			delta.Edges = append(delta.Edges, EdgeTuple{FromID: fileID, Rel: KnownRelUses, ToID: symID})
+			usesCount++
 		}
 	}
 }

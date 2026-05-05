@@ -50,6 +50,7 @@ const (
 	KnownRelContextOf    EdgeRel = "context_of"
 	KnownRelReasoned     EdgeRel = "reasoned"
 	KnownRelIntendedFor  EdgeRel = "intended_for"
+	KnownRelUses         EdgeRel = "uses"
 )
 
 // CascadeRels lists the ownership relations that propagate stale status from a

@@ -622,3 +622,83 @@ func TestConfigurableSymbolPatterns(t *testing.T) {
 	}
 }
 
+// --- Confidence calibration ---
+
+func TestConfidenceCalibration(t *testing.T) {
+	m := newTestManager(t)
+	id := entityID(KnownTypeSymbol, "pkg/foo.go:Bar")
+
+	// First upsert: extracted at 0.9
+	_ = m.UpsertEntity(EntityTuple{
+		ID: id, Type: KnownTypeSymbol, Name: "Bar",
+		Confidence: 0.9, ExtractionMethod: MethodExtracted, KnowledgeDepth: 1,
+	})
+
+	// Second upsert: same method (extracted), lower confidence → should average
+	_ = m.UpsertEntity(EntityTuple{
+		ID: id, Type: KnownTypeSymbol, Name: "Bar",
+		Confidence: 0.7, ExtractionMethod: MethodExtracted, KnowledgeDepth: 1,
+	})
+
+	var conf float64
+	m.db.QueryRow("SELECT confidence FROM entities WHERE id = ?", id).Scan(&conf)
+	want := (0.9 + 0.7) / 2.0 // 0.8
+	if conf < want-0.01 || conf > want+0.01 {
+		t.Errorf("same-method averaging: got confidence %.4f, want %.4f", conf, want)
+	}
+
+	// Third upsert: higher-priority method (observed) → should replace with new confidence
+	_ = m.UpsertEntity(EntityTuple{
+		ID: id, Type: KnownTypeSymbol, Name: "Bar",
+		Confidence: 1.0, ExtractionMethod: MethodObserved, KnowledgeDepth: 2,
+	})
+	m.db.QueryRow("SELECT confidence FROM entities WHERE id = ?", id).Scan(&conf)
+	if conf < 0.999 {
+		t.Errorf("higher-priority method: got confidence %.4f, want 1.0", conf)
+	}
+
+	// Fourth upsert: lower-priority method (inferred) → should NOT reduce confidence
+	_ = m.UpsertEntity(EntityTuple{
+		ID: id, Type: KnownTypeSymbol, Name: "Bar",
+		Confidence: 0.5, ExtractionMethod: MethodInferred, KnowledgeDepth: 1,
+	})
+	m.db.QueryRow("SELECT confidence FROM entities WHERE id = ?", id).Scan(&conf)
+	if conf < 0.999 {
+		t.Errorf("lower-priority method should not reduce confidence: got %.4f", conf)
+	}
+}
+
+func TestSymbolUsesEdge(t *testing.T) {
+	m := newTestManager(t)
+	// Content where parseArgs is defined and also called internally
+	content := `package main
+
+func parseArgs(args []string) map[string]string {
+	result := map[string]string{}
+	return result
+}
+
+func main() {
+	opts := parseArgs(os.Args[1:])
+	_ = opts
+}
+`
+	fileID := entityID(KnownTypeFile, "main.go")
+	_ = m.UpsertEntity(EntityTuple{
+		ID: fileID, Type: KnownTypeFile, Name: "main.go",
+		Confidence: 1.0, ExtractionMethod: MethodObserved, KnowledgeDepth: 1,
+	})
+	delta := m.ExtractContent(fileID, "main.go", content)
+	if delta == nil {
+		t.Fatal("expected non-nil delta")
+	}
+	_ = m.ApplyDelta(delta, "")
+
+	// Check a 'uses' edge exists from file to parseArgs symbol
+	var usesCount int
+	m.db.QueryRow(`SELECT COUNT(*) FROM edges WHERE from_id = ? AND rel = 'uses'`, fileID).Scan(&usesCount)
+	if usesCount == 0 {
+		t.Errorf("expected at least one 'uses' edge from file, got 0")
+	}
+}
+

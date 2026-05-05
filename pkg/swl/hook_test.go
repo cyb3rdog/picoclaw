@@ -325,16 +325,19 @@ func TestExtractGeneric_FiltersNoisyURLs(t *testing.T) {
 	m, cleanup := newHookTestManager(t)
 	defer cleanup()
 
-	// Noisy URLs (localhost, example.com, .local) must not be stored.
+	// Noisy URLs (localhost, example.com, .local, private IPs) must not be stored.
 	// A real URL must be stored.
 	m.PostHook("sess1", "mcp_env_check", map[string]any{},
-		"API at http://localhost:8080/api, docs at https://example.com/guide, "+
+		"API at http://localhost:8080/api, "+
+			"docs at https://example.com/guide, "+
+			"internal: http://192.168.1.1/admin, "+
+			"dev: http://10.0.0.5/health, "+
 			"real ref: https://api.github.com/repos/foo/bar")
 
 	var count int
 	_ = m.db.QueryRow("SELECT COUNT(*) FROM entities WHERE type = 'URL'").Scan(&count)
 	if count != 1 {
-		t.Errorf("expected only the real URL entity (1), got %d", count)
+		t.Errorf("expected only the real URL entity (1), got %d URL entities", count)
 	}
 	var name string
 	_ = m.db.QueryRow("SELECT name FROM entities WHERE type = 'URL'").Scan(&name)
