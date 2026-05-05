@@ -65,6 +65,7 @@ export interface SWLHealth {
   verifiedPct: number
   stalePct: number
   edgeCount: number
+  isolatedCount: number
   dbSizeBytes: number
   message: string
 }

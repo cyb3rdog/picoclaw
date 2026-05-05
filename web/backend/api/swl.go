@@ -2,6 +2,7 @@ package api
 
 import (
 	"compress/gzip"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -562,35 +563,21 @@ func (h *Handler) handleSWLStats(w http.ResponseWriter, r *http.Request) {
 // --- Health endpoint ---
 
 type swlHealthData struct {
-	Score       float64 `json:"score"`
-	Level       string  `json:"level"`
-	EntityCount int     `json:"entityCount"`
-	VerifiedPct float64 `json:"verifiedPct"`
-	StalePct    float64 `json:"stalePct"`
-	EdgeCount   int     `json:"edgeCount"`
-	DBSizeBytes int64   `json:"dbSizeBytes"`
-	Message     string  `json:"message"`
+	Score         float64 `json:"score"`
+	Level         string  `json:"level"`
+	EntityCount   int     `json:"entityCount"`
+	VerifiedPct   float64 `json:"verifiedPct"`
+	StalePct      float64 `json:"stalePct"`
+	EdgeCount     int     `json:"edgeCount"`
+	IsolatedCount int     `json:"isolatedCount"`
+	DBSizeBytes   int64   `json:"dbSizeBytes"`
+	Message       string  `json:"message"`
 }
 
-func (h *Handler) handleSWLHealth(w http.ResponseWriter, r *http.Request) {
-	dbPath, err := h.swlDBPath()
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	db, err := openSWLReadOnly(dbPath)
-	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(swlHealthData{ //nolint:errcheck
-			Score: 0, Level: "empty", Message: "SWL database not found.",
-		})
-		return
-	}
-	defer db.Close()
-
+// computeHealth runs all health queries against an already-open DB and returns the result.
+func computeHealth(ctx context.Context, db *sql.DB, dbPath string) swlHealthData {
 	var totalEntities, verified, stale, unknown int
-	db.QueryRowContext(r.Context(), `
+	db.QueryRowContext(ctx, `
 		SELECT
 			COUNT(*),
 			SUM(CASE WHEN fact_status='verified' THEN 1 ELSE 0 END),
@@ -599,11 +586,17 @@ func (h *Handler) handleSWLHealth(w http.ResponseWriter, r *http.Request) {
 		FROM entities WHERE fact_status != 'deleted'
 	`).Scan(&totalEntities, &verified, &stale, &unknown) //nolint:errcheck
 
-	var edgeCount int
-	db.QueryRowContext(r.Context(), "SELECT COUNT(*) FROM edges").Scan(&edgeCount) //nolint:errcheck
+	var edgeCount, isolatedCount int
+	db.QueryRowContext(ctx, "SELECT COUNT(*) FROM edges").Scan(&edgeCount) //nolint:errcheck
+	db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM entities
+		WHERE fact_status != 'deleted'
+		  AND id NOT IN (SELECT DISTINCT from_id FROM edges
+		                 UNION SELECT DISTINCT to_id FROM edges)
+	`).Scan(&isolatedCount) //nolint:errcheck
 
 	var dbSize int64
-	if info, statErr := os.Stat(dbPath); statErr == nil {
+	if info, err := os.Stat(dbPath); err == nil {
 		dbSize = info.Size()
 	}
 
@@ -613,12 +606,12 @@ func (h *Handler) handleSWLHealth(w http.ResponseWriter, r *http.Request) {
 		stalePct = float64(stale) / float64(totalEntities) * 100
 	}
 
-	// Health score: 1.0 baseline, penalised by stale (−0.5×fraction) and unknown (−0.2×fraction).
 	score := 0.0
 	if totalEntities > 0 {
 		staleFrac := float64(stale) / float64(totalEntities)
 		unknownFrac := float64(unknown) / float64(totalEntities)
-		score = 1.0 - (staleFrac * 0.5) - (unknownFrac * 0.2)
+		isolatedFrac := float64(isolatedCount) / float64(totalEntities)
+		score = 1.0 - (staleFrac * 0.5) - (unknownFrac * 0.2) - (isolatedFrac * 0.15)
 		if score < 0 {
 			score = 0
 		}
@@ -638,19 +631,38 @@ func (h *Handler) handleSWLHealth(w http.ResponseWriter, r *http.Request) {
 		level = "excellent"
 	}
 
-	data := swlHealthData{
-		Score:       score,
-		Level:       level,
-		EntityCount: totalEntities,
-		VerifiedPct: verifiedPct,
-		StalePct:    stalePct,
-		EdgeCount:   edgeCount,
-		DBSizeBytes: dbSize,
-		Message:     fmt.Sprintf("%d entities, %.0f%% verified, %.0f%% stale", totalEntities, verifiedPct, stalePct),
+	return swlHealthData{
+		Score:         score,
+		Level:         level,
+		EntityCount:   totalEntities,
+		VerifiedPct:   verifiedPct,
+		StalePct:      stalePct,
+		EdgeCount:     edgeCount,
+		IsolatedCount: isolatedCount,
+		DBSizeBytes:   dbSize,
+		Message:       fmt.Sprintf("%d entities, %.0f%% verified, %.0f%% stale", totalEntities, verifiedPct, stalePct),
+	}
+}
+
+func (h *Handler) handleSWLHealth(w http.ResponseWriter, r *http.Request) {
+	dbPath, err := h.swlDBPath()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
 
+	db, err := openSWLReadOnly(dbPath)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(swlHealthData{ //nolint:errcheck
+			Score: 0, Level: "empty", Message: "SWL database not found.",
+		})
+		return
+	}
+	defer db.Close()
+
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(data) //nolint:errcheck
+	json.NewEncoder(w).Encode(computeHealth(r.Context(), db, dbPath)) //nolint:errcheck
 }
 
 // --- Sessions endpoint ---
@@ -753,64 +765,7 @@ func (h *Handler) handleSWLOverview(w http.ResponseWriter, r *http.Request) {
 	db.QueryRowContext(r.Context(), "SELECT COUNT(*) FROM edges").Scan(&out.Stats.EdgeCount) //nolint:errcheck
 
 	// Health
-	var totalEntities, verified, stale, unknown int
-	db.QueryRowContext(r.Context(), `
-		SELECT
-			COUNT(*),
-			SUM(CASE WHEN fact_status='verified' THEN 1 ELSE 0 END),
-			SUM(CASE WHEN fact_status='stale'    THEN 1 ELSE 0 END),
-			SUM(CASE WHEN fact_status='unknown'  THEN 1 ELSE 0 END)
-		FROM entities WHERE fact_status != 'deleted'
-	`).Scan(&totalEntities, &verified, &stale, &unknown) //nolint:errcheck
-
-	var edgeCount int
-	db.QueryRowContext(r.Context(), "SELECT COUNT(*) FROM edges").Scan(&edgeCount) //nolint:errcheck
-
-	var dbSize int64
-	if info, statErr := os.Stat(dbPath); statErr == nil {
-		dbSize = info.Size()
-	}
-
-	var verifiedPct, stalePct float64
-	if totalEntities > 0 {
-		verifiedPct = float64(verified) / float64(totalEntities) * 100
-		stalePct = float64(stale) / float64(totalEntities) * 100
-	}
-
-	score := 0.0
-	if totalEntities > 0 {
-		staleFrac := float64(stale) / float64(totalEntities)
-		unknownFrac := float64(unknown) / float64(totalEntities)
-		score = 1.0 - (staleFrac * 0.5) - (unknownFrac * 0.2)
-		if score < 0 {
-			score = 0
-		}
-	}
-
-	level := "good"
-	switch {
-	case totalEntities == 0:
-		level = "empty"
-	case score < 0.5:
-		level = "poor"
-	case score < 0.75:
-		level = "fair"
-	case score < 0.9:
-		level = "good"
-	default:
-		level = "excellent"
-	}
-
-	out.Health = swlHealthData{
-		Score:       score,
-		Level:       level,
-		EntityCount: totalEntities,
-		VerifiedPct: verifiedPct,
-		StalePct:    stalePct,
-		EdgeCount:   edgeCount,
-		DBSizeBytes: dbSize,
-		Message:     fmt.Sprintf("%d entities, %.0f%% verified, %.0f%% stale", totalEntities, verifiedPct, stalePct),
-	}
+	out.Health = computeHealth(r.Context(), db, dbPath)
 
 	// Sessions
 	rrows, rerr := db.QueryContext(r.Context(), `

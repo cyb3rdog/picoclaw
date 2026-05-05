@@ -30,7 +30,7 @@ interface Props {
 }
 
 export function SWLStats({ selectedNode, hiddenTypes, onToggleType, onClearFilter }: Props) {
-  const { data: overview } = useQuery<SWLOverview>({
+  const { data: overview, isFetching } = useQuery<SWLOverview>({
     queryKey:        ["swl-overview"],
     queryFn:         swlApi.getOverview,
     refetchInterval: 20_000,
@@ -54,7 +54,7 @@ export function SWLStats({ selectedNode, hiddenTypes, onToggleType, onClearFilte
       )}
 
       {/* ── Graph health ── */}
-      {health && <HealthBadge health={health} />}
+      {health && <HealthBadge health={health} isFetching={isFetching} />}
 
       {/* ── Entity type filter / counts ── */}
       {stats && (
@@ -190,7 +190,7 @@ const HEALTH_META: Record<string, { color: string; icon: string }> = {
   empty:     { color: "text-muted-foreground", icon: "○" },
 }
 
-function HealthBadge({ health }: { health: SWLHealth }) {
+function HealthBadge({ health, isFetching }: { health: SWLHealth; isFetching: boolean }) {
   const meta = HEALTH_META[health.level] ?? HEALTH_META.empty
   const pct  = Math.round(health.score * 100)
   const bar  = Math.round(health.score * 8)
@@ -202,6 +202,7 @@ function HealthBadge({ health }: { health: SWLHealth }) {
       <div className="flex items-center justify-between">
         <span className="text-muted-foreground font-semibold uppercase tracking-wide">
           Graph Health
+          {isFetching && <span className="ml-1.5 animate-pulse opacity-40">●</span>}
         </span>
         <span className={`font-mono text-[11px] ${meta.color}`}>
           {meta.icon} {health.level} {pct}%
@@ -212,6 +213,11 @@ function HealthBadge({ health }: { health: SWLHealth }) {
         <span className="opacity-30">{empty}</span>
         <span className="ml-2">{health.message}</span>
       </div>
+      {health.isolatedCount > 0 && (
+        <div className="font-mono text-[10px] text-muted-foreground opacity-50">
+          {health.isolatedCount} isolated nodes
+        </div>
+      )}
     </section>
   )
 }
