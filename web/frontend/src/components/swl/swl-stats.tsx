@@ -5,7 +5,6 @@ import {
   type SWLHealth,
   type SWLNode,
   type SWLSession,
-  type SWLStats as SWLStatsData,
   type SWLOverview,
 } from "@/api/swl"
 import { NODE_COLORS } from "./swl-graph"
