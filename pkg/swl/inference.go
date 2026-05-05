@@ -205,9 +205,14 @@ func postApplyReadFile(m *Manager, fileID, sessionID string, args map[string]any
 	}
 	m.writer.mu.Unlock()
 
-	filePath := m.normalizePath(argString(args, "path"))
-	if delta := m.ExtractContent(fileID, filePath, content); delta != nil && !delta.IsEmpty() {
-		_ = m.writer.applyDelta(delta, sessionID)
+	// Only extract when content changed or entity is new — consistent with
+	// postApplyWriteFile and avoids redundant re-extraction on repeated reads
+	// of the same unchanged file (scanner already extracted on first index).
+	if changed {
+		filePath := m.normalizePath(argString(args, "path"))
+		if delta := m.ExtractContent(fileID, filePath, content); delta != nil && !delta.IsEmpty() {
+			_ = m.writer.applyDelta(delta, sessionID)
+		}
 	}
 	_ = m.writer.setFactStatus(fileID, FactVerified)
 }
@@ -242,6 +247,13 @@ func postApplyExec(m *Manager, cmdID, sessionID string, args map[string]any, res
 	}
 	if delta := ExtractExec(sessionID, command, result, ""); delta != nil && !delta.IsEmpty() {
 		_ = m.writer.applyDelta(delta, sessionID)
+	}
+	// Secondary generic pass: picks up file paths and tasks that ExtractExec
+	// doesn't cover (e.g. grep/cat/go doc output referencing workspace files).
+	if result != "" {
+		if delta := m.ExtractGeneric("exec:"+command, result); delta != nil && !delta.IsEmpty() {
+			_ = m.writer.applyDelta(delta, sessionID)
+		}
 	}
 }
 

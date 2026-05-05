@@ -55,6 +55,14 @@ var (
 	headingRE = regexp.MustCompile(`(?m)^(#{1,3})\s+(.+)`)
 	urlRE     = regexp.MustCompile(`https?://[^\s"'<>)\]]+`)
 
+	// noisyURLHosts lists host fragments that produce low-value URL entities.
+	// Checked via strings.Contains on the lower-cased URL — no net/url parse needed.
+	noisyURLHosts = []string{
+		"://localhost", "://127.0.0.1", "://0.0.0.0", "://[::1]",
+		"example.com", "example.org", "example.net",
+		".local/",
+	}
+
 	// filePathRE matches absolute Unix/Windows paths and relative paths that
 	// look like workspace files (contain a slash and end with a known extension).
 	filePathRE = regexp.MustCompile(
@@ -99,6 +107,19 @@ var (
 	}
 )
 
+// isNoisyURL returns true for URLs that reliably produce low-value graph entities:
+// localhost variants, documentation placeholder domains (example.com), and
+// .local TLDs. Applied at every URL extraction site to prevent noise accumulation.
+func isNoisyURL(u string) bool {
+	lower := strings.ToLower(u)
+	for _, frag := range noisyURLHosts {
+		if strings.Contains(lower, frag) {
+			return true
+		}
+	}
+	return false
+}
+
 // --- Public extraction functions ---
 
 // ExtractContent extracts knowledge from file content into a GraphDelta.
@@ -135,7 +156,7 @@ func (m *Manager) ExtractContent(fileID, filePath, content string) *GraphDelta {
 	}
 
 	if m.cfg.effectiveExtractSymbols() {
-		extractSymbols(ctx, fileID, normFilePath, content, delta)
+		extractSymbols(ctx, fileID, normFilePath, content, m.compiledSymPatterns, delta)
 	}
 	if m.cfg.effectiveExtractImports() {
 		extractImports(ctx, fileID, content, delta)
@@ -233,8 +254,10 @@ func ExtractExec(sessionID, command, stdout, stderr string) *GraphDelta {
 	}
 
 	// URLs in output
-	urls := urlRE.FindAllString(combined, maxURLs)
-	for _, u := range urls {
+	for _, u := range urlRE.FindAllString(combined, maxURLs) {
+		if isNoisyURL(u) {
+			continue
+		}
 		urlID := entityID(KnownTypeURL, u)
 		delta.Entities = append(delta.Entities, EntityTuple{
 			ID: urlID, Type: KnownTypeURL, Name: u,
@@ -276,9 +299,8 @@ func ExtractWeb(urlID, pageContent string) *GraphDelta {
 	}
 
 	// Linked URLs
-	urls := urlRE.FindAllString(pageContent, maxURLs)
-	for _, u := range urls {
-		if u == "" {
+	for _, u := range urlRE.FindAllString(pageContent, maxURLs) {
+		if u == "" || isNoisyURL(u) {
 			continue
 		}
 		linkedID := entityID(KnownTypeURL, u)
@@ -328,6 +350,9 @@ func (m *Manager) ExtractLLMResponse(sessionID, content string) *GraphDelta {
 	// URLs the LLM mentions
 	if !isDone(ctx) {
 		for _, u := range urlRE.FindAllString(content, maxURLs) {
+			if isNoisyURL(u) {
+				continue
+			}
 			urlID := entityID(KnownTypeURL, u)
 			delta.Entities = append(delta.Entities, EntityTuple{
 				ID: urlID, Type: KnownTypeURL, Name: u,
@@ -393,17 +418,22 @@ func (m *Manager) ExtractGeneric(toolName, result string) *GraphDelta {
 		Confidence: 1.0, ExtractionMethod: MethodObserved, KnowledgeDepth: 1,
 	})
 
-	// URLs in result
-	for _, u := range urlRE.FindAllString(result, maxURLs) {
-		if isDone(ctx) {
+	// URLs in result — capped lower than file content (generic extraction is noisier).
+	urlCount := 0
+	for _, u := range urlRE.FindAllString(result, -1) {
+		if isDone(ctx) || urlCount >= 5 {
 			break
+		}
+		if isNoisyURL(u) {
+			continue
 		}
 		urlID := entityID(KnownTypeURL, u)
 		delta.Entities = append(delta.Entities, EntityTuple{
 			ID: urlID, Type: KnownTypeURL, Name: u,
-			Confidence: 0.8, ExtractionMethod: MethodExtracted, KnowledgeDepth: 1,
+			Confidence: 0.75, ExtractionMethod: MethodExtracted, KnowledgeDepth: 1,
 		})
 		delta.Edges = append(delta.Edges, EdgeTuple{FromID: toolID, Rel: KnownRelFound, ToID: urlID})
+		urlCount++
 	}
 
 	// File paths referenced in result (e.g. MCP tools returning file listings)
@@ -460,10 +490,10 @@ func (m *Manager) ExtractGeneric(toolName, result string) *GraphDelta {
 
 // --- internal helpers ---
 
-func extractSymbols(ctx context.Context, fileID, filePath, content string, delta *GraphDelta) {
+func extractSymbols(ctx context.Context, fileID, filePath, content string, patterns []*regexp.Regexp, delta *GraphDelta) {
 	seen := map[string]bool{}
 	count := 0
-	for _, re := range symPatterns {
+	for _, re := range patterns {
 		for _, m := range re.FindAllStringSubmatch(content, -1) {
 			if isDone(ctx) || count >= maxSymbols {
 				return
@@ -553,6 +583,9 @@ func extractURLs(ctx context.Context, fileID, content string, delta *GraphDelta)
 	for _, u := range urlRE.FindAllString(content, -1) {
 		if isDone(ctx) || count >= maxURLs {
 			return
+		}
+		if isNoisyURL(u) {
+			continue
 		}
 		urlID := entityID(KnownTypeURL, u)
 		delta.Entities = append(delta.Entities, EntityTuple{

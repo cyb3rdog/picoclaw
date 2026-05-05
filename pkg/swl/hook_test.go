@@ -311,13 +311,35 @@ func TestPostHook_UnknownTool_ExtractsURLs(t *testing.T) {
 	defer cleanup()
 
 	m.PostHook("sess1", "my_custom_mcp_tool", map[string]any{},
-		"Result: see https://docs.example.com/api for details")
+		"Result: see https://docs.anthropic.com/api for details")
 
 	var count int
 	_ = m.db.QueryRow("SELECT COUNT(*) FROM entities WHERE type = ? AND name LIKE ?",
-		KnownTypeURL, "%docs.example.com%").Scan(&count)
+		KnownTypeURL, "%docs.anthropic.com%").Scan(&count)
 	if count == 0 {
 		t.Error("expected URL entity extracted by Layer 3 generic handler")
+	}
+}
+
+func TestExtractGeneric_FiltersNoisyURLs(t *testing.T) {
+	m, cleanup := newHookTestManager(t)
+	defer cleanup()
+
+	// Noisy URLs (localhost, example.com, .local) must not be stored.
+	// A real URL must be stored.
+	m.PostHook("sess1", "mcp_env_check", map[string]any{},
+		"API at http://localhost:8080/api, docs at https://example.com/guide, "+
+			"real ref: https://api.github.com/repos/foo/bar")
+
+	var count int
+	_ = m.db.QueryRow("SELECT COUNT(*) FROM entities WHERE type = 'URL'").Scan(&count)
+	if count != 1 {
+		t.Errorf("expected only the real URL entity (1), got %d", count)
+	}
+	var name string
+	_ = m.db.QueryRow("SELECT name FROM entities WHERE type = 'URL'").Scan(&name)
+	if !strings.Contains(name, "api.github.com") {
+		t.Errorf("expected api.github.com URL, got %q", name)
 	}
 }
 

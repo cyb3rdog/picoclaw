@@ -391,6 +391,29 @@ func TestExtractContent_AntiBloomLimits(t *testing.T) {
 
 // --- Scanner test ---
 
+// TestPathNormalizationIdempotency verifies that absolute, relative (./),
+// and bare-relative references to the same file all produce the same entity ID.
+func TestPathNormalizationIdempotency(t *testing.T) {
+	m := newTestManager(t)
+	ws := m.workspace
+
+	// Write the same file via three different path representations.
+	absPath := filepath.Join(ws, "pkg", "foo.go")
+	_ = os.MkdirAll(filepath.Dir(absPath), 0755)
+
+	content := "package foo\nfunc Bar() {}"
+	m.PostHook("sess", "write_file", map[string]any{"path": absPath, "content": content}, "ok")
+	m.PostHook("sess", "write_file", map[string]any{"path": "./pkg/foo.go", "content": content}, "ok")
+	m.PostHook("sess", "write_file", map[string]any{"path": "pkg/foo.go", "content": content}, "ok")
+
+	// All three must resolve to exactly one File entity.
+	var count int
+	_ = m.db.QueryRow("SELECT COUNT(*) FROM entities WHERE type = 'File'").Scan(&count)
+	if count != 1 {
+		t.Errorf("expected 1 File entity for three path representations, got %d", count)
+	}
+}
+
 func TestScanWorkspace(t *testing.T) {
 	m := newTestManager(t)
 
@@ -567,6 +590,35 @@ func TestRegistrySharedManager(t *testing.T) {
 	regMu.Unlock()
 	if stillExists {
 		t.Error("registry entry should be removed after final release")
+	}
+}
+
+// TestConfigurableSymbolPatterns verifies that a custom ExtractSymbolPatterns
+// overrides the defaults and extracts only what the custom pattern matches.
+func TestConfigurableSymbolPatterns(t *testing.T) {
+	dir := t.TempDir()
+	// Custom pattern: only match lines starting with "EXPORT:"
+	cfg := &Config{
+		ExtractSymbolPatterns: []string{`(?m)^EXPORT:\s+(\w+)`},
+	}
+	m, err := NewManager(dir, cfg)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	defer m.Close()
+
+	content := "package main\nfunc Ignored() {}\nEXPORT: MySymbol\n"
+	m.PostHook("sess", "read_file", map[string]any{"path": "custom.txt"}, content)
+
+	var symCount int
+	_ = m.db.QueryRow("SELECT COUNT(*) FROM entities WHERE type = 'Symbol'").Scan(&symCount)
+	if symCount != 1 {
+		t.Errorf("expected exactly 1 symbol (MySymbol), got %d", symCount)
+	}
+	var symName string
+	_ = m.db.QueryRow("SELECT name FROM entities WHERE type = 'Symbol'").Scan(&symName)
+	if symName != "MySymbol" {
+		t.Errorf("expected symbol name 'MySymbol', got %q", symName)
 	}
 }
 

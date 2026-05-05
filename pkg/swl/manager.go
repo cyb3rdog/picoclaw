@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sync"
 )
 
@@ -33,6 +34,10 @@ type Manager struct {
 
 	// pendingHooks tracks async PostHook goroutines for graceful drain.
 	wg sync.WaitGroup
+
+	// compiledSymPatterns holds the compiled symbol extraction regexes.
+	// Initialised once in NewManager from cfg.ExtractSymbolPatterns (or defaults).
+	compiledSymPatterns []*regexp.Regexp
 }
 
 // DecayHandlerFunc checks whether an entity is still valid. It should update
@@ -62,7 +67,28 @@ func NewManager(workspace string, cfg *Config) (*Manager, error) {
 	m.RegisterDecayHandler(KnownTypeFile, decayFile)
 	m.RegisterDecayHandler(KnownTypeURL, decayURL)
 
+	m.compiledSymPatterns = compileSymPatterns(cfg)
+
 	return m, nil
+}
+
+// compileSymPatterns returns the compiled symbol extraction patterns.
+// Uses cfg.ExtractSymbolPatterns if set and valid; falls back to package defaults.
+// Invalid patterns in the custom list are silently skipped.
+func compileSymPatterns(cfg *Config) []*regexp.Regexp {
+	if cfg == nil || len(cfg.ExtractSymbolPatterns) == 0 {
+		return symPatterns // package-level defaults
+	}
+	compiled := make([]*regexp.Regexp, 0, len(cfg.ExtractSymbolPatterns))
+	for _, pat := range cfg.ExtractSymbolPatterns {
+		if re, err := regexp.Compile(pat); err == nil {
+			compiled = append(compiled, re)
+		}
+	}
+	if len(compiled) == 0 {
+		return symPatterns // all patterns were invalid; fall back to defaults
+	}
+	return compiled
 }
 
 // DBPath returns the filesystem path to the SQLite database.

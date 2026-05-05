@@ -30,6 +30,13 @@ type Config struct {
 	// ReasoningConfidenceCap is the maximum confidence assigned to entities
 	// extracted from LLM reasoning/thinking blocks. Default: 0.75.
 	ReasoningConfidenceCap *float64 `json:"reasoning_confidence_cap,omitempty"`
+
+	// ExtractSymbolPatterns is an optional list of RE2-syntax regular expressions
+	// used to extract symbol names from source files.  Each pattern must have
+	// exactly one capturing group whose match is the symbol name.
+	// When nil or empty, the built-in default patterns are used.
+	// Operators can replace or extend this list without recompiling picoclaw.
+	ExtractSymbolPatterns []string `json:"extract_symbol_patterns,omitempty"`
 }
 
 func boolDefault(b *bool, def bool) bool {
