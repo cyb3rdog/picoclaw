@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // EnsureSession returns the SWL session UUID for the given picoclaw session key,
@@ -220,6 +221,66 @@ func (m *Manager) SessionResume(sessionKey string) string {
 	}
 	if staleCount > 0 {
 		out += fmt.Sprintf("\n  ⚠ %d stale entities (files may have changed)", staleCount)
+	}
+
+	// Workspace purpose — AnchorDocument descriptions and manifest module names.
+	anchorRows, err := m.db.Query(`
+		SELECT name, json_extract(metadata,'$.description'), json_extract(metadata,'$.module'),
+		       json_extract(metadata,'$.kind')
+		FROM entities
+		WHERE type = ? AND fact_status != 'deleted'
+		ORDER BY knowledge_depth DESC, access_count DESC LIMIT 5`,
+		KnownTypeAnchorDocument,
+	)
+	if err == nil {
+		defer anchorRows.Close()
+		var anchors []string
+		for anchorRows.Next() {
+			var name string
+			var desc, module, kind sql.NullString
+			if anchorRows.Scan(&name, &desc, &module, &kind) != nil {
+				continue
+			}
+			line := "  " + name
+			if module.Valid && module.String != "" {
+				line += " [" + module.String + "]"
+			}
+			if desc.Valid && desc.String != "" {
+				line += ": " + truncate(desc.String, 120)
+			}
+			anchors = append(anchors, line)
+		}
+		if len(anchors) > 0 {
+			out += "\nWorkspace anchors:\n" + strings.Join(anchors, "\n")
+		}
+	}
+
+	// Semantic areas — directory-level content profile.
+	areaRows, err := m.db.Query(`
+		SELECT name, json_extract(metadata,'$.content_type')
+		FROM entities
+		WHERE type = ? AND fact_status != 'deleted'
+		ORDER BY name LIMIT 10`,
+		KnownTypeSemanticArea,
+	)
+	if err == nil {
+		defer areaRows.Close()
+		var areas []string
+		for areaRows.Next() {
+			var name string
+			var ct sql.NullString
+			if areaRows.Scan(&name, &ct) != nil {
+				continue
+			}
+			line := "  " + name
+			if ct.Valid && ct.String != "" {
+				line += " [" + ct.String + "]"
+			}
+			areas = append(areas, line)
+		}
+		if len(areas) > 0 {
+			out += "\nSemantic areas:\n" + strings.Join(areas, "\n")
+		}
 	}
 
 	// Last session goal

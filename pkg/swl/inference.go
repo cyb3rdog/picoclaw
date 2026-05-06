@@ -57,9 +57,27 @@ func (m *Manager) normalizePath(rawPath string) string {
 // sessionKey is the picoclaw session key; it is mapped to a SWL session UUID.
 func (m *Manager) PostHook(sessionKey, toolName string, args map[string]any, result string) {
 	sessionID := m.EnsureSession(sessionKey)
+	m.recordToolEvent(sessionID, toolName, args)
 	m.runInference(sessionID, toolName, args, result)
 	m.maybeDecay()
 	m.maybePrune()
+}
+
+// recordToolEvent writes a row into the events table for every tool call that
+// passes through PostHook.  This activates the previously-dormant events table
+// and provides the raw signal for the Phase C feedback loop.
+func (m *Manager) recordToolEvent(sessionID, toolName string, args map[string]any) {
+	if sessionID == "" {
+		return
+	}
+	argsHash := contentHash(fmt.Sprintf("%v", args))
+	m.writer.mu.Lock()
+	m.db.Exec( //nolint:errcheck
+		`INSERT OR IGNORE INTO events (id, session_id, tool, phase, args_hash, ts)
+		 VALUES (?, ?, ?, 'post', ?, ?)`,
+		newUUID(), sessionID, toolName, argsHash, nowSQLite(),
+	)
+	m.writer.mu.Unlock()
 }
 
 // PreHook runs pre-call guard checks. Currently a pass-through.

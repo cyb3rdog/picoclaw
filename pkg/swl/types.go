@@ -17,9 +17,11 @@ const (
 	KnownTypeSession    EntityType = "Session"
 	KnownTypeNote       EntityType = "Note"
 	KnownTypeCommand    EntityType = "Command"
-	KnownTypeIntent     EntityType = "Intent"
-	KnownTypeSubAgent   EntityType = "SubAgent"
-	KnownTypeTool       EntityType = "Tool"
+	KnownTypeIntent         EntityType = "Intent"
+	KnownTypeSubAgent       EntityType = "SubAgent"
+	KnownTypeTool           EntityType = "Tool"
+	KnownTypeAnchorDocument EntityType = "AnchorDocument"
+	KnownTypeSemanticArea   EntityType = "SemanticArea"
 )
 
 // EdgeRel is an open string alias. KnownRel* constants are conventions,
@@ -51,6 +53,8 @@ const (
 	KnownRelReasoned     EdgeRel = "reasoned"
 	KnownRelIntendedFor  EdgeRel = "intended_for"
 	KnownRelUses         EdgeRel = "uses"
+	KnownRelDocuments    EdgeRel = "documents"  // AnchorDocument → SemanticArea it describes
+	KnownRelHasArea      EdgeRel = "has_area"   // Directory → SemanticArea it contains
 )
 
 // CascadeRels lists the ownership relations that propagate stale status from a

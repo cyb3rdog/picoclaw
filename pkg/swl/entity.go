@@ -268,6 +268,28 @@ func (w *entityWriter) nullContentHashLocked(entityID string) {
 	)
 }
 
+// BumpAccessCount increments access_count and updates accessed_at for all
+// entities in ids.  Called by query handlers when they return results to the
+// LLM, so access_count reflects read-frequency rather than write-frequency.
+func (m *Manager) BumpAccessCount(ids []string) {
+	if len(ids) == 0 {
+		return
+	}
+	placeholders := strings.Repeat("?,", len(ids))
+	placeholders = placeholders[:len(placeholders)-1]
+	args := make([]any, 0, len(ids)+1)
+	args = append(args, nowSQLite())
+	for _, id := range ids {
+		args = append(args, id)
+	}
+	m.writer.mu.Lock()
+	m.db.Exec( //nolint:errcheck
+		"UPDATE entities SET access_count = access_count + 1, accessed_at = ? WHERE id IN ("+placeholders+")",
+		args...,
+	)
+	m.writer.mu.Unlock()
+}
+
 func marshalMetadata(m map[string]any) (string, error) {
 	if len(m) == 0 {
 		return "{}", nil

@@ -62,6 +62,15 @@ CREATE TABLE IF NOT EXISTS constraints (
     action TEXT NOT NULL DEFAULT 'WARN'
 );
 
+CREATE TABLE IF NOT EXISTS query_gaps (
+    id       TEXT PRIMARY KEY,
+    question TEXT NOT NULL,
+    terms    TEXT NOT NULL,
+    count    INTEGER NOT NULL DEFAULT 1,
+    first_at TEXT NOT NULL,
+    last_at  TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_entities_type   ON entities(type);
 CREATE INDEX IF NOT EXISTS idx_entities_status ON entities(fact_status);
 CREATE INDEX IF NOT EXISTS idx_entities_depth  ON entities(knowledge_depth);
@@ -71,6 +80,7 @@ CREATE INDEX IF NOT EXISTS idx_edges_to        ON edges(to_id);
 CREATE INDEX IF NOT EXISTS idx_edges_rel       ON edges(rel);
 CREATE INDEX IF NOT EXISTS idx_events_session  ON events(session_id);
 CREATE INDEX IF NOT EXISTS idx_events_ts       ON events(ts);
+CREATE INDEX IF NOT EXISTS idx_query_gaps_count ON query_gaps(count);
 `
 
 func openDB(dbPath string) (*sql.DB, error) {

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // ScanStats reports the outcome of a ScanWorkspace call.
@@ -69,6 +70,14 @@ func (m *Manager) ScanWorkspace(root string, sessionKey ...string) (ScanStats, e
 	}
 
 	maxSize := m.cfg.effectiveMaxFileSize()
+
+	// Phase A: build and apply the workspace semantic snapshot before the
+	// structural walk.  This produces AnchorDocument and SemanticArea entities
+	// (bounded to ~100–300 total) and replaces the previous per-file
+	// ExtractContent call that generated tens of thousands of Symbol entities.
+	if snapshotDelta := m.BuildSnapshot(root); snapshotDelta != nil && !snapshotDelta.IsEmpty() {
+		_ = m.writer.applyDelta(snapshotDelta, sk)
+	}
 
 	// Build map of all known file entity IDs → paths from DB.
 	knownFiles, err := m.loadKnownFiles()
@@ -138,8 +147,16 @@ func (m *Manager) ScanWorkspace(root string, sessionKey ...string) (ScanStats, e
 			stats.New++
 		}
 
-		// Check mtime vs DB modified_at.
-		changed := true
+		// Structural indexing only: upsert the File entity and check mtime.
+		// Content extraction (symbols, imports, tasks) is deferred until the
+		// LLM actually reads or writes the file via a tool call (lazy extraction).
+		dirPath := filepath.Dir(relPath)
+		dirID := entityID(KnownTypeDirectory, dirPath)
+
+		modTime := info.ModTime().UTC().Format(time.RFC3339Nano)
+
+		// Check mtime vs DB modified_at to detect changes without reading content.
+		mtimeChanged := true
 		if isKnown {
 			var dbMtime string
 			_ = m.db.QueryRow(
@@ -147,47 +164,32 @@ func (m *Manager) ScanWorkspace(root string, sessionKey ...string) (ScanStats, e
 			).Scan(&dbMtime)
 			t := parseRFC3339(dbMtime)
 			if !t.IsZero() && !info.ModTime().After(t) {
-				changed = false
+				mtimeChanged = false
 			}
 		}
 
-		if !changed {
+		if !mtimeChanged {
 			stats.Scanned++
 			return nil
 		}
 
 		if isKnown {
 			stats.Changed++
+			// File changed on disk — cascade any previously extracted children
+			// (symbols, tasks, etc. from prior lazy extraction) to stale so the
+			// next read_file triggers fresh extraction.
+			m.writer.mu.Lock()
+			m.writer.invalidateChildrenLocked(fileID, modTime)
+			m.writer.mu.Unlock()
 		}
 		stats.Scanned++
 
-		// Upsert the File entity (use relPath for consistent entity IDs).
-		dirPath := filepath.Dir(relPath)
-		dirID := entityID(KnownTypeDirectory, dirPath)
 		_ = m.writer.upsertEntity(EntityTuple{
 			ID: fileID, Type: KnownTypeFile, Name: relPath,
 			Confidence: 1.0, ExtractionMethod: MethodObserved, KnowledgeDepth: 1,
 		})
 		_ = m.writer.upsertEdge(EdgeTuple{FromID: fileID, Rel: KnownRelInDir, ToID: dirID})
-
-		// Read and extract content.
-		raw, readErr := os.ReadFile(path)
-		if readErr != nil {
-			return nil
-		}
-		content := string(raw)
-
-		m.writer.mu.Lock()
-		changed = m.writer.checkAndInvalidateLocked(fileID, content)
-		m.writer.mu.Unlock()
-
-		if changed {
-			delta := m.ExtractContent(fileID, relPath, content)
-			if delta != nil && !delta.IsEmpty() {
-				_ = m.writer.applyDelta(delta, sk)
-			}
-			_ = m.writer.setFactStatus(fileID, FactVerified)
-		}
+		_ = m.writer.setFactStatus(fileID, FactVerified)
 
 		return nil
 	})

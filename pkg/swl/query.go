@@ -19,7 +19,26 @@ var tier1Patterns []tier1Pattern
 
 func init() {
 	tier1Patterns = []tier1Pattern{
+		// Session / resume
 		{regexp.MustCompile(`(?i)(?:resume|bring me up to speed|what was i doing|where did we leave)`), func(m *Manager, hint string) string { return m.SessionResume("") }},
+
+		// Workspace purpose / goals — backed by snapshot AnchorDocument entities
+		{regexp.MustCompile(`(?i)what\s+(?:is\s+)?this\s+(?:workspace|project|repo(?:sitory)?)\s+(?:for|about|doing|used\s+for)`), func(m *Manager, hint string) string { return m.askWorkspacePurpose() }},
+		{regexp.MustCompile(`(?i)what\s+(?:does\s+this|is\s+the)\s+(?:project|workspace|repo(?:sitory)?)\s+(?:do|goal|purpose|aim|about)`), func(m *Manager, hint string) string { return m.askWorkspacePurpose() }},
+		{regexp.MustCompile(`(?i)(?:describe|summaris[e]?|summarize)\s+(?:this\s+)?(?:workspace|project|repo(?:sitory)?)`), func(m *Manager, hint string) string { return m.askWorkspacePurpose() }},
+		{regexp.MustCompile(`(?i)(?:project|workspace)\s+(?:goal|purpose|aim|description|overview)`), func(m *Manager, hint string) string { return m.askWorkspacePurpose() }},
+
+		// Semantic areas
+		{regexp.MustCompile(`(?i)(?:what\s+areas?|semantic\s+areas?|workspace\s+areas?|areas?\s+of\s+(?:the\s+)?workspace)`), func(m *Manager, hint string) string { return m.askSemanticAreas() }},
+		{regexp.MustCompile(`(?i)(?:key|main|important)\s+(?:documents?|files?|areas?)`), func(m *Manager, hint string) string { return m.askAnchorDocuments() }},
+		{regexp.MustCompile(`(?i)(?:anchor|readme|overview)\s+(?:docs?|documents?|files?)`), func(m *Manager, hint string) string { return m.askAnchorDocuments() }},
+
+		// File detail — what does a file do?
+		{regexp.MustCompile(`(?i)what\s+does\s+(.+?)\s+do`), func(m *Manager, hint string) string { return m.askFileDetail(hint) }},
+		{regexp.MustCompile(`(?i)describe\s+(?:file\s+)?(.+)`), func(m *Manager, hint string) string { return m.askFileDetail(hint) }},
+		{regexp.MustCompile(`(?i)explain\s+(?:file\s+)?(.+)`), func(m *Manager, hint string) string { return m.askFileDetail(hint) }},
+
+		// Existing patterns
 		{regexp.MustCompile(`(?i)functions?\s+in\s+(.+)`), func(m *Manager, hint string) string { return m.askSymbols(hint, "function") }},
 		{regexp.MustCompile(`(?i)symbols?\s+in\s+(.+)`), func(m *Manager, hint string) string { return m.askSymbols(hint, "") }},
 		{regexp.MustCompile(`(?i)classes?\s+in\s+(.+)`), func(m *Manager, hint string) string { return m.askSymbols(hint, "class") }},
@@ -41,6 +60,7 @@ func init() {
 }
 
 // Ask dispatches a natural-language question through Tier 1 → Tier 2 → Tier 3.
+// Unmatched questions are recorded as query gaps after 3 repetitions.
 func (m *Manager) Ask(question string) string {
 	q := strings.TrimSpace(question)
 	if q == "" {
@@ -65,15 +85,246 @@ func (m *Manager) Ask(question string) string {
 		return result
 	}
 
-	// Tier 3: freetext entity name search
+	// Tier 3: freetext entity name + metadata search
 	if result := m.tryTier3(q); result != "" {
 		return result
 	}
 
+	m.recordQueryGap(q)
 	return fmt.Sprintf("[SWL] No pattern matched %q. Try: stats, gaps, resume, or sql:SELECT ...", q)
 }
 
 // --- Tier 1 handlers ---
+
+// askWorkspacePurpose returns descriptions from AnchorDocument entities and
+// any session goals, giving the LLM immediate context about the workspace.
+func (m *Manager) askWorkspacePurpose() string {
+	rows, err := m.db.Query(`
+		SELECT name, json_extract(metadata,'$.description'), json_extract(metadata,'$.module'),
+		       json_extract(metadata,'$.name'), json_extract(metadata,'$.kind')
+		FROM entities
+		WHERE type = ? AND fact_status != 'deleted'
+		ORDER BY knowledge_depth DESC, access_count DESC LIMIT 10`,
+		KnownTypeAnchorDocument,
+	)
+	if err != nil {
+		return "[SWL] Query error: " + err.Error()
+	}
+	defer rows.Close()
+
+	var out []string
+	var ids []string
+	for rows.Next() {
+		var name string
+		var desc, module, pkgName, kind sql.NullString
+		if rows.Scan(&name, &desc, &module, &pkgName, &kind) != nil {
+			continue
+		}
+		id := entityID(KnownTypeAnchorDocument, name)
+		ids = append(ids, id)
+		line := "  " + name
+		if module.Valid && module.String != "" {
+			line += " [module: " + module.String + "]"
+		} else if pkgName.Valid && pkgName.String != "" {
+			line += " [" + pkgName.String + "]"
+		}
+		if desc.Valid && desc.String != "" {
+			line += "\n    " + truncate(desc.String, 200)
+		}
+		out = append(out, line)
+	}
+
+	// Also pull the most recent session goal.
+	var goal sql.NullString
+	m.db.QueryRow( //nolint:errcheck
+		`SELECT goal FROM sessions WHERE goal IS NOT NULL ORDER BY started_at DESC LIMIT 1`,
+	).Scan(&goal)
+	if goal.Valid && goal.String != "" {
+		out = append(out, "  Last session goal: "+goal.String)
+	}
+
+	if len(out) == 0 {
+		return "[SWL] No workspace purpose information yet.\n" +
+			"Run query_swl {\"scan\":true} to index the workspace, or use\n" +
+			"query_swl {\"assert\":\"<purpose>\", \"subject\":\"workspace\"} to record it."
+	}
+	m.BumpAccessCount(ids)
+	return "[SWL] Workspace purpose:\n" + strings.Join(out, "\n")
+}
+
+// askSemanticAreas returns the classified semantic areas of the workspace.
+func (m *Manager) askSemanticAreas() string {
+	rows, err := m.db.Query(`
+		SELECT name, json_extract(metadata,'$.content_type'), json_extract(metadata,'$.documented'),
+		       json_extract(metadata,'$.description')
+		FROM entities
+		WHERE type = ? AND fact_status != 'deleted'
+		ORDER BY name LIMIT 30`,
+		KnownTypeSemanticArea,
+	)
+	if err != nil {
+		return "[SWL] Query error: " + err.Error()
+	}
+	defer rows.Close()
+
+	var out []string
+	var ids []string
+	for rows.Next() {
+		var name string
+		var contentType, documented, desc sql.NullString
+		if rows.Scan(&name, &contentType, &documented, &desc) != nil {
+			continue
+		}
+		ids = append(ids, entityID(KnownTypeSemanticArea, name))
+		line := "  " + name
+		if contentType.Valid && contentType.String != "" {
+			line += " [" + contentType.String + "]"
+		}
+		if documented.Valid && documented.String == "1" {
+			line += " ✓"
+		}
+		if desc.Valid && desc.String != "" {
+			line += "\n    " + truncate(desc.String, 120)
+		}
+		out = append(out, line)
+	}
+	if len(out) == 0 {
+		return "[SWL] No semantic areas indexed yet. Run query_swl {\"scan\":true}."
+	}
+	m.BumpAccessCount(ids)
+	return "[SWL] Semantic areas:\n" + strings.Join(out, "\n")
+}
+
+// askAnchorDocuments returns known anchor documents with their descriptions.
+func (m *Manager) askAnchorDocuments() string {
+	rows, err := m.db.Query(`
+		SELECT name, json_extract(metadata,'$.description'), json_extract(metadata,'$.kind')
+		FROM entities
+		WHERE type = ? AND fact_status != 'deleted'
+		ORDER BY knowledge_depth DESC, name LIMIT 20`,
+		KnownTypeAnchorDocument,
+	)
+	if err != nil {
+		return "[SWL] Query error: " + err.Error()
+	}
+	defer rows.Close()
+
+	var out []string
+	var ids []string
+	for rows.Next() {
+		var name string
+		var desc, kind sql.NullString
+		if rows.Scan(&name, &desc, &kind) != nil {
+			continue
+		}
+		ids = append(ids, entityID(KnownTypeAnchorDocument, name))
+		line := "  " + name
+		if kind.Valid && kind.String != "" {
+			line += " [" + kind.String + "]"
+		}
+		if desc.Valid && desc.String != "" {
+			line += ": " + truncate(desc.String, 120)
+		}
+		out = append(out, line)
+	}
+	if len(out) == 0 {
+		return "[SWL] No anchor documents indexed yet. Run query_swl {\"scan\":true}."
+	}
+	m.BumpAccessCount(ids)
+	return "[SWL] Anchor documents:\n" + strings.Join(out, "\n")
+}
+
+// askFileDetail returns what is known about a specific file: its description,
+// symbols, and tasks.  If the file has only been structurally indexed (not yet
+// read by a tool call), it says so explicitly rather than returning empty results.
+func (m *Manager) askFileDetail(hint string) string {
+	hint = strings.TrimSpace(hint)
+	if hint == "" {
+		return "[SWL] Please specify a file name."
+	}
+
+	// Find the file entity.
+	var fileID, fileName string
+	var depth int
+	var desc sql.NullString
+	err := m.db.QueryRow(`
+		SELECT id, name, knowledge_depth, json_extract(metadata,'$.description')
+		FROM entities
+		WHERE type = ? AND fact_status != 'deleted' AND name LIKE ?
+		ORDER BY knowledge_depth DESC LIMIT 1`,
+		KnownTypeFile, "%"+hint+"%",
+	).Scan(&fileID, &fileName, &depth, &desc)
+
+	if err != nil {
+		// Also try AnchorDocument.
+		err2 := m.db.QueryRow(`
+			SELECT id, name, knowledge_depth, json_extract(metadata,'$.description')
+			FROM entities
+			WHERE type = ? AND fact_status != 'deleted' AND name LIKE ?
+			ORDER BY knowledge_depth DESC LIMIT 1`,
+			KnownTypeAnchorDocument, "%"+hint+"%",
+		).Scan(&fileID, &fileName, &depth, &desc)
+		if err2 != nil {
+			return fmt.Sprintf("[SWL] No file found matching %q.", hint)
+		}
+	}
+
+	m.BumpAccessCount([]string{fileID})
+
+	out := fmt.Sprintf("[SWL] %s (depth %d):", fileName, depth)
+	if desc.Valid && desc.String != "" {
+		out += "\n  Description: " + desc.String
+	}
+
+	// If knowledge_depth == 1, content has never been extracted.
+	if depth <= 1 {
+		out += "\n  ⚠ This file has only been structurally indexed." +
+			"\n    Read it with read_file to populate symbols, imports, and tasks."
+		return out
+	}
+
+	// Symbols.
+	symRows, err := m.db.Query(`
+		SELECT e.name FROM entities e
+		JOIN edges ed ON ed.to_id = e.id AND ed.rel = 'defines'
+		WHERE e.type = ? AND e.fact_status != 'deleted' AND ed.from_id = ?
+		ORDER BY e.access_count DESC LIMIT 15`, KnownTypeSymbol, fileID)
+	if err == nil {
+		defer symRows.Close()
+		var syms []string
+		for symRows.Next() {
+			var s string
+			if symRows.Scan(&s) == nil {
+				syms = append(syms, s)
+			}
+		}
+		if len(syms) > 0 {
+			out += "\n  Symbols: " + strings.Join(syms, ", ")
+		}
+	}
+
+	// Tasks.
+	taskRows, err := m.db.Query(`
+		SELECT e.name FROM entities e
+		JOIN edges ed ON ed.to_id = e.id AND ed.rel = 'has_task'
+		WHERE e.type = ? AND e.fact_status != 'deleted' AND ed.from_id = ?
+		ORDER BY e.modified_at DESC LIMIT 5`, KnownTypeTask, fileID)
+	if err == nil {
+		defer taskRows.Close()
+		var tasks []string
+		for taskRows.Next() {
+			var t string
+			if taskRows.Scan(&t) == nil {
+				tasks = append(tasks, truncate(t, 80))
+			}
+		}
+		if len(tasks) > 0 {
+			out += "\n  Tasks: " + strings.Join(tasks, "; ")
+		}
+	}
+
+	return out
+}
 
 func (m *Manager) askSymbols(hint, symType string) string {
 	hint = strings.TrimSpace(hint)
@@ -333,30 +584,21 @@ var sqlTemplates = map[string]tier2Template{
 }
 
 func (m *Manager) tryTier3(question string) string {
-	// Split into words, skip common stop-words, cap at 3 terms.
-	stop := map[string]bool{
-		"the": true, "a": true, "an": true, "is": true, "in": true, "of": true,
-		"for": true, "to": true, "and": true, "or": true, "what": true, "how": true,
-		"where": true, "find": true, "show": true, "list": true, "get": true,
-	}
-	var terms []string
-	for _, w := range strings.Fields(strings.ToLower(question)) {
-		if !stop[w] && len(w) > 2 {
-			terms = append(terms, w)
-		}
-		if len(terms) == 3 {
-			break
-		}
+	terms := tier3Terms(question)
+	// cap at 3 for query specificity
+	if len(terms) > 3 {
+		terms = terms[:3]
 	}
 	if len(terms) == 0 {
 		return ""
 	}
 
+	// Each term matches against name OR metadata (description, module, etc.)
 	q := `SELECT type, name, fact_status FROM entities WHERE fact_status != 'deleted'`
-	args := make([]any, 0, len(terms))
+	args := make([]any, 0, len(terms)*2)
 	for _, t := range terms {
-		q += ` AND name LIKE ?`
-		args = append(args, "%"+t+"%")
+		q += ` AND (name LIKE ? OR metadata LIKE ?)`
+		args = append(args, "%"+t+"%", "%"+t+"%")
 	}
 	q += " ORDER BY knowledge_depth DESC, access_count DESC LIMIT 15"
 
@@ -377,6 +619,42 @@ func (m *Manager) tryTier3(question string) string {
 		return ""
 	}
 	return "[SWL] Freetext matches for " + strings.Join(terms, "+") + ":\n" + strings.Join(out, "\n")
+}
+
+// recordQueryGap upserts a question into query_gaps, incrementing count on
+// repeat.  Used to surface recurring unanswered questions in KnowledgeGaps.
+func (m *Manager) recordQueryGap(question string) {
+	terms := tier3Terms(question)
+	id := contentHash("gap:" + strings.ToLower(strings.TrimSpace(question)))
+	now := nowSQLite()
+	m.writer.mu.Lock()
+	m.db.Exec( //nolint:errcheck
+		`INSERT INTO query_gaps (id, question, terms, count, first_at, last_at)
+		 VALUES (?, ?, ?, 1, ?, ?)
+		 ON CONFLICT(id) DO UPDATE SET count = count + 1, last_at = excluded.last_at`,
+		id, question, strings.Join(terms, ","), now, now,
+	)
+	m.writer.mu.Unlock()
+}
+
+// tier3Terms extracts significant words from a question (shared by tryTier3
+// and recordQueryGap).
+func tier3Terms(question string) []string {
+	stop := map[string]bool{
+		"the": true, "a": true, "an": true, "is": true, "in": true, "of": true,
+		"for": true, "to": true, "and": true, "or": true, "what": true, "how": true,
+		"where": true, "find": true, "show": true, "list": true, "get": true,
+	}
+	var terms []string
+	for _, w := range strings.Fields(strings.ToLower(question)) {
+		if !stop[w] && len(w) > 2 {
+			terms = append(terms, w)
+		}
+		if len(terms) == 5 {
+			break
+		}
+	}
+	return terms
 }
 
 func (m *Manager) tryTier2(question string) string {
