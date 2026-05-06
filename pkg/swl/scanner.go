@@ -79,8 +79,19 @@ func (m *Manager) ScanWorkspace(root string, sessionKey ...string) (ScanStats, e
 		_ = m.writer.applyDelta(snapshotDelta, sk)
 	}
 
-	// Build map of all known file entity IDs → paths from DB.
-	knownFiles, err := m.loadKnownFiles()
+	// Build map of known file entity IDs → paths from DB, scoped to the
+	// scan root.  We only tombstone files that were previously indexed under
+	// this root — files outside the scan scope must never be touched.
+	relRoot := ""
+	if m.workspace != "" {
+		if r, err := filepath.Rel(m.workspace, root); err == nil && !strings.HasPrefix(r, "..") {
+			relRoot = r
+		}
+	}
+	if relRoot == "" {
+		relRoot = root
+	}
+	knownFiles, err := m.loadKnownFilesUnderRoot(relRoot)
 	if err != nil {
 		return stats, err
 	}
@@ -112,6 +123,17 @@ func (m *Manager) ScanWorkspace(root string, sessionKey ...string) (ScanStats, e
 				ID: dirID, Type: KnownTypeDirectory, Name: relPath,
 				Confidence: 1.0, ExtractionMethod: MethodObserved, KnowledgeDepth: 1,
 			})
+			// Create parent directory edge (skip workspace root which has no parent).
+			// filepath.Dir returns "" for single-component paths like "pkg",
+			// so we map "" to "." for the workspace root parent.
+			if relPath != "." {
+				parentRelPath := filepath.Dir(relPath)
+				if parentRelPath == "" {
+					parentRelPath = "."
+				}
+				parentDirID := entityID(KnownTypeDirectory, parentRelPath)
+				_ = m.writer.upsertEdge(EdgeTuple{FromID: dirID, Rel: KnownRelInDir, ToID: parentDirID})
+			}
 			return nil
 		}
 
@@ -209,11 +231,20 @@ func (m *Manager) ScanWorkspace(root string, sessionKey ...string) (ScanStats, e
 	return stats, nil
 }
 
-// loadKnownFiles returns a set of entity IDs for all non-deleted File entities.
-func (m *Manager) loadKnownFiles() (map[string]bool, error) {
+// loadKnownFilesUnderRoot returns a set of entity IDs for all non-deleted
+// File entities whose workspace-relative path starts with rootPrefix.
+// This scopes the tombstone phase so it can only delete files that were
+// previously indexed within the same scan root — never files outside it.
+func (m *Manager) loadKnownFilesUnderRoot(rootPrefix string) (map[string]bool, error) {
+	// Ensure the prefix ends with / so that "foo/bar" matches "foo/bar/*"
+	// but not "foo/barbaz/*".
+	prefix := rootPrefix
+	if !strings.HasSuffix(prefix, "/") {
+		prefix += "/"
+	}
 	rows, err := m.db.Query(
-		"SELECT id FROM entities WHERE type = ? AND fact_status != ?",
-		KnownTypeFile, FactDeleted,
+		"SELECT id FROM entities WHERE type = ? AND fact_status != ? AND (name = ? OR name LIKE ?)",
+		KnownTypeFile, FactDeleted, rootPrefix, prefix+"%",
 	)
 	if err != nil {
 		return nil, err
