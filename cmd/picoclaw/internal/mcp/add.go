@@ -173,7 +173,7 @@ func parseAddArgs(args []string) (addOptions, string, string, []string, bool, er
 }
 
 func buildServerConfig(target string, args []string, opts addOptions) (config.MCPServerConfig, error) {
-	transport := strings.ToLower(strings.TrimSpace(opts.Transport))
+	transport := config.NormalizeMCPTransportType(opts.Transport)
 	if transport == "" {
 		transport = "stdio"
 	}

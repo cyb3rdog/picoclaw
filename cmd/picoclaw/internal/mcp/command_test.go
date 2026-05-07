@@ -296,6 +296,25 @@ func TestMCPAddHTTPServer(t *testing.T) {
 	assert.Empty(t, server.Command)
 }
 
+func TestMCPAddSupportsStreamableHTTPAlias(t *testing.T) {
+	configPath := setupMCPConfigEnv(t)
+
+	cmd := NewMCPCommand()
+	_, err := executeCommand(cmd, []string{
+		"add",
+		"context7",
+		"--transport",
+		"streamable-http",
+		"https://mcp.context7.com/mcp",
+	}, "")
+	require.NoError(t, err)
+
+	cfg := readMCPConfig(t, configPath)
+	server := cfg.Tools.MCP.Servers["context7"]
+	assert.Equal(t, "http", server.Type)
+	assert.Equal(t, "https://mcp.context7.com/mcp", server.URL)
+}
+
 func TestMCPRemoveRemovesLastServerAndDisablesMCP(t *testing.T) {
 	configPath := setupMCPConfigEnv(t)
 	writeMCPConfig(t, configPath, &config.Config{

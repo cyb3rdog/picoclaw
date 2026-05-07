@@ -156,17 +156,11 @@ func loadMCPConfigSchema() (*jsonschema.Resolved, error) {
 }
 
 func inferTransportType(server config.MCPServerConfig) string {
-	switch server.Type {
-	case "stdio", "http", "sse":
-		return server.Type
+	transport := config.EffectiveMCPTransportType(server)
+	if transport == "" {
+		return "unknown"
 	}
-	if server.URL != "" {
-		return "sse"
-	}
-	if server.Command != "" {
-		return "stdio"
-	}
-	return "unknown"
+	return transport
 }
 
 func renderServerTarget(server config.MCPServerConfig) string {
