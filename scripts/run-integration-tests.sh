@@ -89,7 +89,7 @@ run_suite() {
     fi
 
     echo "==> [$suite_name] running: $TEST_COMMAND"
-    docker compose "${compose_args[@]}" run --rm "$runner_service" $TEST_COMMAND
+    docker compose "${compose_args[@]}" run --rm "$runner_service" sh -c "$TEST_COMMAND"
   )
 }
 
