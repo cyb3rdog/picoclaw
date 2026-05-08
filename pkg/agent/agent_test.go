@@ -61,18 +61,28 @@ type recordingChannelManager struct {
 	dismissed []string
 }
 
-func (m *recordingChannelManager) GetChannel(name string) (channels.Channel, bool) { return nil, false }
-func (m *recordingChannelManager) GetEnabledChannels() []string                     { return nil }
-func (m *recordingChannelManager) InvokeTypingStop(channel, chatID string)          {}
+func (m *recordingChannelManager) GetChannel(name string) (channels.Channel, bool) {
+	return nil, false
+}
+
+func (m *recordingChannelManager) GetEnabledChannels() []string {
+	return nil
+}
+
+func (m *recordingChannelManager) InvokeTypingStop(channel, chatID string) {}
+
 func (m *recordingChannelManager) SendMessage(ctx context.Context, msg bus.OutboundMessage) error {
 	return nil
 }
+
 func (m *recordingChannelManager) SendMedia(ctx context.Context, msg bus.OutboundMediaMessage) error {
 	return nil
 }
+
 func (m *recordingChannelManager) SendPlaceholder(ctx context.Context, channel, chatID string) bool {
 	return false
 }
+
 func (m *recordingChannelManager) DismissToolFeedback(
 	ctx context.Context, channel, chatID string, outboundCtx *bus.InboundContext,
 ) {
@@ -237,8 +247,11 @@ func TestNewAgentLoop_DoesNotRegisterWebSearchTool_WhenNoReadyProviders(t *testi
 }
 
 func TestPublishResponseIfNeeded_DismissesToolFeedbackWhenMessageToolAlreadySent(t *testing.T) {
-	al, _, _, _, cleanup := newTestAgentLoop(t)
+	al, msgBus, provider, sessions, cleanup := newTestAgentLoop(t)
 	defer cleanup()
+	_ = msgBus
+	_ = provider
+	_ = sessions
 
 	cm := &recordingChannelManager{}
 	al.channelManager = cm
