@@ -26,6 +26,50 @@ type EntropyMonitor struct {
 	PrevCount  int     // Previous result count
 }
 
+// EntropyMonitorLite is a minimal version for embedded systems (< 50MB RAM).
+// Uses int16 to halve memory footprint (suitable for Pi Zero).
+//go:embed notembed
+type EntropyMonitorLite struct {
+	Budget    int16  // Max 32767, sufficient for embedded
+	Spent     int16
+	MaxDepth  int16
+	Depth     int16
+	_         [2]byte // Padding for alignment
+}
+
+// NewEntropyMonitorLite creates minimal entropy monitor for embedded.
+func NewEntropyMonitorLite(budget int) *EntropyMonitorLite {
+	return &EntropyMonitorLite{
+		Budget:   int16(budget),
+		MaxDepth: 5,
+	}
+}
+
+// Record adds entropy cost (embedded version).
+func (em *EntropyMonitorLite) Record(infoGain int) bool {
+	em.Spent += int16(infoGain)
+	return int(em.Spent) >= int(em.Budget)
+}
+
+// CheckDepth embedded version.
+func (em *EntropyMonitorLite) CheckDepth() bool {
+	return int(em.Depth) > int(em.MaxDepth)
+}
+
+// CheckLite performs full termination check for embedded systems.
+func (em *EntropyMonitorLite) CheckLite(iter int) (bool, string) {
+	switch {
+	case int(em.Depth) > int(em.MaxDepth):
+		return true, "depth_limit"
+	case iter >= 50: // Fixed max iter for lite
+		return true, "iteration_cap"
+	case int(em.Spent) >= int(em.Budget):
+		return true, "entropy_exhausted"
+	default:
+		return false, ""
+	}
+}
+
 func NewEntropyMonitor(budget, maxDepth, maxIter int) *EntropyMonitor {
 	return &EntropyMonitor{
 		Budget:   budget,
@@ -150,6 +194,17 @@ type ConflictRecord struct {
 	Status    string       `json:"status"` // pending, resolved, dismissed
 	Resolution string     `json:"resolution,omitempty"`
 	DetectedAt time.Time   `json:"detected_at"`
+}
+
+// ConflictRecordLite is embedded version using fixed-size storage.
+// Uses int64 timestamp instead of time.Time to reduce memory.
+type ConflictRecordLite struct {
+	ID        [16]byte    // Fixed-size ID (truncated)
+	Type      uint8       // ConflictType as uint8
+	EntityA   [16]byte    // Fixed entity refs
+	EntityB   [16]byte
+	Status    uint8       // 0=pending, 1=resolved, 2=dismissed
+	Timestamp int64       // Unix timestamp instead of time.Time
 }
 
 // ConflictDetector manages saddle point detection and resolution.
