@@ -3,12 +3,15 @@ package agent
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 
+	"github.com/sipeed/picoclaw/pkg/bus"
+	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/providers"
-	"github.com/sipeed/picoclaw/pkg/routing"
+	"github.com/sipeed/picoclaw/pkg/session"
 	"github.com/sipeed/picoclaw/pkg/tools"
 )
 
@@ -185,6 +188,7 @@ func (al *AgentLoop) enqueueSteeringMessage(scope, agentID string, msg providers
 		return fmt.Errorf("steering queue is not initialized")
 	}
 
+	msg = steeringPromptMessage(msg)
 	if err := al.steering.pushScope(scope, msg); err != nil {
 		logger.WarnCF("agent", "Failed to enqueue steering message", map[string]any{
 			"error": err.Error(),
@@ -203,7 +207,7 @@ func (al *AgentLoop) enqueueSteeringMessage(scope, agentID string, msg providers
 		"scope":       normalizeSteeringScope(scope),
 	})
 
-	meta := EventMeta{
+	meta := HookMeta{
 		Source:    "Steer",
 		TracePath: "turn.interrupt.received",
 	}
@@ -227,7 +231,7 @@ func (al *AgentLoop) enqueueSteeringMessage(scope, agentID string, msg providers
 	}
 
 	al.emitEvent(
-		EventKindInterruptReceived,
+		runtimeevents.KindAgentInterruptReceived,
 		meta,
 		InterruptReceivedPayload{
 			Kind:       InterruptKindSteering,
@@ -290,12 +294,22 @@ func (al *AgentLoop) continueWithSteeringMessages(
 	ctx context.Context,
 	agent *AgentInstance,
 	sessionKey, channel, chatID string,
+	scope *session.SessionScope,
 	steeringMsgs []providers.Message,
 ) (string, error) {
+	dispatch := DispatchRequest{
+		SessionKey:   sessionKey,
+		SessionScope: session.CloneScope(scope),
+	}
+	if channel != "" || chatID != "" {
+		dispatch.InboundContext = &bus.InboundContext{
+			Channel:  channel,
+			ChatID:   chatID,
+			ChatType: inferChatTypeFromSessionScope(scope),
+		}
+	}
 	return al.runAgentLoop(ctx, agent, processOptions{
-		SessionKey:              sessionKey,
-		Channel:                 channel,
-		ChatID:                  chatID,
+		Dispatch:                dispatch,
 		DefaultResponse:         defaultResponse,
 		EnableSummary:           true,
 		SendResponse:            false,
@@ -310,9 +324,19 @@ func (al *AgentLoop) agentForSession(sessionKey string) *AgentInstance {
 		return nil
 	}
 
-	if parsed := routing.ParseAgentSessionKey(sessionKey); parsed != nil {
-		if agent, ok := registry.GetAgent(parsed.AgentID); ok {
-			return agent
+	agentIDs := registry.ListAgentIDs()
+	sort.Strings(agentIDs)
+	for _, agentID := range agentIDs {
+		agent, ok := registry.GetAgent(agentID)
+		if !ok || agent == nil {
+			continue
+		}
+		resolvedAgentID := session.ResolveAgentID(agent.Sessions, sessionKey)
+		if resolvedAgentID == "" {
+			continue
+		}
+		if scopedAgent, ok := registry.GetAgent(resolvedAgentID); ok {
+			return scopedAgent
 		}
 	}
 
@@ -326,33 +350,55 @@ func (al *AgentLoop) agentForSession(sessionKey string) *AgentInstance {
 //
 // If no steering messages are pending, it returns an empty string.
 func (al *AgentLoop) Continue(ctx context.Context, sessionKey, channel, chatID string) (string, error) {
-	if active := al.GetActiveTurn(); active != nil {
-		return "", fmt.Errorf("turn %s is still active", active.TurnID)
+	// Claim the session with a unique placeholder to prevent a TOCTOU race where two
+	// concurrent Continue calls for the same session both pass the active-turn
+	// check and create parallel turns. The placeholder is replaced by the real
+	// turnState inside continueWithSteeringMessages → runAgentLoop → registerActiveTurn.
+	placeholder := &turnState{
+		turnID: "pending-continue-" + sessionKey + "-" + fmt.Sprintf("%d", al.turnSeq.Add(1)),
+		phase:  TurnPhaseSetup,
 	}
+	if _, loaded := al.activeTurnStates.LoadOrStore(sessionKey, placeholder); loaded {
+		if active := al.GetActiveTurnBySession(sessionKey); active != nil {
+			return "", fmt.Errorf("turn %s is still active for session %q", active.TurnID, sessionKey)
+		}
+		// Another Continue just claimed the slot; let it handle the steering.
+		return "", nil
+	}
+
 	if err := al.ensureHooksInitialized(ctx); err != nil {
+		al.activeTurnStates.Delete(sessionKey)
 		return "", err
 	}
 	if err := al.ensureMCPInitialized(ctx); err != nil {
+		al.activeTurnStates.Delete(sessionKey)
 		return "", err
 	}
 
 	steeringMsgs := al.dequeueSteeringMessagesForScopeWithFallback(sessionKey)
 	if len(steeringMsgs) == 0 {
+		al.activeTurnStates.Delete(sessionKey)
 		return "", nil
 	}
 
 	agent := al.agentForSession(sessionKey)
 	if agent == nil {
+		al.activeTurnStates.Delete(sessionKey)
 		return "", fmt.Errorf("no agent available for session %q", sessionKey)
 	}
 
 	if tool, ok := agent.Tools.Get("message"); ok {
-		if resetter, ok := tool.(interface{ ResetSentInRound() }); ok {
-			resetter.ResetSentInRound()
+		if resetter, ok := tool.(interface{ ResetSentInRound(sessionKey string) }); ok {
+			resetter.ResetSentInRound(sessionKey)
 		}
 	}
 
-	return al.continueWithSteeringMessages(ctx, agent, sessionKey, channel, chatID, steeringMsgs)
+	var scope *session.SessionScope
+	if metaStore, ok := agent.Sessions.(session.MetadataAwareSessionStore); ok {
+		scope = metaStore.GetSessionScope(sessionKey)
+	}
+
+	return al.continueWithSteeringMessages(ctx, agent, sessionKey, channel, chatID, scope, steeringMsgs)
 }
 
 func (al *AgentLoop) InterruptGraceful(hint string) error {
@@ -365,7 +411,7 @@ func (al *AgentLoop) InterruptGraceful(hint string) error {
 	}
 
 	al.emitEvent(
-		EventKindInterruptReceived,
+		runtimeevents.KindAgentInterruptReceived,
 		ts.eventMeta("InterruptGraceful", "turn.interrupt.received"),
 		InterruptReceivedPayload{
 			Kind:    InterruptKindGraceful,
@@ -376,17 +422,24 @@ func (al *AgentLoop) InterruptGraceful(hint string) error {
 	return nil
 }
 
+// InterruptHard aborts an arbitrary active turn. In parallel mode this may
+// target the wrong session. Prefer HardAbort(sessionKey) instead.
+//
+// Deprecated: Use HardAbort(sessionKey) for session-safe aborts.
 func (al *AgentLoop) InterruptHard() error {
 	ts := al.getAnyActiveTurnState()
 	if ts == nil {
 		return fmt.Errorf("no active turn")
+	}
+	if strings.HasPrefix(ts.turnID, "pending-") {
+		return fmt.Errorf("turn is still initializing for session %s", ts.sessionKey)
 	}
 	if !ts.requestHardAbort() {
 		return fmt.Errorf("turn %s is already aborting", ts.turnID)
 	}
 
 	al.emitEvent(
-		EventKindInterruptReceived,
+		runtimeevents.KindAgentInterruptReceived,
 		ts.eventMeta("InterruptHard", "turn.interrupt.received"),
 		InterruptReceivedPayload{
 			Kind: InterruptKindHard,
@@ -445,6 +498,10 @@ func (al *AgentLoop) HardAbort(sessionKey string) error {
 	ts, ok := tsInterface.(*turnState)
 	if !ok {
 		return fmt.Errorf("invalid turn state type for session %s", sessionKey)
+	}
+
+	if strings.HasPrefix(ts.turnID, "pending-") {
+		return fmt.Errorf("turn is still initializing for session %s", sessionKey)
 	}
 
 	logger.InfoCF("agent", "Hard abort triggered", map[string]any{

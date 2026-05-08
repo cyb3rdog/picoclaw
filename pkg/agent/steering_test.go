@@ -14,9 +14,11 @@ import (
 
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/config"
+	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
 	"github.com/sipeed/picoclaw/pkg/media"
 	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/routing"
+	"github.com/sipeed/picoclaw/pkg/session"
 	"github.com/sipeed/picoclaw/pkg/tools"
 )
 
@@ -337,97 +339,6 @@ func TestAgentLoop_Continue_WithMessages(t *testing.T) {
 	}
 	if resp != "continued response" {
 		t.Fatalf("expected 'continued response', got %q", resp)
-	}
-}
-
-func TestDrainBusToSteering_RequeuesDifferentScopeMessage(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "agent-test-*")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	cfg := &config.Config{
-		Agents: config.AgentsConfig{
-			Defaults: config.AgentDefaults{
-				Workspace:         tmpDir,
-				ModelName:         "test-model",
-				MaxTokens:         4096,
-				MaxToolIterations: 10,
-			},
-		},
-		Session: config.SessionConfig{
-			DMScope: "per-peer",
-		},
-	}
-
-	msgBus := bus.NewMessageBus()
-	al := NewAgentLoop(cfg, msgBus, &mockProvider{})
-
-	activeMsg := bus.InboundMessage{
-		Channel:  "telegram",
-		SenderID: "user1",
-		ChatID:   "chat1",
-		Content:  "active turn",
-		Peer: bus.Peer{
-			Kind: "direct",
-			ID:   "user1",
-		},
-	}
-	activeScope, activeAgentID, ok := al.resolveSteeringTarget(activeMsg)
-	if !ok {
-		t.Fatal("expected active message to resolve to a steering scope")
-	}
-
-	otherMsg := bus.InboundMessage{
-		Channel:  "telegram",
-		SenderID: "user2",
-		ChatID:   "chat2",
-		Content:  "other session",
-		Peer: bus.Peer{
-			Kind: "direct",
-			ID:   "user2",
-		},
-	}
-	otherScope, _, ok := al.resolveSteeringTarget(otherMsg)
-	if !ok {
-		t.Fatal("expected other message to resolve to a steering scope")
-	}
-	if otherScope == activeScope {
-		t.Fatalf("expected different steering scopes, got same scope %q", activeScope)
-	}
-
-	if err := msgBus.PublishInbound(context.Background(), otherMsg); err != nil {
-		t.Fatalf("PublishInbound failed: %v", err)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-
-	done := make(chan struct{})
-	go func() {
-		al.drainBusToSteering(ctx, activeScope, activeAgentID)
-		close(done)
-	}()
-
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("timeout waiting for drainBusToSteering to stop")
-	}
-
-	if msgs := al.dequeueSteeringMessagesForScope(activeScope); len(msgs) != 0 {
-		t.Fatalf("expected no steering messages for active scope, got %v", msgs)
-	}
-
-	select {
-	case <-ctx.Done():
-		t.Fatalf("timeout waiting for requeued message on outbound bus")
-	case requeued := <-msgBus.OutboundChan():
-		if requeued.Channel != otherMsg.Channel || requeued.ChatID != otherMsg.ChatID ||
-			requeued.Content != otherMsg.Content {
-			t.Fatalf("requeued message mismatch: got %+v want %+v", requeued, otherMsg)
-		}
 	}
 }
 
@@ -841,24 +752,22 @@ func TestAgentLoop_Run_AutoContinuesLateSteeringMessage(t *testing.T) {
 	}()
 
 	first := bus.InboundMessage{
-		Channel:  "test",
-		SenderID: "user1",
-		ChatID:   "chat1",
-		Content:  "first message",
-		Peer: bus.Peer{
-			Kind: "direct",
-			ID:   "user1",
+		Context: bus.InboundContext{
+			Channel:  "test",
+			ChatID:   "chat1",
+			ChatType: "direct",
+			SenderID: "user1",
 		},
+		Content: "first message",
 	}
 	late := bus.InboundMessage{
-		Channel:  "test",
-		SenderID: "user1",
-		ChatID:   "chat1",
-		Content:  "late append",
-		Peer: bus.Peer{
-			Kind: "direct",
-			ID:   "user1",
+		Context: bus.InboundContext{
+			Channel:  "test",
+			ChatID:   "chat1",
+			ChatType: "direct",
+			SenderID: "user1",
 		},
+		Content: "late append",
 	}
 
 	pubCtx, pubCancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -949,7 +858,7 @@ func TestAgentLoop_Steering_DirectResponseContinuesWithQueuedMessage(t *testing.
 		},
 	}
 
-	sessionKey := routing.BuildAgentMainSessionKey(routing.DefaultAgentID)
+	sessionKey := session.BuildMainSessionKey(routing.DefaultAgentID)
 	provider := &blockingDirectProvider{
 		firstStarted: make(chan struct{}),
 		releaseFirst: make(chan struct{}),
@@ -1013,6 +922,62 @@ func TestAgentLoop_Steering_DirectResponseContinuesWithQueuedMessage(t *testing.
 	}
 }
 
+func TestAgentLoop_AgentForSession_UsesStoredScopeMetadata(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "agent-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	cfg := &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				Workspace:         tmpDir,
+				ModelName:         "test-model",
+				MaxTokens:         4096,
+				MaxToolIterations: 10,
+			},
+			List: []config.AgentConfig{
+				{ID: "sales", Default: true},
+				{ID: "support"},
+			},
+		},
+	}
+
+	al := NewAgentLoop(cfg, bus.NewMessageBus(), &mockProvider{})
+	support, ok := al.registry.GetAgent("support")
+	if !ok || support == nil {
+		t.Fatal("expected support agent")
+	}
+
+	metaStore, ok := support.Sessions.(session.MetadataAwareSessionStore)
+	if !ok {
+		t.Fatal("support session store does not support metadata")
+	}
+
+	alias := "agent:support:slack:channel:c001"
+	key := session.BuildOpaqueSessionKey(alias)
+	scope := &session.SessionScope{
+		Version:    session.ScopeVersionV1,
+		AgentID:    "support",
+		Channel:    "slack",
+		Account:    "default",
+		Dimensions: []string{"chat"},
+		Values: map[string]string{
+			"chat": "channel:c001",
+		},
+	}
+	metaStore.EnsureSessionMetadata(key, scope, []string{alias})
+
+	got := al.agentForSession(key)
+	if got == nil {
+		t.Fatal("agentForSession() returned nil")
+	}
+	if got.ID != "support" {
+		t.Fatalf("agentForSession() = %q, want %q", got.ID, "support")
+	}
+}
+
 func TestAgentLoop_Continue_PreservesSteeringMedia(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "agent-test-*")
 	if err != nil {
@@ -1060,7 +1025,7 @@ func TestAgentLoop_Continue_PreservesSteeringMedia(t *testing.T) {
 		},
 	}
 
-	sessionKey := routing.BuildAgentMainSessionKey(routing.DefaultAgentID)
+	sessionKey := session.BuildMainSessionKey(routing.DefaultAgentID)
 	msgBus := bus.NewMessageBus()
 	al := NewAgentLoop(cfg, msgBus, provider)
 	al.SetMediaStore(store)
@@ -1087,16 +1052,16 @@ func TestAgentLoop_Continue_PreservesSteeringMedia(t *testing.T) {
 
 	foundResolvedMedia := false
 	for _, msg := range msgs {
-		if msg.Role != "user" || msg.Content != "describe this image" || len(msg.Media) != 1 {
+		if msg.Role != "user" || !strings.Contains(msg.Content, "describe this image") {
 			continue
 		}
-		if strings.HasPrefix(msg.Media[0], "data:image/png;base64,") {
+		if strings.Contains(msg.Content, "[image:") {
 			foundResolvedMedia = true
 			break
 		}
 	}
 	if !foundResolvedMedia {
-		t.Fatal("expected continue path to inject steering media into the provider request")
+		t.Fatal("expected continue path to inject image path tag into the provider request")
 	}
 
 	defaultAgent := al.registry.GetDefaultAgent()
@@ -1168,10 +1133,16 @@ func TestAgentLoop_InterruptGraceful_UsesTerminalNoToolCall(t *testing.T) {
 	al := NewAgentLoop(cfg, msgBus, provider)
 	al.RegisterTool(tool1)
 	al.RegisterTool(tool2)
-	sessionKey := routing.BuildAgentMainSessionKey(routing.DefaultAgentID)
+	sessionKey := session.BuildMainSessionKey(routing.DefaultAgentID)
 
-	sub := al.SubscribeEvents(32)
-	defer al.UnsubscribeEvents(sub.ID)
+	runtimeCh, closeRuntimeEvents := subscribeRuntimeEventsForTest(
+		t,
+		al,
+		32,
+		runtimeevents.KindAgentInterruptReceived,
+		runtimeevents.KindAgentTurnEnd,
+	)
+	defer closeRuntimeEvents()
 
 	type result struct {
 		resp string
@@ -1258,8 +1229,8 @@ func TestAgentLoop_InterruptGraceful_UsesTerminalNoToolCall(t *testing.T) {
 		t.Fatal("expected remaining tool to be marked as skipped after graceful interrupt")
 	}
 
-	events := collectEventStream(sub.C)
-	interruptEvt, ok := findEvent(events, EventKindInterruptReceived)
+	events := collectRuntimeEventStream(runtimeCh)
+	interruptEvt, ok := findRuntimeEvent(events, runtimeevents.KindAgentInterruptReceived)
 	if !ok {
 		t.Fatal("expected interrupt received event")
 	}
@@ -1271,7 +1242,7 @@ func TestAgentLoop_InterruptGraceful_UsesTerminalNoToolCall(t *testing.T) {
 		t.Fatalf("expected graceful interrupt payload, got %q", interruptPayload.Kind)
 	}
 
-	turnEndEvt, ok := findEvent(events, EventKindTurnEnd)
+	turnEndEvt, ok := findRuntimeEvent(events, runtimeevents.KindAgentTurnEnd)
 	if !ok {
 		t.Fatal("expected turn end event")
 	}
@@ -1322,7 +1293,7 @@ func TestAgentLoop_InterruptHard_RestoresSession(t *testing.T) {
 	al := NewAgentLoop(cfg, msgBus, provider)
 	started := make(chan struct{})
 	al.RegisterTool(&interruptibleTool{name: "cancel_tool", started: started})
-	sessionKey := routing.BuildAgentMainSessionKey(routing.DefaultAgentID)
+	sessionKey := session.BuildMainSessionKey(routing.DefaultAgentID)
 
 	defaultAgent := al.registry.GetDefaultAgent()
 	if defaultAgent == nil {
@@ -1335,8 +1306,14 @@ func TestAgentLoop_InterruptHard_RestoresSession(t *testing.T) {
 	}
 	defaultAgent.Sessions.SetHistory(sessionKey, originalHistory)
 
-	sub := al.SubscribeEvents(16)
-	defer al.UnsubscribeEvents(sub.ID)
+	runtimeCh, closeRuntimeEvents := subscribeRuntimeEventsForTest(
+		t,
+		al,
+		16,
+		runtimeevents.KindAgentInterruptReceived,
+		runtimeevents.KindAgentTurnEnd,
+	)
+	defer closeRuntimeEvents()
 
 	type result struct {
 		resp string
@@ -1389,8 +1366,8 @@ func TestAgentLoop_InterruptHard_RestoresSession(t *testing.T) {
 		t.Fatalf("expected history rollback after hard abort, got %#v", finalHistory)
 	}
 
-	events := collectEventStream(sub.C)
-	interruptEvt, ok := findEvent(events, EventKindInterruptReceived)
+	events := collectRuntimeEventStream(runtimeCh)
+	interruptEvt, ok := findRuntimeEvent(events, runtimeevents.KindAgentInterruptReceived)
 	if !ok {
 		t.Fatal("expected interrupt received event")
 	}
@@ -1402,7 +1379,7 @@ func TestAgentLoop_InterruptHard_RestoresSession(t *testing.T) {
 		t.Fatalf("expected hard interrupt payload, got %q", interruptPayload.Kind)
 	}
 
-	turnEndEvt, ok := findEvent(events, EventKindTurnEnd)
+	turnEndEvt, ok := findRuntimeEvent(events, runtimeevents.KindAgentTurnEnd)
 	if !ok {
 		t.Fatal("expected turn end event")
 	}

@@ -97,6 +97,7 @@ func resetGatewayTestState(t *testing.T) {
 
 	originalHealthGet := gatewayHealthGet
 	originalProcessMatcher := gatewayProcessMatcher
+	originalExecCommand := gatewayExecCommand
 	originalRestartGracePeriod := gatewayRestartGracePeriod
 	originalRestartForceKillWindow := gatewayRestartForceKillWindow
 	originalRestartPollInterval := gatewayRestartPollInterval
@@ -104,6 +105,7 @@ func resetGatewayTestState(t *testing.T) {
 	t.Cleanup(func() {
 		gatewayHealthGet = originalHealthGet
 		gatewayProcessMatcher = originalProcessMatcher
+		gatewayExecCommand = originalExecCommand
 		gatewayRestartGracePeriod = originalRestartGracePeriod
 		gatewayRestartForceKillWindow = originalRestartForceKillWindow
 		gatewayRestartPollInterval = originalRestartPollInterval
@@ -117,6 +119,226 @@ func resetGatewayTestState(t *testing.T) {
 		setGatewayRuntimeStatusLocked("stopped")
 		gateway.mu.Unlock()
 	})
+}
+
+func TestPicoGatewayProtocol(t *testing.T) {
+	resetGatewayTestState(t)
+
+	gateway.mu.Lock()
+	gateway.picoToken = "ui-token"
+	gateway.mu.Unlock()
+
+	if got := picoGatewayProtocol(); got != tokenPrefix+"ui-token" {
+		t.Fatalf("picoGatewayProtocol() = %q, want %q", got, tokenPrefix+"ui-token")
+	}
+}
+
+type gatewayStartEnvSnapshot struct {
+	GatewayHost    string `json:"gateway_host"`
+	GatewayHostSet bool   `json:"gateway_host_set"`
+	ConfigPath     string `json:"config_path"`
+}
+
+func TestGatewayStartHelperProcess(t *testing.T) {
+	var envPath string
+	for i, arg := range os.Args {
+		if arg == "--" && i+2 < len(os.Args) && os.Args[i+1] == "gateway-env-helper" {
+			envPath = os.Args[i+2]
+			break
+		}
+	}
+	if envPath == "" {
+		t.Skip("helper process")
+	}
+
+	host, ok := os.LookupEnv(config.EnvGatewayHost)
+	raw, err := json.Marshal(gatewayStartEnvSnapshot{
+		GatewayHost:    host,
+		GatewayHostSet: ok,
+		ConfigPath:     os.Getenv(config.EnvConfig),
+	})
+	if err != nil {
+		_, _ = io.WriteString(os.Stderr, err.Error())
+		os.Exit(2)
+	}
+	if err := os.WriteFile(envPath, raw, 0o600); err != nil {
+		_, _ = io.WriteString(os.Stderr, err.Error())
+		os.Exit(2)
+	}
+	os.Exit(0)
+}
+
+func unsetGatewayStartEnvForTest(t *testing.T, key string) {
+	t.Helper()
+
+	prev, hadPrev := os.LookupEnv(key)
+	if err := os.Unsetenv(key); err != nil {
+		t.Fatalf("Unsetenv(%q) error = %v", key, err)
+	}
+	t.Cleanup(func() {
+		if hadPrev {
+			_ = os.Setenv(key, prev)
+			return
+		}
+		_ = os.Unsetenv(key)
+	})
+}
+
+func newGatewayStartTestHandler(t *testing.T) *Handler {
+	t.Helper()
+	resetGatewayTestState(t)
+
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	cfg := config.DefaultConfig()
+	if err := config.SaveConfig(configPath, cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	h := NewHandler(configPath)
+	h.SetServerOptions(18800, false, false, nil)
+	return h
+}
+
+func startGatewayAndCaptureEnv(t *testing.T, h *Handler) gatewayStartEnvSnapshot {
+	t.Helper()
+
+	unsetGatewayStartEnvForTest(t, config.EnvGatewayHost)
+
+	envPath := filepath.Join(t.TempDir(), "gateway-child-env.json")
+	gatewayExecCommand = func(_ string, _ ...string) *exec.Cmd {
+		return exec.Command(
+			os.Args[0],
+			"-test.run=TestGatewayStartHelperProcess",
+			"--",
+			"gateway-env-helper",
+			envPath,
+		)
+	}
+
+	pid, err := h.startGatewayLocked("starting", 0)
+	if err != nil {
+		t.Fatalf("startGatewayLocked() error = %v", err)
+	}
+	if pid <= 0 {
+		t.Fatalf("startGatewayLocked() pid = %d, want > 0", pid)
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		raw, err := os.ReadFile(envPath)
+		if err == nil {
+			var snapshot gatewayStartEnvSnapshot
+			err = json.Unmarshal(raw, &snapshot)
+			if err != nil {
+				t.Fatalf("Unmarshal(child env) error = %v", err)
+			}
+			return snapshot
+		}
+		if !os.IsNotExist(err) {
+			t.Fatalf("ReadFile(%q) error = %v", envPath, err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for gateway child env snapshot %q", envPath)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func TestStartGatewayLocked_ForwardsLauncherHostOverrideToGatewayEnv(t *testing.T) {
+	h := newGatewayStartTestHandler(t)
+	h.SetServerBindHost("127.0.0.1,::1", true)
+
+	snapshot := startGatewayAndCaptureEnv(t, h)
+	if !snapshot.GatewayHostSet {
+		t.Fatal("gateway host env was not set")
+	}
+	if snapshot.GatewayHost != "127.0.0.1,::1" {
+		t.Fatalf("gateway host env = %q, want %q", snapshot.GatewayHost, "127.0.0.1,::1")
+	}
+	if snapshot.ConfigPath != h.configPath {
+		t.Fatalf("config env = %q, want %q", snapshot.ConfigPath, h.configPath)
+	}
+}
+
+func TestStartGatewayLocked_ForwardsLauncherHostFromEnvironmentToGatewayEnv(t *testing.T) {
+	h := newGatewayStartTestHandler(t)
+	h.SetServerBindHost("::", true)
+
+	snapshot := startGatewayAndCaptureEnv(t, h)
+	if !snapshot.GatewayHostSet {
+		t.Fatal("gateway host env was not set")
+	}
+	if snapshot.GatewayHost != "::" {
+		t.Fatalf("gateway host env = %q, want %q", snapshot.GatewayHost, "::")
+	}
+}
+
+func TestStartGatewayLocked_ForwardsWildcardHostForPublicLauncher(t *testing.T) {
+	h := newGatewayStartTestHandler(t)
+	h.SetServerOptions(18800, true, true, nil)
+
+	snapshot := startGatewayAndCaptureEnv(t, h)
+	if !snapshot.GatewayHostSet {
+		t.Fatal("gateway host env was not set")
+	}
+	if snapshot.GatewayHost != "*" {
+		t.Fatalf("gateway host env = %q, want %q", snapshot.GatewayHost, "*")
+	}
+}
+
+func TestStartGatewayLocked_UsesReloadedConfigForBootSignature(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("sleep command differs on Windows")
+	}
+
+	resetGatewayTestState(t)
+
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	cfg := config.DefaultConfig()
+	delete(cfg.Channels, "pico")
+	if err := config.SaveConfig(configPath, cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	h := NewHandler(configPath)
+	h.SetServerOptions(18800, false, false, nil)
+	gatewayExecCommand = func(_ string, _ ...string) *exec.Cmd {
+		return exec.Command("sleep", "30")
+	}
+
+	originalSignature := computeConfigSignature(cfg)
+	pid, err := h.startGatewayLocked("starting", 0)
+	if err != nil {
+		t.Fatalf("startGatewayLocked() error = %v", err)
+	}
+	if pid <= 0 {
+		t.Fatalf("startGatewayLocked() pid = %d, want > 0", pid)
+	}
+
+	gateway.mu.Lock()
+	cmd := gateway.cmd
+	bootSignature := gateway.bootConfigSignature
+	gateway.mu.Unlock()
+	t.Cleanup(func() {
+		if cmd != nil && cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+		if cmd != nil {
+			_ = cmd.Wait()
+		}
+	})
+
+	updatedCfg, err := config.LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	expectedSignature := computeConfigSignature(updatedCfg)
+	if expectedSignature == originalSignature {
+		t.Fatal("expected EnsurePicoChannel() to change the config signature during gateway start")
+	}
+	if bootSignature != expectedSignature {
+		t.Fatalf("bootConfigSignature = %q, want %q", bootSignature, expectedSignature)
+	}
 }
 
 func TestGatewayStartReady_NoDefaultModel(t *testing.T) {
@@ -912,6 +1134,136 @@ func TestGatewayStatusRequiresRestartAfterToolChange(t *testing.T) {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
 	updatedCfg.Tools.WriteFile.Enabled = false
+	if err := config.SaveConfig(configPath, updatedCfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	gatewayHealthGet = func(string, time.Duration) (*http.Response, error) {
+		return mockGatewayHealthResponse(http.StatusOK, os.Getpid()), nil
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/gateway/status", nil)
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+
+	if got := body["gateway_status"]; got != "running" {
+		t.Fatalf("gateway_status = %#v, want %q", got, "running")
+	}
+	if got := body["gateway_restart_required"]; got != true {
+		t.Fatalf("gateway_restart_required = %#v, want true", got)
+	}
+}
+
+func TestGatewayStatusRequiresRestartAfterChannelChange(t *testing.T) {
+	resetGatewayTestState(t)
+
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	cfg := config.DefaultConfig()
+	cfg.Agents.Defaults.ModelName = cfg.ModelList[0].ModelName
+	cfg.ModelList[0].SetAPIKey("test-key")
+	if err := config.SaveConfig(configPath, cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	h := NewHandler(configPath)
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux)
+
+	process, err := os.FindProcess(os.Getpid())
+	if err != nil {
+		t.Fatalf("FindProcess() error = %v", err)
+	}
+
+	bootSignature := computeConfigSignature(cfg)
+	gateway.mu.Lock()
+	gateway.cmd = &exec.Cmd{Process: process}
+	gateway.bootDefaultModel = cfg.ModelList[0].ModelName
+	gateway.bootConfigSignature = bootSignature
+	setGatewayRuntimeStatusLocked("running")
+	gateway.mu.Unlock()
+
+	updatedCfg, err := config.LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	telegram := updatedCfg.Channels.Get("telegram")
+	if telegram == nil {
+		t.Fatalf("expected default telegram channel config")
+	}
+	telegram.Enabled = !telegram.Enabled
+	if err := config.SaveConfig(configPath, updatedCfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	gatewayHealthGet = func(string, time.Duration) (*http.Response, error) {
+		return mockGatewayHealthResponse(http.StatusOK, os.Getpid()), nil
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/gateway/status", nil)
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+
+	if got := body["gateway_status"]; got != "running" {
+		t.Fatalf("gateway_status = %#v, want %q", got, "running")
+	}
+	if got := body["gateway_restart_required"]; got != true {
+		t.Fatalf("gateway_restart_required = %#v, want true", got)
+	}
+}
+
+func TestGatewayStatusRequiresRestartAfterWebSearchConfigChange(t *testing.T) {
+	resetGatewayTestState(t)
+
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	cfg := config.DefaultConfig()
+	cfg.Agents.Defaults.ModelName = cfg.ModelList[0].ModelName
+	cfg.ModelList[0].SetAPIKey("test-key")
+	cfg.Tools.Web.Enabled = true
+	cfg.Tools.Web.Provider = "sogou"
+	if err := config.SaveConfig(configPath, cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	h := NewHandler(configPath)
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux)
+
+	process, err := os.FindProcess(os.Getpid())
+	if err != nil {
+		t.Fatalf("FindProcess() error = %v", err)
+	}
+
+	bootSignature := computeConfigSignature(cfg)
+	gateway.mu.Lock()
+	gateway.cmd = &exec.Cmd{Process: process}
+	gateway.bootDefaultModel = cfg.ModelList[0].ModelName
+	gateway.bootConfigSignature = bootSignature
+	setGatewayRuntimeStatusLocked("running")
+	gateway.mu.Unlock()
+
+	updatedCfg, err := config.LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	updatedCfg.Tools.Web.Provider = "duckduckgo"
 	if err := config.SaveConfig(configPath, updatedCfg); err != nil {
 		t.Fatalf("SaveConfig() error = %v", err)
 	}

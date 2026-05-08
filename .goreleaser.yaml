@@ -9,11 +9,10 @@ git:
 
 before:
   hooks:
-    - go mod tidy
     - go generate ./...
-    - sh -c 'cd web/frontend && pnpm install && pnpm build:backend'
-    - go install github.com/tc-hib/go-winres@latest
-    - go-winres make --in web/backend/winres/winres.json --out web/backend/rsrc --product-version={{ .Version }} --file-version={{ .Version }}
+    - sh -c 'cd web/frontend && CI=true pnpm install --frozen-lockfile && pnpm build:backend'
+    - sh -c 'GOBIN="$(go env GOPATH)/bin"; mkdir -p "$GOBIN"; go install github.com/tc-hib/go-winres@v0.3.3 && "$GOBIN/go-winres" make --in web/backend/winres/winres.json --out web/backend/rsrc --product-version={{ .Version }} --file-version={{ .Version }}'
+    - sh -c 'if [ "${INCLUDE_ANDROID_BUNDLE:-}" = "true" ]; then make build-android-bundle; fi'
 
 builds:
   - id: picoclaw
@@ -27,7 +26,7 @@ builds:
       - -X github.com/sipeed/picoclaw/pkg/config.Version={{ .Version }}
       - -X github.com/sipeed/picoclaw/pkg/config.GitCommit={{ .ShortCommit }}
       - -X github.com/sipeed/picoclaw/pkg/config.BuildTime={{ .Date }}
-      - -X github.com/sipeed/picoclaw/pkg/config.GoVersion={{ .Env.GOVERSION }}
+      - -X github.com/sipeed/picoclaw/pkg/config.GoVersion={{ with index .Env "GOVERSION" }}{{ . }}{{ else }}unknown{{ end }}
     goos:
       - linux
       - windows
@@ -67,6 +66,10 @@ builds:
       - stdjson
     ldflags:
       - -s -w
+      - -X github.com/sipeed/picoclaw/pkg/config.Version={{ .Version }}
+      - -X github.com/sipeed/picoclaw/pkg/config.GitCommit={{ .ShortCommit }}
+      - -X github.com/sipeed/picoclaw/pkg/config.BuildTime={{ .Date }}
+      - -X github.com/sipeed/picoclaw/pkg/config.GoVersion={{ with index .Env "GOVERSION" }}{{ . }}{{ else }}unknown{{ end }}
     goos:
       - linux
       - windows
@@ -87,45 +90,6 @@ builds:
     gomips:
       - softfloat
     main: ./web/backend
-    ignore:
-      - goos: windows
-        goarch: arm
-      - goos: netbsd
-        goarch: s390x
-      - goos: netbsd
-        goarch: mips64
-      - goos: netbsd
-        goarch: arm
-
-  - id: picoclaw-launcher-tui
-    binary: picoclaw-launcher-tui
-    env:
-      - CGO_ENABLED=0
-    tags:
-      - goolm
-      - stdjson
-    ldflags:
-      - -s -w
-    goos:
-      - linux
-      - windows
-      - darwin
-      - freebsd
-      - netbsd
-    goarch:
-      - amd64
-      - arm64
-      - riscv64
-      - loong64
-      - arm
-      - s390x
-      - mipsle
-    goarm:
-      - "6"
-      - "7"
-    gomips:
-      - softfloat
-    main: ./cmd/picoclaw-launcher-tui
     ignore:
       - goos: windows
         goarch: arm
@@ -159,7 +123,6 @@ dockers_v2:
     ids:
       - picoclaw
       - picoclaw-launcher
-      - picoclaw-launcher-tui
     images:
       - "ghcr.io/{{ .Env.GITHUB_REPOSITORY_OWNER }}/picoclaw"
       - 'docker.io/{{ .Env.DOCKERHUB_IMAGE_NAME }}'
@@ -177,7 +140,6 @@ notarize:
       ids:
         - picoclaw
         - picoclaw-launcher
-        - picoclaw-launcher-tui
       sign:
         certificate: "{{.Env.MACOS_SIGN_P12}}"
         password: "{{.Env.MACOS_SIGN_PASSWORD}}"
@@ -208,7 +170,6 @@ nfpms:
     ids:
       - picoclaw
       - picoclaw-launcher
-      - picoclaw-launcher-tui
     package_name: picoclaw
     file_name_template: >-
       {{ .PackageName }}_
@@ -245,6 +206,8 @@ changelog:
 
 release:
   disable: '{{ isEnvSet "NIGHTLY_BUILD" }}'
+  extra_files:
+    - glob: ./build/picoclaw-android-universal.zip
   footer: >-
 
     ---

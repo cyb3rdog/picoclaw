@@ -16,6 +16,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/routing"
 	"github.com/sipeed/picoclaw/pkg/session"
+	"github.com/sipeed/picoclaw/pkg/swl"
 	"github.com/sipeed/picoclaw/pkg/tools"
 )
 
@@ -56,6 +57,11 @@ type AgentInstance struct {
 	// instances. This allows each fallback model to use its own api_base and api_key
 	// from model_list, instead of inheriting the primary model's provider config.
 	CandidateProviders map[string]providers.LLMProvider
+
+	// SWLManager is non-nil when the Semantic Workspace Layer is enabled.
+	SWLManager *swl.Manager
+	// swlRelease is called in Close() to decrement the registry reference count.
+	swlRelease func()
 }
 
 // NewAgentInstance creates an agent instance from config.
@@ -118,6 +124,35 @@ func NewAgentInstance(
 		toolsRegistry.Register(tools.NewAppendFileTool(workspace, restrict, allowWritePaths))
 	}
 
+	// SWL (Semantic Workspace Layer) — optional persistent knowledge graph.
+	var swlManager *swl.Manager
+	if cfg.Tools.SWL != nil && cfg.Tools.SWL.Enabled {
+		swlCfg := &swl.Config{
+			DBPath:            cfg.Tools.SWL.DBPath,
+			MaxFileSizeBytes:  cfg.Tools.SWL.MaxFileSizeBytes,
+			InjectSessionHint: cfg.Tools.SWL.InjectSessionHint,
+			ExtractSymbols:    cfg.Tools.SWL.ExtractSymbols,
+			ExtractImports:    cfg.Tools.SWL.ExtractImports,
+			ExtractTasks:      cfg.Tools.SWL.ExtractTasks,
+			ExtractSections:   cfg.Tools.SWL.ExtractSections,
+			ExtractURLs:       cfg.Tools.SWL.ExtractURLs,
+			ExtractLLMContent: cfg.Tools.SWL.ExtractLLMContent,
+		}
+		mgr, swlErr := swl.AcquireManager(workspace, swlCfg)
+		if swlErr != nil {
+			logger.WarnCF("agent", "SWL init failed; continuing without SWL",
+				map[string]any{"error": swlErr.Error()})
+		} else {
+			swlManager = mgr
+			toolsRegistry.Register(swl.NewQuerySWLTool(mgr))
+		}
+	}
+	swlReleaseFn := func() {
+		if swlManager != nil {
+			swl.ReleaseManager(swlManager)
+		}
+	}
+
 	sessionsDir := filepath.Join(workspace, "sessions")
 	sessions := initSessionStore(sessionsDir)
 
@@ -128,6 +163,10 @@ func NewAgentInstance(
 			mcpDiscoveryActive && cfg.Tools.MCP.Discovery.UseRegex,
 		).
 		WithSplitOnMarker(cfg.Agents.Defaults.SplitOnMarker)
+
+	if swlManager != nil && (cfg.Tools.SWL == nil || swlManager.Config().InjectSessionHintEnabled()) {
+		contextBuilder.AddInlineSystemContent(swl.SessionHint())
+	}
 
 	agentID := routing.DefaultAgentID
 	agentName := ""
@@ -246,6 +285,8 @@ func NewAgentInstance(
 		LightCandidates:           lightCandidates,
 		LightProvider:             lightProvider,
 		CandidateProviders:        candidateProviders,
+		SWLManager:                swlManager,
+		swlRelease:                swlReleaseFn,
 	}
 }
 
@@ -270,8 +311,8 @@ func populateCandidateProvidersFromNames(
 				map[string]any{"name": name, "error": err.Error()})
 			continue
 		}
-		protocol, modelID := providers.ExtractProtocol(strings.TrimSpace(mc.Model))
-		key := providers.ModelKey(providers.NormalizeProvider(protocol), modelID)
+		protocol, modelID := providers.ExtractProtocol(mc)
+		key := providers.ModelKey(protocol, modelID)
 		if _, exists := out[key]; exists {
 			continue
 		}
@@ -350,8 +391,11 @@ func mediaTempDirPattern() string {
 	return "^" + regexp.QuoteMeta(filepath.Clean(media.TempDir())) + "(?:" + sep + "|$)"
 }
 
-// Close releases resources held by the agent's session store.
+// Close releases resources held by the agent's session store and SWL manager.
 func (a *AgentInstance) Close() error {
+	if a.swlRelease != nil {
+		a.swlRelease()
+	}
 	if a.Sessions != nil {
 		return a.Sessions.Close()
 	}

@@ -8,8 +8,10 @@ import (
 	"sync/atomic"
 	"time"
 
+	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/providers"
+	"github.com/sipeed/picoclaw/pkg/providers/messageutil"
 	"github.com/sipeed/picoclaw/pkg/tools"
 )
 
@@ -351,15 +353,17 @@ func spawnSubTurn(
 	}
 
 	// Create processOptions for the child turn
+	dispatch := DispatchRequest{
+		SessionKey:     childID,
+		UserMessage:    cfg.SystemPrompt,
+		Media:          nil,
+		InboundContext: cloneInboundContext(parentTS.opts.Dispatch.InboundContext),
+	}
 	opts := processOptions{
-		SessionKey:              childID,
-		Channel:                 parentTS.channel,
-		ChatID:                  parentTS.chatID,
-		SenderID:                parentTS.opts.SenderID,
+		Dispatch:                dispatch,
+		SenderID:                parentTS.opts.Dispatch.SenderID(),
 		SenderDisplayName:       parentTS.opts.SenderDisplayName,
-		UserMessage:             cfg.SystemPrompt, // Task description becomes the first user message
 		SystemPromptOverride:    cfg.ActualSystemPrompt,
-		Media:                   nil,
 		InitialSteeringMessages: cfg.InitialMessages,
 		DefaultResponse:         "",
 		EnableSummary:           false,
@@ -369,7 +373,11 @@ func spawnSubTurn(
 	}
 
 	// Create event scope for the child turn
-	scope := al.newTurnEventScope(agent.ID, childID)
+	scope := al.newTurnEventScope(
+		agent.ID,
+		childID,
+		newTurnContext(opts.Dispatch.InboundContext, opts.Dispatch.RouteResult, opts.Dispatch.SessionScope),
+	)
 
 	// Create child turnState using the new API
 	childTS := newTurnState(&agent, opts, scope)
@@ -415,7 +423,7 @@ func spawnSubTurn(
 	parentTS.mu.Unlock()
 
 	// 6. Emit Spawn event
-	al.emitEvent(EventKindSubTurnSpawn,
+	al.emitEvent(runtimeevents.KindAgentSubTurnSpawn,
 		childTS.eventMeta("spawnSubTurn", "subturn.spawn"),
 		SubTurnSpawnPayload{
 			AgentID:      childTS.agentID,
@@ -446,7 +454,7 @@ func spawnSubTurn(
 		if err != nil {
 			status = "error"
 		}
-		al.emitEvent(EventKindSubTurnEnd,
+		al.emitEvent(runtimeevents.KindAgentSubTurnEnd,
 			childTS.eventMeta("spawnSubTurn", "subturn.end"),
 			SubTurnEndPayload{
 				AgentID: childTS.agentID,
@@ -456,7 +464,8 @@ func spawnSubTurn(
 	}()
 
 	// 8. Execute sub-turn via the real agent loop.
-	turnRes, turnErr := al.runTurn(childCtx, childTS)
+	pipeline := NewPipeline(al)
+	turnRes, turnErr := al.runTurn(childCtx, childTS, pipeline)
 
 	// Release the concurrency semaphore immediately after runTurn completes,
 	// before the cleanup defer runs. This prevents a deadlock where:
@@ -496,16 +505,16 @@ func spawnSubTurn(
 //
 // Delivery behavior:
 //   - If parent turn is still running: attempts to deliver to pendingResults channel
-//   - If channel is full: emits SubTurnOrphanResultEvent (result is lost from channel but tracked)
-//   - If parent turn has finished: emits SubTurnOrphanResultEvent (late arrival)
+//   - If channel is full: emits agent.subturn.orphan (result is lost from channel but tracked)
+//   - If parent turn has finished: emits agent.subturn.orphan (late arrival)
 //
 // Thread safety:
 //   - Reads parent state under lock, then releases lock before channel send
 //   - Small race window exists but is acceptable (worst case: result becomes orphan)
 //
 // Event emissions:
-//   - SubTurnResultDeliveredEvent: successful delivery to channel
-//   - SubTurnOrphanResultEvent: delivery failed (parent finished or channel full)
+//   - agent.subturn.result_delivered: successful delivery to channel
+//   - agent.subturn.orphan: delivery failed (parent finished or channel full)
 func deliverSubTurnResult(al *AgentLoop, parentTS *turnState, childID string, result *tools.ToolResult) {
 	// Let GC clean up the pendingResults channel; parent Finish will no longer close it.
 	// We use defer/recover to catch any unlikely channel panics if it were ever closed.
@@ -518,7 +527,7 @@ func deliverSubTurnResult(al *AgentLoop, parentTS *turnState, childID string, re
 				"recover":   r,
 			})
 			if result != nil && al != nil {
-				al.emitEvent(EventKindSubTurnOrphan,
+				al.emitEvent(runtimeevents.KindAgentSubTurnOrphan,
 					parentTS.eventMeta("deliverSubTurnResult", "subturn.orphan"),
 					SubTurnOrphanPayload{ParentTurnID: parentTS.turnID, ChildTurnID: childID, Reason: "panic"},
 				)
@@ -533,7 +542,7 @@ func deliverSubTurnResult(al *AgentLoop, parentTS *turnState, childID string, re
 	// If parent turn has already finished, treat this as an orphan result
 	if isFinished || resultChan == nil {
 		if result != nil && al != nil {
-			al.emitEvent(EventKindSubTurnOrphan,
+			al.emitEvent(runtimeevents.KindAgentSubTurnOrphan,
 				parentTS.eventMeta("deliverSubTurnResult", "subturn.orphan"),
 				SubTurnOrphanPayload{ParentTurnID: parentTS.turnID, ChildTurnID: childID, Reason: "parent_finished"},
 			)
@@ -549,7 +558,7 @@ func deliverSubTurnResult(al *AgentLoop, parentTS *turnState, childID string, re
 	case resultChan <- result:
 		// Successfully delivered
 		if al != nil {
-			al.emitEvent(EventKindSubTurnResultDelivered,
+			al.emitEvent(runtimeevents.KindAgentSubTurnResultDelivered,
 				parentTS.eventMeta("deliverSubTurnResult", "subturn.result_delivered"),
 				SubTurnResultDeliveredPayload{ContentLen: len(result.ForLLM)},
 			)
@@ -563,7 +572,7 @@ func deliverSubTurnResult(al *AgentLoop, parentTS *turnState, childID string, re
 		})
 		if result != nil && al != nil {
 			al.emitEvent(
-				EventKindSubTurnOrphan,
+				runtimeevents.KindAgentSubTurnOrphan,
 				parentTS.eventMeta("deliverSubTurnResult", "subturn.orphan"),
 				SubTurnOrphanPayload{
 					ParentTurnID: parentTS.turnID,
@@ -616,6 +625,10 @@ func (e *ephemeralSessionStore) AddMessage(_, role, content string) {
 }
 
 func (e *ephemeralSessionStore) AddFullMessage(_ string, msg providers.Message) {
+	if messageutil.IsTransientAssistantThoughtMessage(msg) {
+		return
+	}
+
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.history = append(e.history, msg)
@@ -645,6 +658,7 @@ func (e *ephemeralSessionStore) SetSummary(_, summary string) {
 func (e *ephemeralSessionStore) SetHistory(_ string, history []providers.Message) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	history = messageutil.FilterInvalidHistoryMessages(history)
 	e.history = make([]providers.Message, len(history))
 	copy(e.history, history)
 	e.truncateLocked()

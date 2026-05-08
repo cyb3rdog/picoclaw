@@ -79,7 +79,95 @@ func TestStoreGetConversationBySessionKey(t *testing.T) {
 	}
 }
 
-// --- Message Operations ---
+// --- Conversation Clear ---
+
+func TestStoreClearConversation(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	conv, err := s.GetOrCreateConversation(ctx, "agent:clear-test")
+	if err != nil {
+		t.Fatalf("create conversation: %v", err)
+	}
+
+	// Add messages
+	msg1, err := s.AddMessage(ctx, conv.ConversationID, "user", "hello", 5)
+	if err != nil {
+		t.Fatalf("add message 1: %v", err)
+	}
+	msg2, err := s.AddMessage(ctx, conv.ConversationID, "assistant", "hi", 5)
+	if err != nil {
+		t.Fatalf("add message 2: %v", err)
+	}
+
+	// Add a summary
+	_, err = s.CreateSummary(ctx, CreateSummaryInput{
+		ConversationID: conv.ConversationID,
+		Content:        "test summary",
+		TokenCount:     10,
+		Kind:           SummaryKindLeaf,
+	})
+	if err != nil {
+		t.Fatalf("create summary: %v", err)
+	}
+
+	// Verify data exists
+	msgs, err := s.GetMessages(ctx, conv.ConversationID, 0, 0)
+	if err != nil {
+		t.Fatalf("get messages before clear: %v", err)
+	}
+	if len(msgs) != 2 {
+		t.Fatalf("expected 2 messages before clear, got %d", len(msgs))
+	}
+
+	sums, err := s.GetSummariesByConversation(ctx, conv.ConversationID)
+	if err != nil {
+		t.Fatalf("get summaries before clear: %v", err)
+	}
+	if len(sums) != 1 {
+		t.Fatalf("expected 1 summary before clear, got %d", len(sums))
+	}
+
+	// Clear
+	if err = s.ClearConversation(ctx, conv.ConversationID); err != nil {
+		t.Fatalf("clear conversation: %v", err)
+	}
+
+	// Verify all data is gone
+	msgs, err = s.GetMessages(ctx, conv.ConversationID, 0, 0)
+	if err != nil {
+		t.Fatalf("get messages after clear: %v", err)
+	}
+	if len(msgs) != 0 {
+		t.Fatalf("expected 0 messages after clear, got %d", len(msgs))
+	}
+
+	sums, err = s.GetSummariesByConversation(ctx, conv.ConversationID)
+	if err != nil {
+		t.Fatalf("get summaries after clear: %v", err)
+	}
+	if len(sums) != 0 {
+		t.Fatalf("expected 0 summaries after clear, got %d", len(sums))
+	}
+
+	items, err := s.GetContextItems(ctx, conv.ConversationID)
+	if err != nil {
+		t.Fatalf("get context items after clear: %v", err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("expected 0 context items after clear, got %d", len(items))
+	}
+
+	var count int
+	if err := s.db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM message_parts WHERE message_id = ? OR message_id = ?",
+		msg1.ID, msg2.ID).Scan(&count); err != nil {
+		t.Fatalf("count message parts: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("expected 0 message parts after clear, got %d", count)
+	}
+}
 
 func TestStoreAddAndGetMessages(t *testing.T) {
 	s := openTestStore(t)
@@ -108,6 +196,47 @@ func TestStoreAddAndGetMessages(t *testing.T) {
 	}
 	if msgs[0].Content != "hello world" {
 		t.Errorf("content = %q, want %q", msgs[0].Content, "hello world")
+	}
+}
+
+func TestStoreAddAndGetMessagesWithReasoningContent(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	conv, _ := s.GetOrCreateConversation(ctx, "agent:reasoning")
+
+	msg, err := s.AddMessageWithReasoning(
+		ctx,
+		conv.ConversationID,
+		"assistant",
+		"hello world",
+		"let me think",
+		5,
+	)
+	if err != nil {
+		t.Fatalf("AddMessageWithReasoning: %v", err)
+	}
+	if msg.ReasoningContent != "let me think" {
+		t.Fatalf("ReasoningContent = %q, want %q", msg.ReasoningContent, "let me think")
+	}
+
+	msgs, err := s.GetMessages(ctx, conv.ConversationID, 10, 0)
+	if err != nil {
+		t.Fatalf("GetMessages: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("got %d messages, want 1", len(msgs))
+	}
+	if msgs[0].ReasoningContent != "let me think" {
+		t.Errorf("ReasoningContent = %q, want %q", msgs[0].ReasoningContent, "let me think")
+	}
+
+	found, err := s.GetMessageByID(ctx, msg.ID)
+	if err != nil {
+		t.Fatalf("GetMessageByID: %v", err)
+	}
+	if found.ReasoningContent != "let me think" {
+		t.Errorf("GetMessageByID ReasoningContent = %q, want %q", found.ReasoningContent, "let me think")
 	}
 }
 
@@ -142,6 +271,43 @@ func TestStoreAddMessageWithParts(t *testing.T) {
 	}
 	if msgs[0].Parts[0].ToolCallID != "tc_123" {
 		t.Errorf("part[0].ToolCallID = %q, want tc_123", msgs[0].Parts[0].ToolCallID)
+	}
+}
+
+func TestStoreAddMessageWithPartsAndReasoningContent(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	conv, _ := s.GetOrCreateConversation(ctx, "agent:parts-reasoning")
+
+	parts := []MessagePart{
+		{Type: "tool_use", Name: "read_file", Arguments: `{"path":"/tmp/test"}`, ToolCallID: "tc_123"},
+	}
+	_, err := s.AddMessageWithPartsAndReasoning(
+		ctx,
+		conv.ConversationID,
+		"assistant",
+		parts,
+		"need to inspect the file first",
+		10,
+	)
+	if err != nil {
+		t.Fatalf("AddMessageWithPartsAndReasoning: %v", err)
+	}
+
+	msgs, err := s.GetMessages(ctx, conv.ConversationID, 10, 0)
+	if err != nil {
+		t.Fatalf("GetMessages: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(msgs))
+	}
+	if msgs[0].ReasoningContent != "need to inspect the file first" {
+		t.Errorf(
+			"ReasoningContent = %q, want %q",
+			msgs[0].ReasoningContent,
+			"need to inspect the file first",
+		)
 	}
 }
 
@@ -184,6 +350,31 @@ func TestStoreGetMessageByID(t *testing.T) {
 	_, err = s.GetMessageByID(ctx, 99999)
 	if err == nil {
 		t.Error("expected error for nonexistent message")
+	}
+}
+
+func TestStoreUpdateMessageReasoningContent(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	conv, _ := s.GetOrCreateConversation(ctx, "agent:update-reasoning")
+
+	msg, err := s.AddMessage(ctx, conv.ConversationID, "assistant", "answer", 3)
+	if err != nil {
+		t.Fatalf("AddMessage: %v", err)
+	}
+
+	err = s.UpdateMessageReasoningContent(ctx, msg.ID, "thinking")
+	if err != nil {
+		t.Fatalf("UpdateMessageReasoningContent: %v", err)
+	}
+
+	found, err := s.GetMessageByID(ctx, msg.ID)
+	if err != nil {
+		t.Fatalf("GetMessageByID: %v", err)
+	}
+	if found.ReasoningContent != "thinking" {
+		t.Errorf("ReasoningContent = %q, want %q", found.ReasoningContent, "thinking")
 	}
 }
 

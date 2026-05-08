@@ -1,6 +1,7 @@
 import { IconChevronRight } from "@tabler/icons-react"
 import {
   IconAtom,
+  IconBrain,
   IconChevronsDown,
   IconChevronsUp,
   IconKey,
@@ -33,6 +34,7 @@ import {
   useSidebar,
 } from "@/components/ui/sidebar"
 import { useSidebarChannels } from "@/hooks/use-sidebar-channels"
+import { useSwlEnabled } from "@/hooks/use-swl-enabled"
 
 interface NavItem {
   title: string
@@ -81,6 +83,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
     language: (i18n.resolvedLanguage ?? i18n.language ?? "").toLowerCase(),
     t,
   })
+  const { enabled: swlEnabled, loading: swlLoading } = useSwlEnabled()
 
   const handleNavItemClick = React.useCallback(() => {
     if (isMobile) {
@@ -89,17 +92,58 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
   }, [isMobile, setOpenMobile])
 
   const navGroups: NavGroup[] = React.useMemo(() => {
+    // When SWL is enabled, show it prominently right under Chat
+    const chatItems: NavItem[] = [
+      {
+        title: "navigation.chat",
+        url: "/",
+        icon: IconMessageCircle,
+        translateTitle: true,
+      },
+    ]
+    if (!swlLoading && swlEnabled) {
+      chatItems.push({
+        title: "navigation.swl",
+        url: "/swl",
+        icon: IconBrain,
+        translateTitle: true,
+      })
+    }
+
+    // When SWL is disabled (or still loading), keep it tucked in the Agent group
+    const agentItems: NavItem[] = [
+      {
+        title: "navigation.hub",
+        url: "/agent/hub",
+        icon: IconSearch,
+        translateTitle: true,
+      },
+      {
+        title: "navigation.skills",
+        url: "/agent/skills",
+        icon: IconSparkles,
+        translateTitle: true,
+      },
+      {
+        title: "navigation.tools",
+        url: "/agent/tools",
+        icon: IconTools,
+        translateTitle: true,
+      },
+    ]
+    if (swlLoading || !swlEnabled) {
+      agentItems.push({
+        title: "navigation.swl",
+        url: "/swl",
+        icon: IconBrain,
+        translateTitle: true,
+      })
+    }
+
     return [
       {
         ...baseNavGroups[0],
-        items: [
-          {
-            title: "navigation.chat",
-            url: "/",
-            icon: IconMessageCircle,
-            translateTitle: true,
-          },
-        ],
+        items: chatItems,
       },
       {
         ...baseNavGroups[1],
@@ -131,26 +175,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
       },
       {
         ...baseNavGroups[2],
-        items: [
-          {
-            title: "navigation.hub",
-            url: "/agent/hub",
-            icon: IconSearch,
-            translateTitle: true,
-          },
-          {
-            title: "navigation.skills",
-            url: "/agent/skills",
-            icon: IconSparkles,
-            translateTitle: true,
-          },
-          {
-            title: "navigation.tools",
-            url: "/agent/tools",
-            icon: IconTools,
-            translateTitle: true,
-          },
-        ],
+        items: agentItems,
       },
       {
         ...baseNavGroups[3],
@@ -170,7 +195,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
         ],
       },
     ]
-  }, [channelItems])
+  }, [channelItems, swlEnabled, swlLoading])
 
   return (
     <Sidebar

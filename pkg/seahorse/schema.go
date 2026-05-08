@@ -46,6 +46,7 @@ func runSchema(db *sql.DB) error {
 			conversation_id INTEGER NOT NULL REFERENCES conversations(conversation_id),
 			role            TEXT NOT NULL,
 			content         TEXT NOT NULL DEFAULT '',
+			reasoning_content TEXT NOT NULL DEFAULT '',
 			token_count     INTEGER NOT NULL DEFAULT 0,
 			created_at      TEXT NOT NULL DEFAULT (datetime('now'))
 		)`,
@@ -118,26 +119,35 @@ func runSchema(db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_summary_messages_message ON summary_messages(message_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_context_items_conv ON context_items(conversation_id, ordinal)`,
 
+		// Drop old triggers before creating new ones so existing DBs get updated bodies.
+		// (CREATE TRIGGER IF NOT EXISTS does NOT replace an existing trigger body.)
+		`DROP TRIGGER IF EXISTS summaries_ai`,
+		`DROP TRIGGER IF EXISTS summaries_ad`,
+		`DROP TRIGGER IF EXISTS summaries_au`,
+		`DROP TRIGGER IF EXISTS messages_ai`,
+		`DROP TRIGGER IF EXISTS messages_ad`,
+		`DROP TRIGGER IF EXISTS messages_au`,
+
 		// FTS5 triggers to keep summaries_fts in sync with summaries table
-		`CREATE TRIGGER IF NOT EXISTS summaries_ai AFTER INSERT ON summaries BEGIN
+		`CREATE TRIGGER summaries_ai AFTER INSERT ON summaries BEGIN
 			INSERT INTO summaries_fts (summary_id, content) VALUES (new.summary_id, new.content);
 		END`,
-		`CREATE TRIGGER IF NOT EXISTS summaries_ad AFTER DELETE ON summaries BEGIN
-			INSERT INTO summaries_fts (summaries_fts, summary_id, content) VALUES ('delete', old.summary_id, old.content);
+		`CREATE TRIGGER summaries_ad AFTER DELETE ON summaries BEGIN
+			DELETE FROM summaries_fts WHERE summary_id = old.summary_id;
 		END`,
-		`CREATE TRIGGER IF NOT EXISTS summaries_au AFTER UPDATE ON summaries BEGIN
-			INSERT INTO summaries_fts (summaries_fts, summary_id, content) VALUES ('delete', old.summary_id, old.content);
+		`CREATE TRIGGER summaries_au AFTER UPDATE ON summaries BEGIN
+			DELETE FROM summaries_fts WHERE summary_id = old.summary_id;
 			INSERT INTO summaries_fts (summary_id, content) VALUES (new.summary_id, new.content);
 		END`,
 
 		// FTS5 triggers to keep messages_fts in sync with messages table
-		`CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages BEGIN
+		`CREATE TRIGGER messages_ai AFTER INSERT ON messages BEGIN
 			INSERT INTO messages_fts (message_id, content) VALUES (new.message_id, new.content);
 		END`,
-		`CREATE TRIGGER IF NOT EXISTS messages_ad AFTER DELETE ON messages BEGIN
+		`CREATE TRIGGER messages_ad AFTER DELETE ON messages BEGIN
 			DELETE FROM messages_fts WHERE message_id = old.message_id;
 		END`,
-		`CREATE TRIGGER IF NOT EXISTS messages_au AFTER UPDATE ON messages BEGIN
+		`CREATE TRIGGER messages_au AFTER UPDATE ON messages BEGIN
 			DELETE FROM messages_fts WHERE message_id = old.message_id;
 			INSERT INTO messages_fts (message_id, content) VALUES (new.message_id, new.content);
 		END`,
@@ -148,7 +158,55 @@ func runSchema(db *sql.DB) error {
 			return err
 		}
 	}
+
+	if err := ensureMessagesReasoningContentColumn(db); err != nil {
+		return err
+	}
 	return nil
+}
+
+func ensureMessagesReasoningContentColumn(db *sql.DB) error {
+	hasColumn, err := tableHasColumn(db, "messages", "reasoning_content")
+	if err != nil {
+		return fmt.Errorf("check messages.reasoning_content: %w", err)
+	}
+	if hasColumn {
+		return nil
+	}
+
+	if _, err := db.Exec(`ALTER TABLE messages ADD COLUMN reasoning_content TEXT NOT NULL DEFAULT ''`); err != nil {
+		return fmt.Errorf("add messages.reasoning_content: %w", err)
+	}
+	return nil
+}
+
+func tableHasColumn(db *sql.DB, tableName, columnName string) (bool, error) {
+	rows, err := db.Query(fmt.Sprintf(`PRAGMA table_info(%s)`, tableName))
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var (
+			cid        int
+			name       string
+			columnType string
+			notNull    int
+			defaultVal sql.NullString
+			pk         int
+		)
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultVal, &pk); err != nil {
+			return false, err
+		}
+		if name == columnName {
+			return true, nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return false, err
+	}
+	return false, nil
 }
 
 // checkFTS5Support verifies that SQLite has FTS5 with trigram tokenizer enabled.

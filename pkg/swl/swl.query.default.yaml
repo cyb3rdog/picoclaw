@@ -1,0 +1,282 @@
+# SWL Query Engine — Intent Patterns Configuration
+# ================================================
+# Tier 1 pattern-matching intents for the query engine.
+# Each intent has a regex pattern (RE2/PCRE syntax), a handler name, and metadata.
+#
+# Phase B: These intents replace the hardcoded tier1Patterns in query.go.
+# The query engine matches questions against these patterns top-to-bottom.
+# First matching intent wins.
+
+version: "1.0"
+
+# --- Tier 1 Intent Patterns ---
+# Patterns are evaluated in order; first match wins.
+# hint_group: which capture group (1-based) extracts the search hint for the handler.
+# handler: one of the registered handler methods on Manager.
+
+intents:
+  # ===== Session / Resume =====
+  - id: resume
+    description: "Resume context from previous sessions"
+    patterns:
+      - "(?i)(?:resume|bring me up to speed|what was i doing|where did we leave)"
+    handler: SessionResume
+    hint_group: 0
+
+  # ===== Workspace Purpose =====
+  - id: workspace_purpose
+    description: "What is this workspace/project for"
+    patterns:
+      - "(?i)what\\s+(?:is\\s+)?this\\s+(?:workspace|project|repo(?:sitory)?)\\s+(?:for|about|doing|used\\s+for)"
+      - "(?i)what\\s+(?:does\\s+this|is\\s+the)\\s+(?:project|workspace|repo(?:sitory)?)\\s+(?:do|goal|purpose|aim|about)"
+      - "(?i)(?:describe|summaris[e]?|summarize)\\s+(?:this\\s+)?(?:workspace|project|repo(?:sitory)?)"
+      - "(?i)(?:project|workspace)\\s+(?:goal|purpose|aim|description|overview)"
+    handler: askWorkspacePurpose
+    hint_group: 0
+
+  # ===== Semantic Areas =====
+  - id: semantic_areas
+    description: "What are the main areas/topics of the workspace"
+    patterns:
+      - "(?i)(?:what\\s+areas?|semantic\\s+areas?|workspace\\s+areas?|areas?\\s+of\\s+(?:the\\s+)?workspace)"
+      - "(?i)(?:key|main|important)\\s+(?:documents?|files?|areas?)"
+      - "(?i)(?:anchor|readme|overview)\\s+(?:docs?|documents?|files?)"
+    handler: askSemanticAreas
+    hint_group: 0
+
+  # ===== File Detail =====
+  - id: file_detail
+    description: "What does a specific file do"
+    patterns:
+      - "(?i)what\\s+does\\s+(.+?)\\s+do"
+      - "(?i)describe\\s+(?:file\\s+)?(.+)"
+      - "(?i)explain\\s+(?:file\\s+)?(.+)"
+    handler: askFileDetail
+    hint_group: 1
+
+  # ===== Find By Purpose (Phase A.3) =====
+  - id: find_by_purpose
+    description: "Where is the file that does X / handles Y"
+    patterns:
+      - "(?i)where\\s+(?:is|are)\\s+(?:the\\s+)?(.+?)\\s+(?:that\\s+)?(?:does|handles|implements|manages|provides)"
+      - "(?i)where\\s+(?:is|are)\\s+(?:the\\s+)?(.+?)\\s+(?:code|logic|handler|service|middleware)"
+      - "(?i)find\\s+(?:the\\s+)?(.+?)\\s+(?:files?|code|impl(?:ementation)?)"
+      - "(?i)which\\s+(?:file|files)\\s+(?:does|handles|implements)\\s+(.+)"
+    handler: labelSearch
+    hint_group: 1
+
+  # ===== Find Special Kinds =====
+  - id: find_by_kind
+    description: "Where are the entry points, tests, configs"
+    patterns:
+      - "(?i)where\\s+(?:are\\s+)?(?:the\\s+)?(?:entry\\s+points?)"
+      - "(?i)where\\s+(?:are\\s+)?(?:the\\s+)?tests?"
+      - "(?i)where\\s+(?:are\\s+)?(?:the\\s+)?config(?:uration)?s?"
+    handler: labelSearch
+    hint_group: 1
+
+  # ===== Symbols / Functions / Classes =====
+  - id: symbols_in
+    description: "What functions/symbols are in a file"
+    patterns:
+      - "(?i)functions?\\s+in\\s+(.+)"
+      - "(?i)symbols?\\s+in\\s+(.+)"
+      - "(?i)classes?\\s+in\\s+(.+)"
+    handler: askSymbols
+    hint_group: 1
+
+  # ===== Tasks / TODOs =====
+  - id: tasks_in
+    description: "Open TODOs, FIXMEs, tasks in a file or workspace"
+    patterns:
+      - "(?i)(?:todos?|fixmes?|tasks?)\\s+in\\s+(.+)"
+      - "(?i)(?:todos?|fixmes?|tasks?|open\\s+tasks?|pending)"
+    handler: askTasks
+    hint_group: 1
+
+  # ===== Imports / Dependencies =====
+  - id: imports_in
+    description: "What does this file/package import"
+    patterns:
+      - "(?i)(?:imports?|depends?\\s+on|dependencies)\\s+(?:in|of|for)\\s+(.+)"
+    handler: askImports
+    hint_group: 1
+
+  # ===== Files In Directory =====
+  - id: files_in
+    description: "What files are in a directory"
+    patterns:
+      - "(?i)files?\\s+in\\s+(.+)"
+    handler: askFilesIn
+    hint_group: 1
+
+  # ===== Stale / Drift Detection =====
+  - id: stale
+    description: "What files have changed or gone stale"
+    patterns:
+      - "(?i)(?:stale|drift|outdated|changed)"
+    handler: askStale
+    hint_group: 0
+
+  # ===== Project Type =====
+  - id: project_type
+    description: "What kind of project is this"
+    patterns:
+      - "(?i)project\\s+type"
+    handler: askProjectType
+    hint_group: 0
+
+  # ===== Complexity =====
+  - id: complexity
+    description: "Which files are most complex (by symbol count)"
+    patterns:
+      - "(?i)(?:most\\s+complex|complexity|biggest\\s+files?)"
+    handler: askComplexity
+    hint_group: 0
+
+  # ===== Top Dependencies =====
+  - id: top_deps
+    description: "What are the most imported dependencies"
+    patterns:
+      - "(?i)(?:top\\s+deps?|most\\s+imported|popular\\s+deps?)"
+    handler: askTopDeps
+    hint_group: 0
+
+  # ===== Recent Files =====
+  - id: recent_files
+    description: "What files were recently modified"
+    patterns:
+      - "(?i)(?:recent\\s+(?:files?|changes?|writes?))"
+    handler: askRecentFiles
+    hint_group: 0
+
+  # ===== URLs / Web =====
+  - id: urls
+    description: "What URLs are known in the workspace"
+    patterns:
+      - "(?i)(?:urls?|links?|web\\s+(?:pages?|sites?))"
+    handler: askURLs
+    hint_group: 0
+
+  # ===== Sessions =====
+  - id: sessions
+    description: "Recent sessions and their goals"
+    patterns:
+      - "(?i)sessions?"
+    handler: askSessions
+    hint_group: 0
+
+  # ===== Stats =====
+  - id: stats
+    description: "Knowledge graph statistics"
+    patterns:
+      - "(?i)stats?"
+    handler: Stats
+    hint_group: 0
+
+  # ===== Knowledge Gaps =====
+  - id: gaps
+    description: "Entities with low confidence or unknown status"
+    patterns:
+      - "(?i)gaps?"
+    handler: KnowledgeGaps
+    hint_group: 0
+
+  # ===== Schema =====
+  - id: schema
+    description: "Database schema description"
+    patterns:
+      - "(?i)schema"
+    handler: Schema
+    hint_group: 0
+
+# --- Tier 2 SQL Templates ---
+# Named SQL templates for structural queries.
+# Matched by keyword presence in the question.
+
+tier2_templates:
+  - id: dependency_chain
+    description: "Show dependency/transitive import chain"
+    keywords: ["chain", "transitive", "recursive"]
+    query: |
+      WITH RECURSIVE chain(id, depth) AS (
+        SELECT to_id, 0 FROM edges
+        WHERE from_id = (SELECT id FROM entities WHERE name LIKE ? LIMIT 1)
+        AND rel = 'imports'
+        UNION ALL
+        SELECT e.to_id, c.depth+1 FROM edges e JOIN chain c ON e.from_id = c.id
+        WHERE c.depth < 8
+      )
+      SELECT DISTINCT e.name, c.depth FROM chain c
+      JOIN entities e ON e.id = c.id
+      ORDER BY c.depth LIMIT 50
+
+  - id: files_by_type
+    description: "Entity count breakdown by type"
+    keywords: ["count by type", "entity types", "breakdown"]
+    query: |
+      SELECT type, COUNT(*) as c FROM entities
+      WHERE fact_status != 'deleted'
+      GROUP BY type ORDER BY c DESC
+
+  - id: orphan_symbols
+    description: "Symbols with no connections (unreferenced)"
+    keywords: ["orphan", "unreferenced"]
+    query: |
+      SELECT e.name FROM entities e
+      WHERE e.type = 'Symbol'
+      AND NOT EXISTS (SELECT 1 FROM edges WHERE to_id = e.id OR from_id = e.id)
+      LIMIT 20
+
+# --- Label Search Configuration ---
+# Controls behavior of the labelSearch handler.
+
+label_search:
+  # Field weights for scoring: role > domain > kind > content_type > name > path
+  weights:
+    role: 10
+    domain: 5
+    kind: 3
+    content_type: 2
+    name: 1
+    path: 1
+
+  # Maximum results to return
+  max_results: 20
+
+  # Stop words to filter from search terms
+  stop_words:
+    - the
+    - a
+    - an
+    - is
+    - in
+    - of
+    - for
+    - to
+    - and
+    - or
+    - what
+    - how
+    - where
+    - find
+    - show
+    - list
+    - get
+    - that
+    - which
+    - are
+    - file
+    - files
+    - code
+    - logic
+    - my
+    - this
+    - all
+    - some
+    - any
+    - do
+    - does
+
+  # Fallback: also search by directory name when no label matches
+  directory_fallback: true

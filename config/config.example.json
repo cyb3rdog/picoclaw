@@ -11,9 +11,12 @@
       "summarize_message_threshold": 20,
       "summarize_token_percent": 75,
       "split_on_marker": false,
+      "max_llm_retries": 2,
+      "llm_retry_backoff_secs": 2,
       "tool_feedback": {
         "enabled": false,
-        "max_args_length": 300
+        "max_args_length": 300,
+        "separate_messages": false
       }
     }
   },
@@ -40,6 +43,7 @@
     },
     {
       "model_name": "gemini",
+      "_comment": "Optional: set \"tool_schema_transform\": \"simple\" for providers that reject complex tool JSON Schema.",
       "model": "antigravity/gemini-2.0-flash",
       "auth_method": "oauth"
     },
@@ -269,8 +273,13 @@
         "base_url": "",
         "max_results": 0
       },
-      "duckduckgo": {
+      "provider": "auto",
+      "sogou": {
         "enabled": true,
+        "max_results": 5
+      },
+      "duckduckgo": {
+        "enabled": false,
         "max_results": 5
       },
       "perplexity": {
@@ -382,9 +391,16 @@
           "timeout": 0,
           "max_zip_size": 0,
           "max_response_size": 0
+        },
+        "github": {
+          "enabled": true,
+          "base_url": "https://github.com",
+          "auth_token": "",
+          "proxy": "http://127.0.0.1:7891"
         }
       },
       "github": {
+        "base_url": "https://github.com",
         "proxy": "http://127.0.0.1:7891",
         "token": ""
       },
@@ -424,6 +440,9 @@
       "enabled": true,
       "mode": "bytes"
     },
+    "serial": {
+      "enabled": false
+    },
     "send_tts": {
       "enabled": false
     },
@@ -441,6 +460,19 @@
     },
     "write_file": {
       "enabled": true
+    },
+    "swl": {
+      "_comment": "SWL: Semantic Workspace Layer — persistent knowledge graph. Builds automatically from tool calls and LLM responses. View live graph at /swl in the web console.",
+      "enabled": false,
+      "inject_session_hint": true,
+      "extract_symbols": true,
+      "extract_imports": true,
+      "extract_tasks": true,
+      "extract_sections": true,
+      "extract_urls": true,
+      "extract_llm_content": true,
+      "reasoning_confidence_cap": 0.75,
+      "max_file_size_bytes": 524288
     }
   },
   "heartbeat": {
@@ -463,9 +495,18 @@
       "approval_timeout_ms": 60000
     }
   },
+  "events": {
+    "logging": {
+      "enabled": true,
+      "include": ["agent.*"],
+      "exclude": [],
+      "min_severity": "info",
+      "include_payload": false
+    }
+  },
   "gateway": {
     "_comment": "Default log level is set to 'fatal'. Other available options are 'debug', 'info', 'warn' and 'error'.",
-    "host": "127.0.0.1",
+    "host": "localhost",
     "port": 18790,
     "hot_reload": false,
     "log_level": "fatal"
