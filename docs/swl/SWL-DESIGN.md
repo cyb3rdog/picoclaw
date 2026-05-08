@@ -1,6 +1,6 @@
 # SWL — Semantic Workspace Layer: Design Document
 
-> Status: **v1.0** | Date: 2026-05-06
+> Status: **v1.2** | Date: 2026-05-08
 > Replaces and consolidates all prior SWL design notes.
 > Aligned with implementation as of HEAD of `swl-knowledge-graph` branch.
 
@@ -368,25 +368,25 @@ BuildSnapshot, lazy per-file extraction, events table activated, access_count fi
 - `query_swl {stats:true}` → access_count tracked on returned entities ✅
 - `query_swl {gaps:true}` → knowledge gaps surfaced ✅
 
-### Phase A.2 — ⏳ Pending (Semantic Bootstrap — HIGHEST PRIORITY)
-Path pattern → semantic label derivation. Every File entity gains `role`, `domain`, `kind`, `visibility` labels derived from structural signals at scan time. No LLM needed.
+### Phase A.2 — ✅ Done (2026-05-08)
+Path pattern → semantic label derivation. `labels.go` + `scanner.go` + `snapshot.go` derive `role`, `domain`, `kind`, `visibility`, `content_type` labels from structural signals (path prefixes, name patterns, content types) at scan time. No LLM needed.
 
-**Deliverables:** Labeled File entities at boot, no behavioral change to existing query patterns.
-**New files:** None — label derivation added to `scanner.go`
-**Modified:** `scanner.go` — label derivation after File entity upsert
+**New files:** `pkg/swl/labels.go` (LabelResult, DeriveLabels, path/name pattern matching), `pkg/swl/ignore.go` + `ignore_test.go` (noise symbols, ignore dirs/exts).
+**Modified:** `scanner.go` — calls `m.DeriveLabels()` after File entity upsert; `snapshot.go` — uses `m.DeriveLabels()` for SemanticArea labels; `manager.go` — initializes RulesEngine for label derivation.
+**Embedded config:** `swl.rules.default.yaml` (30 path prefix rules, 18 name patterns, 35 content types).
 
-### Phase A.3 — ⏳ Pending (Query Capability — HIGH PRIORITY)
+### Phase A.3 — ✅ Done (2026-05-08)
 `label_search` handler + Tier 1 intent patterns for "where is the file that does X?" questions. Answerable because Phase A.2 produced labeled entities.
 
-**Deliverables:** `find_by_purpose` intent, `labelSearch()` handler, "where is X" queries return labeled results.
-**Modified:** `query.go` — labelSearch handler + intent patterns
+**New files:** `pkg/swl/query.go` refactored with `labelSearch()` handler. 30+ Tier 1 patterns matching workspace purpose, semantic areas, file detail, find-by-purpose, symbols, tasks, imports, files, stale, complexity, deps, recent, URLs, sessions, stats, gaps, schema.
+**Modified:** `query.go` — `Ask()` dispatches via tryYAMLIntents → dispatchHandler → tryHardcodedPatterns → tryTier2 → tryTier3 pipeline; `manager.go` — loads query intents from `swl.query.default.yaml` at init.
 
-### Phase B — ⏳ Pending
-Externalize extraction and query logic to `swl.rules.yaml` and `swl.query.yaml`. Includes Phase A.2 label rules as configurable patterns. Zero behavioral change when no workspace overrides present.
+### Phase B — ✅ Done (2026-05-08)
+Externalize extraction and query logic to `swl.rules.yaml` and `swl.query.yaml`. Includes Phase A.2 label rules as configurable patterns. YAML intents tried first; hardcoded fallbacks preserved for forward compatibility. Zero behavioral change when no workspace overrides present.
 
-**New files:** `rules.go`, `rules_default.yaml` (embedded), `query_engine.go`, `swl_query_default.yaml` (embedded).
-**Modified:** `extractor.go`, `scanner.go`, `inference.go`, `db.go`.
-**New table:** `rule_stats`.
+**New files:** `pkg/swl/rules.go` (RulesEngine, QueryConfig, CompiledIntent, LoadRules, LoadQueryConfig, CompileQueryConfig); `pkg/swl/swl.rules.default.yaml` (embedded, 30 path prefix rules, 18 name patterns, 35 content types, extraction limits, noise symbols); `pkg/swl/swl.query.default.yaml` (embedded, 18 Tier 1 intents, 3 Tier 2 SQL templates, label search weights); `pkg/swl/gap_analysis.go` (AnalyzeGaps, SuggestRules, RuleSuggestion, GapEntry).
+**Modified:** `manager.go` (loads rules + query intents at init, `m.rules` field); `query.go` (tryYAMLIntents, tryYAMLTier2, tryHardcodedPatterns, dispatchHandler pipeline); `scanner.go`, `snapshot.go` (use `m.DeriveLabels()` via RulesEngine when available).
+**New schema:** `query_gaps.suggestion TEXT` column (migration on open). Deep-merge workspace-level `~/.swl/swl.rules.yaml` / `~/.swl/swl.query.yaml` overrides.
 
 ### Phase C — ✅ Done (2026-05-07)
 Activate autonomous feedback loop. Self-improvement with use across sessions and agents. Gap → candidate rule generation.

@@ -1,6 +1,6 @@
 # SWL Refactor Plan v4 — Requirements-Grounded
 
-> Status: **DRAFT** | Date: 2026-05-07
+> Status: **IMPLEMENTED** | Date: 2026-05-08
 > Replaces: SWL-REFACTOR.md (v3), SWL-PHASE1-AUDIT.md
 > Grounded in: `swl-refactor-requirements.md` (verbatim requirements)
 > Supersedes prior plans that audited against implementation rather than requirements
@@ -63,7 +63,7 @@ Scan-time bloat fix. BuildSnapshot, lazy extraction, events table, gap recording
 
 ---
 
-### Phase A.2 — Semantic Bootstrap (NEW — HIGHEST PRIORITY)
+### Phase A.2 — Semantic Bootstrap ✅ Done
 
 **What it must deliver:** Immediate semantic intelligence at boot without LLM calls.
 
@@ -115,7 +115,7 @@ This is SQL-only derivation — runs at scan time, costs nothing, produces label
 
 ---
 
-### Phase A.3 — Query Capability (NEW — HIGH PRIORITY)
+### Phase A.3 — Query Capability ✅ Done
 
 **What it must deliver:** Answer "where is the file that does X" and "what is the project goal."
 
@@ -170,7 +170,7 @@ The handler:
 
 ---
 
-### Phase B — Externalization (REVISED SCOPE)
+### Phase B — Externalization ✅ Done
 
 **What it must deliver:** All hardcoded patterns, rules, and query intents moved to YAML config files.
 
@@ -253,7 +253,7 @@ intents:
 
 ---
 
-### Phase C — Feedback Loop (REVISED SCOPE)
+### Phase C — Feedback Loop ✅ Done
 
 **What it must deliver:** Self-improvement through workspace action signals. Gap → candidate rule generation.
 

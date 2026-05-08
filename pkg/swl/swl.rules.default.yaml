@@ -1,0 +1,432 @@
+# SWL Label Rules — Semantic Bootstrap Configuration
+# ==================================================
+# Controls how file/directory paths are mapped to semantic labels (role, domain, kind).
+# Rules are evaluated top-to-bottom; first match wins for each label field.
+#
+# Phase B: These rules replace the hardcoded pathPrefixRules and namePatternRules
+# in labels.go. The rules engine performs deep-merge with embedded defaults.
+
+version: "1.0"
+
+# --- Path Prefix Rules ---
+# Maps directory path prefixes to role/domain/kind labels.
+# Workspace-relative paths. Most specific rules should come first.
+label_rules:
+  path_prefixes:
+    # Authentication / security
+    - prefix: "pkg/auth/"
+      role: authentication
+      domain: security
+    - prefix: "auth/"
+      role: authentication
+      domain: security
+    - prefix: "security/"
+      role: security
+      domain: security
+    - prefix: "pkg/crypto/"
+      role: cryptography
+      domain: security
+
+    # Data access layer
+    - prefix: "pkg/db/"
+      role: database
+      domain: data-access
+    - prefix: "pkg/database/"
+      role: database
+      domain: data-access
+    - prefix: "pkg/data/"
+      role: data-processing
+      domain: data-access
+    - prefix: "pkg/repo/"
+      role: repository
+      domain: data-access
+
+    # Networking / API layer
+    - prefix: "pkg/api/"
+      role: api
+      domain: networking
+    - prefix: "pkg/http/"
+      role: http
+      domain: networking
+    - prefix: "pkg/rest/"
+      role: rest-api
+      domain: networking
+    - prefix: "pkg/grpc/"
+      role: grpc-api
+      domain: networking
+    - prefix: "pkg/websocket/"
+      role: websocket
+      domain: networking
+
+    # Business logic / service layer
+    - prefix: "pkg/service/"
+      role: service
+      domain: business
+    - prefix: "pkg/biz/"
+      role: business-logic
+      domain: business
+    - prefix: "pkg/core/"
+      role: core
+      domain: business
+    - prefix: "pkg/domain/"
+      role: domain
+      domain: business
+
+    # Entry points
+    - prefix: "cmd/"
+      role: entry-point
+      kind: entry-point
+      domain: infrastructure
+    - prefix: "cmd/"
+      role: command
+      domain: infrastructure
+    - prefix: "main.go"
+      role: entry-point
+      kind: entry-point
+
+    # Configuration
+    - prefix: "config/"
+      role: configuration
+      domain: infrastructure
+    - prefix: "configs/"
+      role: configuration
+      domain: infrastructure
+    - prefix: "etc/"
+      role: configuration
+      domain: infrastructure
+    - prefix: "conf/"
+      role: configuration
+      domain: infrastructure
+
+    # Infrastructure / deployment
+    - prefix: "pkg/deploy/"
+      role: deployment
+      domain: infrastructure
+    - prefix: "pkg/infra/"
+      role: infrastructure
+      domain: infrastructure
+    - prefix: "scripts/"
+      role: script
+      domain: infrastructure
+    - prefix: "tools/"
+      role: tool
+      domain: infrastructure
+
+    # Internal packages
+    - prefix: "internal/"
+      visibility: internal
+    - prefix: "pkg/internal/"
+      visibility: internal
+
+    # Tests
+    - prefix: "test/"
+      role: test
+      domain: testing
+    - prefix: "tests/"
+      role: test
+      domain: testing
+
+    # Documentation
+    - prefix: "docs/"
+      role: documentation
+      domain: meta
+    - prefix: "doc/"
+      role: documentation
+      domain: meta
+
+    # Models / schemas
+    - prefix: "pkg/model/"
+      role: model
+      domain: data-access
+    - prefix: "pkg/models/"
+      role: model
+      domain: data-access
+    - prefix: "pkg/schema/"
+      role: schema
+      domain: data-access
+
+    # Middleware
+    - prefix: "middleware/"
+      role: middleware
+      domain: networking
+    - prefix: "pkg/middleware/"
+      role: middleware
+      domain: networking
+
+    # Utilities / helpers
+    - prefix: "pkg/util/"
+      role: utility
+      domain: support
+    - prefix: "pkg/helpers/"
+      role: helper
+      domain: support
+    - prefix: "pkg/utils/"
+      role: utility
+      domain: support
+
+    # Metrics / observability
+    - prefix: "pkg/metrics/"
+      role: metrics
+      domain: observability
+    - prefix: "pkg/telemetry/"
+      role: telemetry
+      domain: observability
+    - prefix: "pkg/tracing/"
+      role: tracing
+      domain: observability
+    - prefix: "pkg/logging/"
+      role: logging
+      domain: observability
+
+    # Queue / messaging
+    - prefix: "pkg/queue/"
+      role: messaging
+      domain: messaging
+    - prefix: "pkg/msg/"
+      role: messaging
+      domain: messaging
+    - prefix: "pkg/events/"
+      role: event-handling
+      domain: messaging
+
+    # Cache
+    - prefix: "pkg/cache/"
+      role: caching
+      domain: data-access
+
+    # Validation
+    - prefix: "pkg/valid/"
+      role: validation
+      domain: security
+    - prefix: "pkg/validator/"
+      role: validation
+      domain: security
+
+    # Monitoring / health
+    - prefix: "pkg/health/"
+      role: health-check
+      domain: observability
+
+    # Web / frontend
+    - prefix: "web/"
+      role: web
+      domain: frontend
+    - prefix: "frontend/"
+      role: frontend
+      domain: frontend
+    - prefix: "static/"
+      role: static-assets
+      domain: frontend
+    - prefix: "assets/"
+      role: assets
+      domain: frontend
+
+    # gRPC / protobuf
+    - prefix: "proto/"
+      role: protobuf
+      domain: networking
+    - prefix: "api/"
+      role: api-definition
+      domain: networking
+
+  # File name pattern rules — applied after path prefix rules
+  name_patterns:
+    - pattern: "*_test.go"
+      role: test
+      kind: test
+    - pattern: "*_tests.go"
+      role: test
+      kind: test
+    - pattern: "*_mock.go"
+      role: mock
+      kind: mock
+    - pattern: "*_fake.go"
+      role: fake
+      kind: mock
+    - pattern: "*_stub.go"
+      role: stub
+      kind: mock
+    - pattern: "middleware*.go"
+      role: middleware
+      domain: networking
+    - pattern: "config*.go"
+      role: configuration
+      domain: infrastructure
+    - pattern: "config*.yaml"
+      role: configuration
+      domain: infrastructure
+    - pattern: "config*.yml"
+      role: configuration
+      domain: infrastructure
+    - pattern: "config*.json"
+      role: configuration
+      domain: infrastructure
+    - pattern: "*.config.*"
+      role: configuration
+      domain: infrastructure
+    - pattern: "Makefile"
+      role: build
+      kind: build-target
+      domain: infrastructure
+    - pattern: "docker-compose*.yml"
+      role: infrastructure
+      kind: infrastructure
+    - pattern: "docker-compose*.yaml"
+      role: infrastructure
+      kind: infrastructure
+    - pattern: "Dockerfile"
+      role: containerization
+      kind: infrastructure
+      domain: infrastructure
+    - pattern: ".env*"
+      role: configuration
+      kind: configuration
+      domain: security
+    - pattern: "*.proto"
+      role: protobuf
+      domain: networking
+    - pattern: "*.sql"
+      role: database-query
+      kind: data-access
+      domain: data-access
+    - pattern: "*.tf"
+      role: infrastructure-as-code
+      kind: iac
+      domain: infrastructure
+    - pattern: "*.tpl"
+      role: template
+      kind: template
+    - pattern: "*.tmpl"
+      role: template
+      kind: template
+
+  # Content type mapping — file extensions to content_type labels
+  content_types:
+    - extension: ".go"
+      content_type: go
+    - extension: ".py"
+      content_type: python
+    - extension: ".js"
+      content_type: javascript
+    - extension: ".ts"
+      content_type: typescript
+    - extension: ".tsx"
+      content_type: typescript
+    - extension: ".jsx"
+      content_type: javascript
+    - extension: ".rs"
+      content_type: rust
+    - extension: ".java"
+      content_type: java
+    - extension: ".cs"
+      content_type: csharp
+    - extension: ".cpp"
+      content_type: cpp
+    - extension: ".c"
+      content_type: c
+    - extension: ".h"
+      content_type: c-header
+    - extension: ".rb"
+      content_type: ruby
+    - extension: ".php"
+      content_type: php
+    - extension: ".swift"
+      content_type: swift
+    - extension: ".kt"
+      content_type: kotlin
+    - extension: ".md"
+      content_type: markdown
+    - extension: ".rst"
+      content_type: rst
+    - extension: ".yaml"
+      content_type: yaml
+    - extension: ".yml"
+      content_type: yaml
+    - extension: ".toml"
+      content_type: toml
+    - extension: ".json"
+      content_type: json
+    - extension: ".xml"
+      content_type: xml
+    - extension: ".sql"
+      content_type: sql
+    - extension: ".tf"
+      content_type: hcl
+    - extension: ".sh"
+      content_type: shell
+    - extension: ".bash"
+      content_type: shell
+    - extension: ".zsh"
+      content_type: shell
+    - extension: ".fish"
+      content_type: shell
+    - extension: ".ps1"
+      content_type: powershell
+    - extension: ".bat"
+      content_type: batch
+    - extension: ".dockerfile"
+      content_type: dockerfile
+    - extension: ".proto"
+      content_type: protobuf
+    - extension: ".html"
+      content_type: html
+    - extension: ".css"
+      content_type: css
+    - extension: ".scss"
+      content_type: scss
+    - extension: ".less"
+      content_type: less
+
+# --- Extraction Rules ---
+# Control what is extracted from files and how.
+file_rules:
+  # Symbol extraction
+  symbols:
+    max_per_file: 60
+    noise:
+      - main
+      - init
+      - test
+    # Custom patterns (RE2 syntax, exactly one capturing group = symbol name)
+    # When empty, package defaults are used
+    patterns: []
+
+  # Import / dependency extraction
+  imports:
+    max_per_file: 40
+
+  # Task / TODO extraction
+  tasks:
+    max_per_file: 30
+    patterns:
+      - "(?i)(?:TODO|FIXME|HACK|NOTE|BUG|XXX|OPTIMIZE|REFACTOR|REVIEW|DEPRECATED)[:\\s]+(.+)"
+
+  # Section / heading extraction (from markdown)
+  sections:
+    max_per_file: 20
+
+  # URL extraction
+  urls:
+    max_per_file: 20
+    # Hosts/domains to skip (noise filter)
+    skip_hosts:
+      - "localhost"
+      - "127.0.0.1"
+      - "0.0.0.0"
+      - "[::1]"
+      - "10."
+      - "192.168."
+      - "172."
+      - "169.254."
+      - "example.com"
+      - "example.org"
+      - "example.net"
+      - "your-domain"
+      - "mydomain"
+      - "acme.com"
+
+  # Ignored directories (in addition to defaults in ignore.go)
+  ignore_dirs: []
+
+  # Ignored file extensions (in addition to defaults in ignore.go)
+  ignore_extensions: []
