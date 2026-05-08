@@ -137,6 +137,14 @@ func agentAllowsSubagent(parent *AgentInstance, targetNorm string) bool {
 	return false
 }
 
+func agentHasSpawnTool(agent *AgentInstance) bool {
+	if agent == nil || agent.Tools == nil {
+		return false
+	}
+	_, ok := agent.Tools.Get("spawn")
+	return ok
+}
+
 // ForEachTool calls fn for every tool registered under the given name
 // across all agents. This is useful for propagating dependencies (e.g.
 // MediaStore) to tools after registry construction.

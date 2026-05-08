@@ -60,8 +60,9 @@ func (r *AgentRegistry) ListAgents(workspace string) []AgentDescriptor {
 	return descriptors
 }
 
-// ListSpawnableAgents returns descriptors only for agents the current agent is
-// allowed to spawn. Restricted peers are intentionally omitted from discovery.
+// ListSpawnableAgents returns descriptors only when the current agent can call
+// spawn, and only for peers it is allowed to spawn. Restricted peers are
+// intentionally omitted from discovery.
 func (r *AgentRegistry) ListSpawnableAgents(agentID string) []AgentDescriptor {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -69,6 +70,9 @@ func (r *AgentRegistry) ListSpawnableAgents(agentID string) []AgentDescriptor {
 	parentID := routing.NormalizeAgentID(agentID)
 	parent, ok := r.agents[parentID]
 	if !ok || parent == nil {
+		return nil
+	}
+	if !agentHasSpawnTool(parent) {
 		return nil
 	}
 

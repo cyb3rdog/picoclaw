@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/config"
 )
 
@@ -79,14 +80,39 @@ func TestAgentRegistry_ListSpawnableAgentsRespectsPermissions(t *testing.T) {
 		{ID: "child2"},
 		{ID: "restricted"},
 	})
+	cfg.Tools.Spawn.Enabled = true
+	cfg.Tools.Subagent.Enabled = true
 
-	registry := NewAgentRegistry(cfg, &mockRegistryProvider{})
-	descriptors := registry.ListSpawnableAgents("parent")
+	al := NewAgentLoop(cfg, bus.NewMessageBus(), &mockRegistryProvider{})
+	defer al.Close()
+
+	descriptors := al.GetRegistry().ListSpawnableAgents("parent")
 	if len(descriptors) != 2 {
 		t.Fatalf("expected 2 spawnable descriptors, got %d: %+v", len(descriptors), descriptors)
 	}
 	if descriptors[0].ID != "child1" || descriptors[1].ID != "child2" {
 		t.Fatalf("expected sorted spawnable peers only, got %+v", descriptors)
+	}
+}
+
+func TestAgentRegistry_ListSpawnableAgentsRequiresSpawnTool(t *testing.T) {
+	cfg := testCfg([]config.AgentConfig{
+		{
+			ID:      "parent",
+			Default: true,
+			Subagents: &config.SubagentsConfig{
+				AllowAgents: []string{"child"},
+			},
+		},
+		{ID: "child"},
+	})
+	cfg.Tools.Subagent.Enabled = true
+
+	al := NewAgentLoop(cfg, bus.NewMessageBus(), &mockRegistryProvider{})
+	defer al.Close()
+
+	if descriptors := al.GetRegistry().ListSpawnableAgents("parent"); len(descriptors) != 0 {
+		t.Fatalf("expected no spawnable descriptors without spawn tool, got %+v", descriptors)
 	}
 }
 
@@ -140,9 +166,13 @@ Handle restricted work.
 	})
 	cfg.Tools.ReadFile.Enabled = true
 	cfg.Tools.WriteFile.Enabled = true
+	cfg.Tools.Spawn.Enabled = true
+	cfg.Tools.Subagent.Enabled = true
 
-	registry := NewAgentRegistry(cfg, &mockRegistryProvider{})
-	mainAgent, ok := registry.GetAgent("main")
+	al := NewAgentLoop(cfg, bus.NewMessageBus(), &mockRegistryProvider{})
+	defer al.Close()
+
+	mainAgent, ok := al.GetRegistry().GetAgent("main")
 	if !ok || mainAgent == nil {
 		t.Fatal("expected main agent")
 	}
@@ -211,9 +241,13 @@ Investigate deeply.
 		{ID: "research", Workspace: researchWorkspace},
 	})
 	cfg.Tools.ReadFile.Enabled = true
+	cfg.Tools.Spawn.Enabled = true
+	cfg.Tools.Subagent.Enabled = true
 
-	registry := NewAgentRegistry(cfg, &mockRegistryProvider{})
-	mainAgent, ok := registry.GetAgent("main")
+	al := NewAgentLoop(cfg, bus.NewMessageBus(), &mockRegistryProvider{})
+	defer al.Close()
+
+	mainAgent, ok := al.GetRegistry().GetAgent("main")
 	if !ok || mainAgent == nil {
 		t.Fatal("expected main agent")
 	}
@@ -241,6 +275,76 @@ Investigate deeply.
 	}
 }
 
+func TestContextBuilder_BuildMessagesOmitsAgentDiscoveryWithoutSpawnTool(t *testing.T) {
+	mainWorkspace := setupWorkspace(t, map[string]string{
+		"AGENT.md": `---
+description: Main agent
+tools: [read_file]
+---
+# Agent
+
+Generalist.
+`,
+	})
+	defer cleanupWorkspace(t, mainWorkspace)
+
+	researchWorkspace := setupWorkspace(t, map[string]string{
+		"AGENT.md": `---
+description: Research specialist
+---
+# Agent
+
+Investigate deeply.
+`,
+	})
+	defer cleanupWorkspace(t, researchWorkspace)
+
+	cfg := testCfg([]config.AgentConfig{
+		{
+			ID:        "main",
+			Default:   true,
+			Workspace: mainWorkspace,
+			Subagents: &config.SubagentsConfig{
+				AllowAgents: []string{"research"},
+			},
+		},
+		{ID: "research", Workspace: researchWorkspace},
+	})
+	cfg.Tools.ReadFile.Enabled = true
+	cfg.Tools.Spawn.Enabled = true
+	cfg.Tools.Subagent.Enabled = true
+
+	al := NewAgentLoop(cfg, bus.NewMessageBus(), &mockRegistryProvider{})
+	defer al.Close()
+
+	mainAgent, ok := al.GetRegistry().GetAgent("main")
+	if !ok || mainAgent == nil {
+		t.Fatal("expected main agent")
+	}
+
+	messages := mainAgent.ContextBuilder.BuildMessages(
+		nil,
+		"",
+		"handle locally",
+		nil,
+		"telegram",
+		"chat-1",
+		"",
+		"",
+	)
+	if len(messages) == 0 {
+		t.Fatal("expected messages")
+	}
+
+	systemPrompt := messages[0].Content
+	if strings.Contains(systemPrompt, "# Agent Discovery") {
+		t.Fatalf("did not expect discovery section without spawn tool, got %q", systemPrompt)
+	}
+	if strings.Contains(systemPrompt, `"id": "research"`) {
+		t.Fatalf("did not expect peer identity without spawn tool, got %q", systemPrompt)
+	}
+}
+
 func TestContextBuilder_BuildMessagesOmitsAgentDiscoverySectionForSingleton(t *testing.T) {
 	mainWorkspace := setupWorkspace(t, map[string]string{
 		"AGENT.md": `---
@@ -257,9 +361,13 @@ Generalist.
 		{ID: "main", Default: true, Workspace: mainWorkspace},
 	})
 	cfg.Tools.ReadFile.Enabled = true
+	cfg.Tools.Spawn.Enabled = true
+	cfg.Tools.Subagent.Enabled = true
 
-	registry := NewAgentRegistry(cfg, &mockRegistryProvider{})
-	mainAgent, ok := registry.GetAgent("main")
+	al := NewAgentLoop(cfg, bus.NewMessageBus(), &mockRegistryProvider{})
+	defer al.Close()
+
+	mainAgent, ok := al.GetRegistry().GetAgent("main")
 	if !ok || mainAgent == nil {
 		t.Fatal("expected main agent")
 	}

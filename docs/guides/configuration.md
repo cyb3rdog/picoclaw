@@ -238,7 +238,7 @@ Notes:
 
 ### Agent Discovery (Automatic)
 
-When an agent has spawnable peers, PicoClaw injects a structured agent registry into that agent's system prompt on every turn. No extra `list_agents` tool call is required.
+When an agent has spawnable peers and can call `spawn`, PicoClaw injects a structured agent registry into that agent's system prompt on every turn. No extra `list_agents` tool call is required.
 
 This registry is intended to make delegation concrete and reliable, especially when using `spawn` with a target `agent_id`.
 
@@ -252,7 +252,7 @@ Each entry includes:
 
 Important behavior:
 
-- The discovery section includes only peer agents the current agent is permitted to spawn via `subagents.allow_agents`.
+- The discovery section appears only when the current agent has the `spawn` tool and includes only peer agents it is permitted to spawn via `subagents.allow_agents`.
 - The current agent and non-spawnable peers are omitted, so the model does not plan against unavailable agents.
 - Discovery is intentionally lightweight. It gives the model only the identity it needs to choose a peer: `id`, `name`, and `description`.
 - `config.json` remains the infrastructure layer: workspace, default agent selection, routing, and subagent permissions. Those permissions also gate discovery visibility.
