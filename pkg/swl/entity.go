@@ -62,8 +62,7 @@ ON CONFLICT(id) DO UPDATE SET
         ELSE 'inferred'
     END,
     modified_at  = excluded.modified_at,
-    accessed_at  = excluded.accessed_at,
-    access_count = access_count + 1
+    access_count = access_count
 `
 
 // upsertEntity inserts or updates an entity, enforcing all invariants:
