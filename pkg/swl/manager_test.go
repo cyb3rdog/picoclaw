@@ -702,3 +702,43 @@ func main() {
 	}
 }
 
+// TestBuildSnapshotPathIdempotency verifies that BuildSnapshot produces
+// deterministic entity IDs regardless of how the root path is expressed
+// (absolute, ./relative, or bare relative).
+func TestBuildSnapshotPathIdempotency(t *testing.T) {
+	m := newTestManager(t)
+	defer m.Close()
+
+	ws := m.workspace
+	_ = os.WriteFile(filepath.Join(ws, "README.md"), []byte("# Project\n\nTest."), 0644)
+	_ = os.MkdirAll(filepath.Join(ws, "pkg"), 0755)
+	_ = os.WriteFile(filepath.Join(ws, "pkg", "foo.go"), []byte("package pkg\nfunc Bar() {}\n"), 0644)
+
+	// Three equivalent path representations must produce identical entity sets.
+	m.BuildSnapshot(ws)
+	absCount := countAll(m)
+	m.BuildSnapshot(filepath.Join(ws)) // Join with same path
+	joinCount := countAll(m)
+	m.BuildSnapshot(".") // relative from wd
+	dotCount := countAll(m)
+
+	if absCount != joinCount || joinCount != dotCount {
+		t.Errorf("path variants produced different counts: abs=%d join=%d dot=%d", absCount, joinCount, dotCount)
+	}
+	// No entity should appear more than once.
+	var dupCount int
+	m.db.QueryRow(`
+		SELECT COUNT(*) FROM (
+			SELECT name, type, COUNT(*) as cnt FROM entities GROUP BY name, type HAVING cnt > 1
+		)
+	`).Scan(&dupCount)
+	if dupCount > 0 {
+		t.Errorf("duplicate entities found: %d", dupCount)
+	}
+}
+
+func countAll(m *Manager) int {
+	var n int
+	_ = m.db.QueryRow("SELECT COUNT(*) FROM entities").Scan(&n)
+	return n
+}

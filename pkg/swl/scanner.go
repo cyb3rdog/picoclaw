@@ -105,7 +105,12 @@ func (m *Manager) ScanWorkspace(root string, sessionKey ...string) (ScanStats, e
 
 		name := d.Name()
 		if d.IsDir() {
-			if skipDirs[name] || strings.HasPrefix(name, ".") && name != "." {
+			// Check .swlignore patterns first
+			if m.ignoreDirPath(path) {
+				return filepath.SkipDir
+			}
+			// Then check default skip dirs
+			if m.shouldIgnoreDir(name) {
 				return filepath.SkipDir
 			}
 			// Normalize to workspace-relative for consistent entity IDs.
@@ -119,9 +124,13 @@ func (m *Manager) ScanWorkspace(root string, sessionKey ...string) (ScanStats, e
 				}
 			}
 			dirID := entityID(KnownTypeDirectory, relPath)
+			// Derive semantic labels for directory (Phase A.2 — semantic bootstrap).
+			dirLabels := m.DeriveLabels(KnownTypeDirectory, relPath)
+			dirMeta := dirLabels.ToMetadata()
 			_ = m.writer.upsertEntity(EntityTuple{
 				ID: dirID, Type: KnownTypeDirectory, Name: relPath,
 				Confidence: 1.0, ExtractionMethod: MethodObserved, KnowledgeDepth: 1,
+				Metadata: dirMeta,
 			})
 			// Create parent directory edge (skip workspace root which has no parent).
 			// filepath.Dir returns "" for single-component paths like "pkg",
@@ -137,8 +146,13 @@ func (m *Manager) ScanWorkspace(root string, sessionKey ...string) (ScanStats, e
 			return nil
 		}
 
-		ext := strings.ToLower(filepath.Ext(name))
-		if skipExts[ext] {
+		// Check .swlignore patterns first
+		if m.ignoreFilePath(path) {
+			stats.Skipped++
+			return nil
+		}
+		// Then check default skip extensions
+		if m.shouldIgnoreFile(name) {
 			stats.Skipped++
 			return nil
 		}
@@ -169,13 +183,17 @@ func (m *Manager) ScanWorkspace(root string, sessionKey ...string) (ScanStats, e
 			stats.New++
 		}
 
-		// Structural indexing only: upsert the File entity and check mtime.
-		// Content extraction (symbols, imports, tasks) is deferred until the
-		// LLM actually reads or writes the file via a tool call (lazy extraction).
+		// Structural indexing + semantic labels: upsert the File entity and derive
+		// role/domain/kind labels from its path. This is Tier 1 ontological inference —
+		// no LLM needed, runs at scan time, produces semantically meaningful entities.
 		dirPath := filepath.Dir(relPath)
 		dirID := entityID(KnownTypeDirectory, dirPath)
 
 		modTime := info.ModTime().UTC().Format(time.RFC3339Nano)
+
+		// Derive semantic labels from file path (Phase A.2 — semantic bootstrap).
+		lr := m.DeriveLabels(KnownTypeFile, relPath)
+		lrMeta := lr.ToMetadata()
 
 		// Check mtime vs DB modified_at to detect changes without reading content.
 		mtimeChanged := true
@@ -209,6 +227,7 @@ func (m *Manager) ScanWorkspace(root string, sessionKey ...string) (ScanStats, e
 		_ = m.writer.upsertEntity(EntityTuple{
 			ID: fileID, Type: KnownTypeFile, Name: relPath,
 			Confidence: 1.0, ExtractionMethod: MethodObserved, KnowledgeDepth: 1,
+			Metadata: lrMeta,
 		})
 		_ = m.writer.upsertEdge(EdgeTuple{FromID: fileID, Rel: KnownRelInDir, ToID: dirID})
 		_ = m.writer.setFactStatus(fileID, FactVerified)

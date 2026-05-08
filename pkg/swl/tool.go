@@ -29,6 +29,7 @@ Input formats (pick one):
   {"resume":true}                          — bring me up to speed on this workspace
   {"question":"functions in main.go"}      — natural-language query (Tier 1/2/3)
   {"gaps":true}                            — entities with low confidence or unknown status
+  {"suggest":true}                          — rule suggestions from recurring query misses (Phase C)
   {"drift":true}                           — stale/outdated entities
   {"assert":"note text","subject":"x"}     — record a free-form fact
   {"stats":true}                           — entity/edge counts by type
@@ -47,6 +48,7 @@ func (t *QuerySWLTool) Parameters() map[string]any {
 			"question": map[string]any{"type": "string", "description": "Natural-language question about the workspace"},
 			"resume":   map[string]any{"type": "boolean", "description": "If true, return session resume digest"},
 			"gaps":     map[string]any{"type": "boolean", "description": "If true, return knowledge gaps"},
+			"suggest":  map[string]any{"type": "boolean", "description": "If true, return rule suggestions from query gaps"},
 			"drift":    map[string]any{"type": "boolean", "description": "If true, return stale entities"},
 			"assert":   map[string]any{"type": "string", "description": "Free-form note to record"},
 			"subject":  map[string]any{"type": "string", "description": "Subject entity for assert"},
@@ -76,6 +78,11 @@ func (t *QuerySWLTool) Execute(ctx context.Context, args map[string]any) *toolsh
 	// gaps
 	if v, _ := args["gaps"].(bool); v {
 		return toolshared.SilentResult(m.KnowledgeGaps())
+	}
+
+	// suggest — Phase C rule suggestion engine
+	if v, _ := args["suggest"].(bool); v {
+		return toolshared.SilentResult(m.SuggestRules())
 	}
 
 	// drift

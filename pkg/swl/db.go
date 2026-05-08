@@ -63,12 +63,13 @@ CREATE TABLE IF NOT EXISTS constraints (
 );
 
 CREATE TABLE IF NOT EXISTS query_gaps (
-    id       TEXT PRIMARY KEY,
-    question TEXT NOT NULL,
-    terms    TEXT NOT NULL,
-    count    INTEGER NOT NULL DEFAULT 1,
-    first_at TEXT NOT NULL,
-    last_at  TEXT NOT NULL
+    id          TEXT PRIMARY KEY,
+    question    TEXT NOT NULL,
+    terms       TEXT NOT NULL,
+    count       INTEGER NOT NULL DEFAULT 1,
+    first_at    TEXT NOT NULL,
+    last_at     TEXT NOT NULL,
+    suggestion  TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_entities_type   ON entities(type);
@@ -122,6 +123,15 @@ func applySchema(db *sql.DB) error {
 	if _, err := db.Exec(schema); err != nil {
 		return fmt.Errorf("swl: apply schema: %w", err)
 	}
+	// Phase C: add suggestion column to query_gaps if missing (existing DBs).
+	_ = migrateQueryGaps(db)
+	return nil
+}
+
+// migrateQueryGaps adds missing columns to query_gaps for existing databases.
+func migrateQueryGaps(db *sql.DB) error {
+	// Add suggestion column if it doesn't exist (Phase C).
+	_, _ = db.Exec(`ALTER TABLE query_gaps ADD COLUMN suggestion TEXT`)
 	return nil
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"reflect"
 	"regexp"
 	"strings"
 	"time"
@@ -38,6 +39,13 @@ func init() {
 		{regexp.MustCompile(`(?i)describe\s+(?:file\s+)?(.+)`), func(m *Manager, hint string) string { return m.askFileDetail(hint) }},
 		{regexp.MustCompile(`(?i)explain\s+(?:file\s+)?(.+)`), func(m *Manager, hint string) string { return m.askFileDetail(hint) }},
 
+		// Find-by-purpose: where is the file that does X? (Phase A.3)
+		{regexp.MustCompile(`(?i)where\s+(?:is|are)\s+(?:the\s+)?(.+?)\s+(?:that\s+)?(?:does|handles|implements|manages|provides)`), func(m *Manager, hint string) string { return m.labelSearch(hint) }},
+		{regexp.MustCompile(`(?i)where\s+(?:is|are)\s+(?:the\s+)?(.+?)\s+(?:code|logic|handler|service|middleware)`), func(m *Manager, hint string) string { return m.labelSearch(hint) }},
+		{regexp.MustCompile(`(?i)find\s+(?:the\s+)?(.+?)\s+(?:files?|code|impl(?:ementation)?)`), func(m *Manager, hint string) string { return m.labelSearch(hint) }},
+		{regexp.MustCompile(`(?i)which\s+(?:file|files)\s+(?:does|handles|implements|handles)\s+(.+)`), func(m *Manager, hint string) string { return m.labelSearch(hint) }},
+		{regexp.MustCompile(`(?i)where\s+(?:are\s+)?(?:the\s+)?(?:entry\s+points?|tests?|config(?:uration)?s?)`), func(m *Manager, hint string) string { return m.labelSearch(hint) }},
+
 		// Existing patterns
 		{regexp.MustCompile(`(?i)functions?\s+in\s+(.+)`), func(m *Manager, hint string) string { return m.askSymbols(hint, "function") }},
 		{regexp.MustCompile(`(?i)symbols?\s+in\s+(.+)`), func(m *Manager, hint string) string { return m.askSymbols(hint, "") }},
@@ -61,15 +69,92 @@ func init() {
 
 // Ask dispatches a natural-language question through Tier 1 → Tier 2 → Tier 3.
 // Unmatched questions are recorded as query gaps after 3 repetitions.
+// Phase B: If Manager has compiled query intents from swl.query.yaml, those are tried
+// first. Falls back to hardcoded tier1Patterns for forward compatibility.
 func (m *Manager) Ask(question string) string {
 	q := strings.TrimSpace(question)
 	if q == "" {
 		return "[SWL] Empty question."
 	}
 
-	// Tier 1: pattern matching
+	// Tier 1: try YAML intents if loaded, otherwise hardcoded patterns
+	var tier1Result string
+	if len(m.rules.QueryIntents) > 0 {
+		tier1Result = m.tryYAMLIntents(q)
+	}
+	if tier1Result == "" {
+		tier1Result = m.tryHardcodedPatterns(q)
+	}
+	if tier1Result != "" {
+		return tier1Result
+	}
+
+	// Tier 2: SQL templates
+	var tier2Result string
+	if len(m.rules.SQLTemplates) > 0 {
+		tier2Result = m.tryYAMLTier2(q)
+	} else {
+		tier2Result = m.tryTier2(q)
+	}
+	if tier2Result != "" {
+		return tier2Result
+	}
+
+	// Tier 3: freetext
+	if result := m.tryTier3(q); result != "" {
+		return result
+	}
+
+	m.recordQueryGap(q)
+	return fmt.Sprintf("[SWL] No pattern matched %q. Try: stats, gaps, resume, or sql:SELECT ...", q)
+}
+
+// tryYAMLIntents matches the question against compiled query intents from swl.query.yaml.
+// Returns the handler result, or "" if no intent matched.
+func (m *Manager) tryYAMLIntents(question string) string {
+	for _, intent := range m.rules.QueryIntents {
+		matches := intent.RE.FindStringSubmatch(question)
+		if matches == nil {
+			continue
+		}
+		hint := ""
+		if intent.HintGroup > 0 && len(matches) > intent.HintGroup {
+			hint = strings.TrimSpace(matches[intent.HintGroup])
+		}
+		return m.dispatchHandler(intent.Handler, hint)
+	}
+	return ""
+}
+
+// dispatchHandler calls a Manager method by name with an optional hint string.
+// Falls back to empty string (→ Tier 2 fallback) if the method is not found
+// or returns a non-string result.
+func (m *Manager) dispatchHandler(handlerName, hint string) string {
+	method := reflect.ValueOf(m).MethodByName(handlerName)
+	if !method.IsValid() {
+		return "" // unknown handler → fall through
+	}
+
+	var args []reflect.Value
+	if hint != "" {
+		args = []reflect.Value{reflect.ValueOf(hint)}
+	}
+
+	results := method.Call(args)
+	if len(results) == 0 {
+		return ""
+	}
+	if r, ok := results[0].Interface().(string); ok {
+		return r
+	}
+	return ""
+}
+
+// tryHardcodedPatterns is the original Tier 1 pattern matching loop.
+// Kept as fallback when YAML intents are not loaded.
+func (m *Manager) tryHardcodedPatterns(question string) string {
 	for _, p := range tier1Patterns {
-		matches := p.re.FindStringSubmatch(q)
+		matches := p.re.FindStringSubmatch(question)
 		if matches == nil {
 			continue
 		}
@@ -79,22 +164,222 @@ func (m *Manager) Ask(question string) string {
 		}
 		return p.handler(m, hint)
 	}
+	return ""
+}
 
-	// Tier 2: named SQL templates
-	if result := m.tryTier2(q); result != "" {
-		return result
+// tryYAMLTier2 tries YAML-defined SQL templates (Phase B query externalization).
+// Falls back to hardcoded sqlTemplates if none match.
+func (m *Manager) tryYAMLTier2(question string) string {
+	q := strings.ToLower(question)
+	for _, tmpl := range m.rules.SQLTemplates {
+		for _, kw := range tmpl.Keywords {
+			if !strings.Contains(q, kw) {
+				continue
+			}
+			// Substitute placeholders from the question (derived from tmpl.query)
+			args := extractTier2Args(tmpl.Query, question)
+			rows, err := m.db.Query(tmpl.Query, args...)
+			if err != nil {
+				continue
+			}
+			defer rows.Close()
+			return collectRowsGeneric(rows)
+		}
 	}
+	// Fall back to hardcoded templates
+	return m.tryTier2(question)
+}
 
-	// Tier 3: freetext entity name + metadata search
-	if result := m.tryTier3(q); result != "" {
-		return result
-	}
-
-	m.recordQueryGap(q)
-	return fmt.Sprintf("[SWL] No pattern matched %q. Try: stats, gaps, resume, or sql:SELECT ...", q)
+// extractTier2Args extracts positional arguments from a question for a SQL template.
+// Placeholder $1, $2 etc. in tmpl.Query indicate required args.
+// This is a stub — real implementation would need template arg extraction per query type.
+func extractTier2Args(query, question string) []any {
+	return nil // templates with $1/$2 args currently use hardcoded extractors
 }
 
 // --- Tier 1 handlers ---
+
+// labelSearch finds files matching semantic labels derived from path patterns.
+// This is the core "where is the file that does X?" handler (Phase A.3).
+// It matches the query hint against role, domain, kind, and content_type labels
+// stored in entity metadata at scan time (Phase A.2 semantic bootstrap).
+func (m *Manager) labelSearch(hint string) string {
+	hint = strings.TrimSpace(hint)
+	if hint == "" {
+		return "[SWL] Please specify what you're looking for (e.g. 'authentication', 'config', 'tests')."
+	}
+
+	// Extract search terms from the hint. Normalize to lowercase.
+	terms := extractSearchTerms(hint)
+	if len(terms) == 0 {
+		return fmt.Sprintf("[SWL] Could not extract search terms from %q.", hint)
+	}
+
+	// Build a SQL query that searches role, domain, kind, content_type, and visibility
+	// fields in entity metadata. We use a weighted scoring approach:
+	//   exact label match on role (weight 10) > domain (weight 5) > kind (weight 3) > content_type (weight 2)
+	//   + name substring match (weight 1)
+	//   + directory path match (weight 1)
+	// Files with higher total scores ranked first.
+	scoreExpr := "0"
+	args := []any{}
+	for _, term := range terms {
+		termLower := strings.ToLower(term)
+		// Role match: exact or substring (highest weight)
+		scoreExpr += " + CASE WHEN json_extract(metadata,'$.role') LIKE ? THEN 10 ELSE 0 END"
+		args = append(args, "%"+termLower+"%")
+		// Domain match
+		scoreExpr += " + CASE WHEN json_extract(metadata,'$.domain') LIKE ? THEN 5 ELSE 0 END"
+		args = append(args, "%"+termLower+"%")
+		// Kind match
+		scoreExpr += " + CASE WHEN json_extract(metadata,'$.kind') LIKE ? THEN 3 ELSE 0 END"
+		args = append(args, "%"+termLower+"%")
+		// Content type match
+		scoreExpr += " + CASE WHEN json_extract(metadata,'$.content_type') LIKE ? THEN 2 ELSE 0 END"
+		args = append(args, "%"+termLower+"%")
+		// Name substring match
+		scoreExpr += " + CASE WHEN LOWER(name) LIKE ? THEN 1 ELSE 0 END"
+		args = append(args, "%"+termLower+"%")
+		// Directory path match (for directory queries)
+		scoreExpr += " + CASE WHEN LOWER(name) LIKE ? THEN 1 ELSE 0 END"
+		args = append(args, "%/"+termLower+"/%")
+	}
+
+	// Also try directory-based search: if hint matches a known directory name,
+	// return files in that directory.
+	dirQuery := `SELECT id, name, type,
+		json_extract(metadata,'$.role') as role,
+		json_extract(metadata,'$.domain') as domain,
+		json_extract(metadata,'$.kind') as kind,
+		json_extract(metadata,'$.content_type') as content_type,
+		access_count, knowledge_depth
+		FROM entities
+		WHERE type = 'File' AND fact_status != 'deleted' AND name LIKE ? LIMIT 20`
+	dirArgs := []any{"%/" + strings.ToLower(hint) + "/%"}
+
+	query := fmt.Sprintf(`
+		SELECT id, name, type,
+		       json_extract(metadata,'$.role') as role,
+		       json_extract(metadata,'$.domain') as domain,
+		       json_extract(metadata,'$.kind') as kind,
+		       json_extract(metadata,'$.content_type') as content_type,
+		       access_count, knowledge_depth,
+		       (%s) as score
+		FROM entities
+		WHERE type IN ('File', 'Directory') AND fact_status != 'deleted'
+		HAVING score > 0
+		ORDER BY score DESC, knowledge_depth DESC, access_count DESC
+		LIMIT 20`, scoreExpr)
+
+	rows, err := m.db.Query(query, args...)
+	if err != nil {
+		return "[SWL] Label search error: " + err.Error()
+	}
+	defer rows.Close()
+
+	var out []string
+	var ids []string
+	scoredRows := 0
+	for rows.Next() {
+		var id, name, etype string
+		var role, domain, kind, ct sql.NullString
+		var accessCount, depth int
+		var score int
+		if err := rows.Scan(&id, &name, &etype, &role, &domain, &kind, &ct, &accessCount, &depth, &score); err != nil {
+			continue
+		}
+		if score == 0 {
+			continue
+		}
+		scoredRows++
+		ids = append(ids, id)
+		line := fmt.Sprintf("  [%s] %s", etype, name)
+		var tags []string
+		if role.Valid && role.String != "" {
+			tags = append(tags, "role:"+role.String)
+		}
+		if domain.Valid && domain.String != "" {
+			tags = append(tags, "domain:"+domain.String)
+		}
+		if kind.Valid && kind.String != "" {
+			tags = append(tags, "kind:"+kind.String)
+		}
+		if ct.Valid && ct.String != "" {
+			tags = append(tags, "type:"+ct.String)
+		}
+		if len(tags) > 0 {
+			line += "  (" + strings.Join(tags, ", ") + ")"
+		}
+		out = append(out, line)
+	}
+
+	// Fallback: directory-based search if no label matches
+	if scoredRows == 0 {
+		dirRows, dirErr := m.db.Query(dirQuery, dirArgs...)
+		if dirErr == nil {
+			defer dirRows.Close()
+			for dirRows.Next() {
+				var id, name, etype string
+				var role, domain, kind, ct sql.NullString
+				var accessCount, depth int
+				if dirRows.Scan(&id, &name, &etype, &role, &domain, &kind, &ct, &accessCount, &depth) == nil {
+					ids = append(ids, id)
+					line := "  [File] " + name
+					var tags []string
+					if role.Valid && role.String != "" {
+						tags = append(tags, "role:"+role.String)
+					}
+					if domain.Valid && domain.String != "" {
+						tags = append(tags, "domain:"+domain.String)
+					}
+					if ct.Valid && ct.String != "" {
+						tags = append(tags, "type:"+ct.String)
+					}
+					if len(tags) > 0 {
+						line += "  (" + strings.Join(tags, ", ") + ")"
+					}
+					out = append(out, line)
+				}
+			}
+		}
+	}
+
+	if len(out) == 0 {
+		// Suggest creating a label rule for the query
+		return fmt.Sprintf("[SWL] No files found matching %q.\n"+
+			"Hint: The graph knows about these roles: authentication, api, service, configuration, "+
+			"database, middleware, test, logging, metrics, and more.\n"+
+			"Try: 'where is authentication code' or 'where are the entry points'.",
+			hint)
+	}
+	m.BumpAccessCount(ids)
+	return "[SWL] Files matching '" + hint + "':\n" + strings.Join(out, "\n")
+}
+
+// extractSearchTerms splits a query hint into significant search terms.
+// Strips stop words and normalizes to lowercase.
+func extractSearchTerms(hint string) []string {
+	stop := map[string]bool{
+		"the": true, "a": true, "an": true, "is": true, "in": true, "of": true,
+		"for": true, "to": true, "and": true, "or": true, "what": true, "how": true,
+		"where": true, "find": true, "show": true, "list": true, "get": true,
+		"that": true, "which": true, "are": true, "file": true, "files": true,
+		"code": true, "logic": true, "my": true, "this": true, "all": true,
+		"some": true, "any": true, "do": true, "does": true,
+	}
+	var terms []string
+	for _, w := range strings.Fields(strings.ToLower(hint)) {
+		w = strings.TrimSpace(w)
+		if w == "" || len(w) < 2 {
+			continue
+		}
+		if stop[w] {
+			continue
+		}
+		terms = append(terms, w)
+	}
+	return terms
+}
 
 // askWorkspacePurpose returns descriptions from AnchorDocument entities and
 // any session goals, giving the LLM immediate context about the workspace.
@@ -708,8 +993,10 @@ func (m *Manager) Stats() string {
 	return "[SWL] Graph stats:\n" + strings.Join(out, "\n")
 }
 
-// KnowledgeGaps returns entities with low confidence or unknown status.
+// KnowledgeGaps returns entities with low confidence or unknown status,
+// plus recurring missed queries and their rule suggestions (Phase C).
 func (m *Manager) KnowledgeGaps() string {
+	// Entity gaps.
 	rows, err := m.db.Query(
 		`SELECT type, name, confidence, fact_status FROM entities
 		 WHERE (confidence < 0.85 OR fact_status = 'unknown') AND fact_status != 'deleted'
@@ -720,18 +1007,57 @@ func (m *Manager) KnowledgeGaps() string {
 	}
 	defer rows.Close()
 
-	var out []string
+	var entityGaps []string
 	for rows.Next() {
 		var t, name, status string
 		var conf float64
 		if rows.Scan(&t, &name, &conf, &status) == nil {
-			out = append(out, fmt.Sprintf("  [%s] %.2f %s  %s", status, conf, t, name))
+			entityGaps = append(entityGaps, fmt.Sprintf("  [%s] %.2f %s  %s", status, conf, t, name))
 		}
 	}
-	if len(out) == 0 {
+
+	// Query gaps with suggestions (Phase C).
+	analysis := m.AnalyzeGaps(3)
+
+	var sections []string
+
+	if len(entityGaps) > 0 {
+		sections = append(sections, "[SWL] Entity gaps (low confidence / unknown status):\n"+strings.Join(entityGaps, "\n"))
+	}
+
+	if len(analysis.MissedQuestions) > 0 {
+		var qgaps []string
+		for _, g := range analysis.MissedQuestions {
+			flag := ""
+			if g.Suggestion != "" && g.RuleKind != "none" {
+				flag = " → rule candidate"
+			}
+			qgaps = append(qgaps, fmt.Sprintf("  [%dx] %s%s", g.Count, g.Question, flag))
+		}
+		sections = append(sections, "[SWL] Missed queries (repeated ≥3×):\n"+strings.Join(qgaps, "\n"))
+	}
+
+	if len(sections) == 0 {
 		return "[SWL] No significant knowledge gaps."
 	}
-	return "[SWL] Knowledge gaps (low confidence or unknown status):\n" + strings.Join(out, "\n")
+	return strings.Join(sections, "\n\n")
+}
+
+// SuggestRules returns actionable rule suggestions derived from recurring query gaps.
+// Each suggestion is a ready-to-paste YAML snippet for swl.rules.yaml.
+// Call this to see what rules would improve the query engine.
+func (m *Manager) SuggestRules() string {
+	analysis := m.AnalyzeGaps(3)
+	if len(analysis.RuleSuggestions) == 0 {
+		return "[SWL] No rule suggestions — no recurring query gaps (≥3 misses) yet."
+	}
+	var out []string
+	out = append(out, "[SWL] Rule suggestions (add to ~/.swl/swl.rules.yaml):\n")
+	for i, s := range analysis.RuleSuggestions {
+		out = append(out, fmt.Sprintf("\n--- Suggestion %d (%s) ---\n  Why: %s\n  %s",
+			i+1, s.Kind, s.Why, s.YAML))
+	}
+	return strings.Join(out, "\n")
 }
 
 // DriftReport returns all stale entities.

@@ -22,6 +22,13 @@ type Manager struct {
 
 	writer *entityWriter
 
+	// rules drives label derivation from configuration (Phase B).
+	// Initialised in NewManager from swl.rules.yaml; nil until then (falls back to package-level DeriveLabels).
+	rules *RulesEngine
+
+	// ignoreMatcher for .swlignore file
+	ignore *ignoreMatcher
+
 	// activeSessions maps a picoclaw session key to a SWL session UUID.
 	sessionsMu     sync.RWMutex
 	activeSessions map[string]string // picoclaw sessionKey → SWL session UUID
@@ -79,6 +86,22 @@ func NewManager(workspace string, cfg *Config) (*Manager, error) {
 		decayHandlers:  make(map[EntityType]DecayHandlerFunc),
 	}
 	m.writer = &entityWriter{db: db, mu: &m.mu}
+
+	// Load .swlignore file
+	_ = m.loadSwlignore() // non-fatal if missing
+
+	// Initialise rules engine from swl.rules.yaml (Phase B).
+	// Silently falls back to nil (package-level DeriveLabels used) if YAML load fails.
+	if rules, err := LoadRules(workspace, ""); err == nil {
+		m.rules = rules
+		InitRulesWith(rules) // set the global singleton for RulesEngine methods
+
+		// Also load query intents from swl.query.yaml (Phase B — query externalization).
+		if qcfg, err := LoadQueryConfig(workspace, ""); err == nil {
+			m.rules.QueryIntents = CompileQueryConfig(qcfg)
+			m.rules.SQLTemplates = qcfg.SQLTmpls
+		}
+	}
 
 	m.RegisterDecayHandler(KnownTypeFile, decayFile)
 	m.RegisterDecayHandler(KnownTypeURL, decayURL)

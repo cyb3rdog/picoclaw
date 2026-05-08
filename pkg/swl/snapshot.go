@@ -47,9 +47,16 @@ var markdownH1RE = regexp.MustCompile(`(?m)^#\s+.+`)
 // This replaces the per-file ExtractContent call that was previously run
 // inside ScanWorkspace, eliminating the scan-time entity bloat.
 func (m *Manager) BuildSnapshot(root string) *GraphDelta {
+	// Resolve root to absolute before any path operations.
+	// Consistent with ScanWorkspace's normalization so that snapshot
+	// entity IDs match scanner entity IDs for the same file.
 	absRoot := root
-	if !filepath.IsAbs(root) && m.workspace != "" {
-		absRoot = filepath.Join(m.workspace, root)
+	if !filepath.IsAbs(root) {
+		if m.workspace != "" {
+			absRoot = filepath.Join(m.workspace, root)
+		} else {
+			absRoot, _ = filepath.Abs(root)
+		}
 	}
 
 	delta := &GraphDelta{}
@@ -79,7 +86,12 @@ func (m *Manager) snapshotDir(absRoot, path string, depth int, delta *GraphDelta
 	for _, entry := range entries {
 		name := entry.Name()
 		if entry.IsDir() {
-			if skipDirs[name] || (strings.HasPrefix(name, ".") && name != ".") {
+			// Check .swlignore patterns first
+			if m.ignoreDirPath(filepath.Join(path, name)) {
+				continue
+			}
+			// Then check default skip dirs
+			if m.shouldIgnoreDir(name) {
 				continue
 			}
 			m.snapshotDir(absRoot, filepath.Join(path, name), depth+1, delta)
@@ -87,7 +99,12 @@ func (m *Manager) snapshotDir(absRoot, path string, depth int, delta *GraphDelta
 		}
 
 		ext := strings.ToLower(filepath.Ext(name))
-		if skipExts[ext] {
+		// Check .swlignore patterns first
+		if m.ignoreFilePath(filepath.Join(path, name)) {
+			continue
+		}
+		// Then check default skip extensions
+		if m.shouldIgnoreFile(name) {
 			continue
 		}
 		totalFiles++
@@ -159,9 +176,17 @@ func (m *Manager) snapshotDir(absRoot, path string, depth int, delta *GraphDelta
 	}
 
 	areaID := entityID(KnownTypeSemanticArea, relPath)
+	// Derive semantic labels for the area from its path (Phase A.2).
+	areaLabels := m.DeriveLabels(KnownTypeDirectory, relPath)
+	areaMeta := meta
+	for k, v := range areaLabels.ToMetadata() {
+		if _, exists := areaMeta[k]; !exists {
+			areaMeta[k] = v
+		}
+	}
 	delta.Entities = append(delta.Entities, EntityTuple{
 		ID: areaID, Type: KnownTypeSemanticArea, Name: relPath,
-		Metadata:         meta,
+		Metadata:         areaMeta,
 		Confidence:       0.9,
 		ExtractionMethod: MethodExtracted,
 		KnowledgeDepth:   1,
