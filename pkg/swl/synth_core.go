@@ -8,6 +8,10 @@ import (
 	"time"
 )
 
+// Note: When integrating with picoclaw, import picoclaw for types:
+// import "github.com/sipeed/picoclaw/pkg/swl"
+// Use swl.EntityTuple, swl.KnownType*, etc.
+
 // === SYNTH-CORE ENTROPY MONITOR ===
 
 // EntropyMonitor tracks information gain to enforce iteration bounds.
@@ -78,6 +82,50 @@ func (em *EntropyMonitor) Reset() {
 	em.Depth = 0
 	em.LastDelta = 0
 	em.PrevCount = 0
+}
+
+// ExtractionMethod categorizes fact provenance.
+// Part of SYNTH-CORE v10: extraction tiers from swl-fixes.
+type ExtractionMethod string
+
+const (
+	MethodObserved  ExtractionMethod = "observed"  // Directly observed (conf: 1.0)
+	MethodExtracted ExtractionMethod = "extracted" // Extracted from content (conf: 0.9)
+	MethodStated    ExtractionMethod = "stated"    // Explicitly stated (conf: 0.85)
+	MethodInferred  ExtractionMethod = "inferred"  // Inferred via chaining (conf: 0.8)
+)
+
+// extractionCost returns entropy cost based on method.
+// Higher confidence = lower cost (reliable info).
+func extractionCost(m ExtractionMethod) int {
+	switch m {
+	case MethodObserved:
+		return 1  // Minimum cost: most reliable
+	case MethodExtracted:
+		return 2
+	case MethodStated:
+		return 3
+	case MethodInferred:
+		return 5 // Maximum cost: least certain
+	default:
+		return 3
+	}
+}
+
+// ConfidenceForMethod returns confidence multiplier for extraction method.
+func ConfidenceForMethod(m ExtractionMethod) float64 {
+	switch m {
+	case MethodObserved:
+		return 1.0
+	case MethodExtracted:
+		return 0.9
+	case MethodStated:
+		return 0.85
+	case MethodInferred:
+		return 0.8
+	default:
+		return 0.5
+	}
 }
 
 // === SYNTH-CORE CONFLICT DETECTOR ===
@@ -202,6 +250,39 @@ func (cd *ConflictDetector) GetPendingConflicts() []ConflictRecord {
 	return pending
 }
 
+// InvalidateOnContentChange checks if entity content changed and cascades staleness.
+// Part of SYNTH-CORE v10: content_hash_invalidation from swl-fixes.
+func (cd *ConflictDetector) InvalidateOnContentChange(entityID, newContent string) bool {
+	cd.mu.Lock()
+	defer cd.mu.Unlock()
+
+	// Check current content hash
+	var existingHash sql.NullString
+	err := cd.db.QueryRow(
+		"SELECT content_hash FROM entities WHERE id = ?", entityID,
+	).Scan(&existingHash)
+
+	if err != nil && err != sql.ErrNoRows {
+		return false
+	}
+
+	newHash := fmt.Sprintf("%x", len(newContent)) // Simplified hash
+	if existingHash.Valid && existingHash.String == newHash {
+		return false // unchanged
+	}
+
+	// Content changed: cascade staleness to children
+	cd.db.Exec( //nolint:errcheck
+		`UPDATE entities SET 
+			fact_status = 'stale',
+			knowledge_depth = 1,
+			modified_at = datetime('now')
+		 WHERE parent_id = ?`,
+		entityID,
+	)
+	return true
+}
+
 // === SYNTH-CORE GOAL TRACKER ===
 
 // Goal represents a tracked objective for backward chaining.
@@ -213,6 +294,8 @@ type Goal struct {
 	Progress    float64  `json:"progress"` // 0.0 to 1.0
 	Status      string   `json:"status"`    // active, completed, blocked
 	CreatedAt   string   `json:"created_at"`
+	// Part of SYNTH-CORE v10: knowledge depth tracking from swl-fixes
+	KnowledgeDepth int `json:"knowledge_depth"` // Tracks how deeply goal has been explored
 }
 
 // GoalTracker manages agent objectives via backward chaining.
@@ -270,7 +353,7 @@ func (gt *GoalTracker) UpdateProgress(id string, progress float64) error {
 }
 
 // DeriveForGoal performs backward chaining from goal to prerequisites.
-// Part of SYNTH-CORE v10: goal-directed inference via prerequisites.
+// Part of SYNTH-CORE v10: goal-directed inference via prerequisites + knowledge_depth_bump.
 func (gt *GoalTracker) DeriveForGoal(goalDesc string) []*Goal {
 	gt.mu.RLock()
 	defer gt.mu.RUnlock()
@@ -278,6 +361,10 @@ func (gt *GoalTracker) DeriveForGoal(goalDesc string) []*Goal {
 	var results []*Goal
 	for _, g := range gt.goals {
 		if g.Status == "active" {
+			// Increment knowledge depth: MIN(depth + 1, maxDepth)
+			if g.KnowledgeDepth < 10 {
+				g.KnowledgeDepth++
+			}
 			results = append(results, g)
 		}
 	}
