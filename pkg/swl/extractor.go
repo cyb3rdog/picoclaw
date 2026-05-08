@@ -10,6 +10,8 @@ import (
 )
 
 // --- Anti-bloat limits ---
+// These are overridden by RulesEngine.FileRules if available.
+// Default values match swl.rules.default.yaml embedded defaults.
 const (
 	maxSymbols  = 60
 	maxImports  = 40
@@ -17,6 +19,7 @@ const (
 	maxSections = 20
 	maxURLs     = 20
 	maxTopics   = 10
+	maxUses     = 20 // noise symbol threshold
 )
 
 // noiseSymbols are universally noisy names discarded during symbol extraction.
@@ -168,13 +171,13 @@ func (m *Manager) ExtractContent(fileID, filePath, content string) *GraphDelta {
 		extractImports(ctx, fileID, content, delta)
 	}
 	if m.cfg.effectiveExtractTasks() {
-		extractTasks(ctx, fileID, content, delta)
+		extractTasks(ctx, fileID, content, delta, m.MaxTasks())
 	}
 	if m.cfg.effectiveExtractSections() {
-		extractSections(ctx, fileID, content, delta)
+		extractSections(ctx, fileID, content, delta, m.MaxSections())
 	}
 	if m.cfg.effectiveExtractURLs() {
-		extractURLs(ctx, fileID, content, delta)
+		extractURLs(ctx, fileID, content, delta, m.MaxURLs())
 	}
 
 	return delta
@@ -260,7 +263,7 @@ func ExtractExec(sessionID, command, stdout, stderr string) *GraphDelta {
 	}
 
 	// URLs in output
-	for _, u := range urlRE.FindAllString(combined, maxURLs) {
+	for _, u := range urlRE.FindAllString(combined, m.MaxURLs()) {
 		if isNoisyURL(u) {
 			continue
 		}
@@ -276,6 +279,7 @@ func ExtractExec(sessionID, command, stdout, stderr string) *GraphDelta {
 }
 
 // ExtractWeb extracts knowledge from web_fetch result content.
+// Note: standalone function — uses hardcoded defaults (not from RulesEngine).
 func ExtractWeb(urlID, pageContent string) *GraphDelta {
 	if pageContent == "" {
 		return nil
@@ -338,7 +342,7 @@ func (m *Manager) ExtractLLMResponse(sessionID, content string) *GraphDelta {
 	// Tasks/TODOs the LLM mentions
 	count := 0
 	for _, match := range taskRE.FindAllStringSubmatch(content, -1) {
-		if isDone(ctx) || count >= maxTasks {
+		if isDone(ctx) || count >= m.MaxTasks() {
 			break
 		}
 		text := strings.TrimSpace(match[1])
@@ -474,7 +478,7 @@ func (m *Manager) ExtractGeneric(toolName, result string) *GraphDelta {
 	if !isDone(ctx) {
 		taskCount := 0
 		for _, match := range taskRE.FindAllStringSubmatch(result, -1) {
-			if isDone(ctx) || taskCount >= maxTasks {
+			if isDone(ctx) || taskCount >= m.MaxTasks() {
 				break
 			}
 			text := strings.TrimSpace(match[1])
@@ -502,7 +506,7 @@ func extractSymbols(ctx context.Context, fileID, filePath, content string, patte
 	count := 0
 	for _, re := range patterns {
 		for _, m := range re.FindAllStringSubmatch(content, -1) {
-			if isDone(ctx) || count >= maxSymbols {
+			if isDone(ctx) || count >= m.MaxSymbols() {
 				goto emitUses
 			}
 			name := strings.TrimSpace(m[1])
@@ -543,7 +547,7 @@ func extractImports(ctx context.Context, fileID, content string, delta *GraphDel
 	count := 0
 	for _, re := range importPatterns {
 		for _, m := range re.FindAllStringSubmatch(content, -1) {
-			if isDone(ctx) || count >= maxImports {
+			if isDone(ctx) || count >= m.MaxImports() {
 				return
 			}
 			name := strings.TrimSpace(m[1])
@@ -562,10 +566,10 @@ func extractImports(ctx context.Context, fileID, content string, delta *GraphDel
 	}
 }
 
-func extractTasks(ctx context.Context, fileID, content string, delta *GraphDelta) {
+func extractTasks(ctx context.Context, fileID, content string, delta *GraphDelta, max int) {
 	count := 0
 	for _, m := range taskRE.FindAllStringSubmatch(content, -1) {
-		if isDone(ctx) || count >= maxTasks {
+		if isDone(ctx) || count >= max {
 			return
 		}
 		text := strings.TrimSpace(m[1])
@@ -582,10 +586,10 @@ func extractTasks(ctx context.Context, fileID, content string, delta *GraphDelta
 	}
 }
 
-func extractSections(ctx context.Context, fileID, content string, delta *GraphDelta) {
+func extractSections(ctx context.Context, fileID, content string, delta *GraphDelta, max int) {
 	count := 0
 	for _, m := range headingRE.FindAllStringSubmatch(content, -1) {
-		if isDone(ctx) || count >= maxSections {
+		if isDone(ctx) || count >= max {
 			return
 		}
 		title := strings.TrimSpace(m[2])
@@ -602,10 +606,10 @@ func extractSections(ctx context.Context, fileID, content string, delta *GraphDe
 	}
 }
 
-func extractURLs(ctx context.Context, fileID, content string, delta *GraphDelta) {
+func extractURLs(ctx context.Context, fileID, content string, delta *GraphDelta, max int) {
 	count := 0
 	for _, u := range urlRE.FindAllString(content, -1) {
-		if isDone(ctx) || count >= maxURLs {
+		if isDone(ctx) || count >= max {
 			return
 		}
 		if isNoisyURL(u) {

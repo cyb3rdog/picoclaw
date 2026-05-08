@@ -53,11 +53,14 @@ type RulesEngine struct {
 	NoiseSymbols     map[string]bool
 	IgnoreDirs       map[string]bool
 	IgnoreExtensions map[string]bool
-	MaxSymbols       int
-	MaxImports       int
-	MaxTasks         int
-	MaxURLs          int
-	SkipHosts        []string
+
+	// Extraction limits (loaded from file_rules in swl.rules.yaml).
+	MaxSymbols int
+	MaxImports int
+	MaxTasks   int
+	MaxSections int
+	MaxURLs    int
+	MaxTopics  int
 
 	// Query engine config (Phase B query externalization).
 	QueryIntents   []CompiledIntent  // Tier 1: pattern → handler
@@ -220,9 +223,16 @@ func (r *RulesEngine) compileFromConfig() {
 		r.MaxURLs = maxURLs
 	}
 	r.SkipHosts = r.cfg.FileRules.URLs.SkipHosts
-}
 
-// DeriveLabels computes semantic labels using the rules engine.
+	// Sections limit
+	if r.cfg.FileRules.Sections.MaxPerFile > 0 {
+		r.MaxSections = r.cfg.FileRules.Sections.MaxPerFile
+	} else {
+		r.MaxSections = maxSections
+	}
+	// Topics limit (from section rules, section extraction is the proxy for topics)
+	r.MaxTopics = maxTopics
+}
 // This replaces the hardcoded DeriveLabels() in labels.go when Phase B is active.
 func (r *RulesEngine) DeriveLabels(entityType EntityType, name string) LabelResult {
 	var lr LabelResult
@@ -233,12 +243,15 @@ func (r *RulesEngine) DeriveLabels(entityType EntityType, name string) LabelResu
 	// 2. Name pattern rules — files only
 	if entityType == KnownTypeFile {
 		base := filepath.Base(name)
-		lr.applyNamePatternRules(base)
+		lr.applyNamePatternRulesFrom(base, r.NamePatternRules)
 	}
 
 	// 3. Content type from extension — files only
 	if entityType == KnownTypeFile {
-		lr.applyContentTypeRules(name)
+		ext := strings.ToLower(filepath.Ext(name))
+		if ct, ok := r.ContentTypeRules[ext]; ok && lr.ContentType == "" {
+			lr.ContentType = ct
+		}
 	}
 
 	return lr
@@ -248,7 +261,7 @@ func (lr *LabelResult) applyPathPrefixRules(path string) {
 	norm := filepath.ToSlash(path)
 	normSlash := norm + "/"
 
-	for _, rule := range globalRules.PathPrefixRules {
+	for _, rule := range r.PathPrefixRules {
 		if strings.HasPrefix(norm, rule.Prefix) || strings.HasPrefix(normSlash, rule.Prefix) {
 			if rule.Role != "" && lr.Role == "" {
 				lr.Role = rule.Role
@@ -266,8 +279,8 @@ func (lr *LabelResult) applyPathPrefixRules(path string) {
 	}
 }
 
-func (lr *LabelResult) applyNamePatternRules(baseName string) {
-	for _, rule := range globalRules.NamePatternRules {
+func (lr *LabelResult) applyNamePatternRulesFrom(baseName string, rules []NamePatternRule) {
+	for _, rule := range rules {
 		if matchLabelPattern(baseName, rule.Pattern) {
 			if rule.Role != "" && lr.Role == "" {
 				lr.Role = rule.Role
@@ -283,17 +296,7 @@ func (lr *LabelResult) applyNamePatternRules(baseName string) {
 	}
 }
 
-func (lr *LabelResult) applyContentTypeRules(name string) {
-	ext := strings.ToLower(filepath.Ext(name))
-	if ct, ok := globalRules.ContentTypeRules[ext]; ok && lr.ContentType == "" {
-		lr.ContentType = ct
-	}
-}
 
-// globalRules is the singleton rules engine instance.
-// Initialised by Manager after workspace scan on first use.
-// Until initialised, label derivation falls back to package-level DeriveLabels().
-var globalRules RulesEngine
 
 // CompiledIntent pairs a compiled regex with handler metadata for Tier 1 dispatch.
 type CompiledIntent struct {
@@ -359,23 +362,13 @@ func CompileQueryConfig(cfg *QueryConfig) []CompiledIntent {
 	return intents
 }
 
-// InitRulesWith sets the global rules engine from an already-loaded RulesEngine.
-// Use this when Manager has loaded the rules but needs to update the global singleton
-// used by RulesEngine label methods.
-func InitRulesWith(r *RulesEngine) {
-	globalRules = *r
-}
+// InitRulesWith is deprecated — rules are accessed via Manager.rules.
+// Kept for backward compatibility with any callers.
+func InitRulesWith(r *RulesEngine) {}
 
-// InitRules initialises the global rules engine from workspace config.
-// Call once per Manager lifetime, after workspace is set.
-func InitRules(workspace, rulesPath string) error {
-	r, err := LoadRules(workspace, rulesPath)
-	if err != nil {
-		return err
-	}
-	globalRules = *r
-	return nil
-}
+// InitRules is deprecated — rules are loaded via Manager initialization.
+// Kept for backward compatibility with any callers.
+func InitRules(workspace, rulesPath string) error { return nil }
 
 // DeriveLabels delegates to the rules engine if available,
 // otherwise falls back to package-level DeriveLabels().

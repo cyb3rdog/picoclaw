@@ -114,3 +114,76 @@ func (c *Config) EffectiveReasoningConfidenceCap() float64 {
 	}
 	return v
 }
+
+// EffectiveMaxSymbols returns the max symbol entities per file extraction.
+// Consumes RulesEngine limit if available, else hardcoded default.
+func (c *Config) EffectiveMaxSymbols(r *RulesEngine) int {
+	if r != nil && r.MaxSymbols > 0 {
+		return r.MaxSymbols
+	}
+	return maxSymbols
+}
+
+// EffectiveMaxImports returns the max import entities per file extraction.
+func (c *Config) EffectiveMaxImports(r *RulesEngine) int {
+	if r != nil && r.MaxImports > 0 {
+		return r.MaxImports
+	}
+	return maxImports
+}
+
+// EffectiveMaxTasks returns the max task entities per file extraction.
+func (c *Config) EffectiveMaxTasks(r *RulesEngine) int {
+	if r != nil && r.MaxTasks > 0 {
+		return r.MaxTasks
+	}
+	return maxTasks
+}
+
+// EffectiveMaxSections returns the max section entities per file extraction.
+func (c *Config) EffectiveMaxSections(r *RulesEngine) int {
+	if r != nil && r.MaxSections > 0 {
+		return r.MaxSections
+	}
+	return maxSections
+}
+
+// EffectiveMaxURLs returns the max URL entities per file extraction.
+func (c *Config) EffectiveMaxURLs(r *RulesEngine) int {
+	if r != nil && r.MaxURLs > 0 {
+		return r.MaxURLs
+	}
+	return maxURLs
+}
+
+// --- Extraction limit helpers ---
+// These read from the Manager's rules engine (YAML-loaded) when available,
+// falling back to hardcoded defaults. Call on Manager, not Config.
+
+// MaxSymbols returns the effective max symbols per file.
+func (m *Manager) MaxSymbols() int {
+	return m.cfg.EffectiveMaxSymbols(m.rules)
+}
+
+// MaxImports returns the effective max imports per file.
+func (m *Manager) MaxImports() int {
+	return m.cfg.EffectiveMaxImports(m.rules)
+}
+
+// MaxTasks returns the effective max tasks per file.
+func (m *Manager) MaxTasks() int {
+	return m.cfg.EffectiveMaxTasks(m.rules)
+}
+
+// MaxSections returns the effective max sections per file.
+func (m *Manager) MaxSections() int {
+	return m.cfg.EffectiveMaxSections(m.rules)
+}
+
+// MaxURLs returns the effective max URLs per file.
+func (m *Manager) MaxURLs() int {
+	return m.cfg.EffectiveMaxURLs(m.rules)
+}
+
+// MaxUses returns the noise symbol threshold (not externalized — constant).
+func MaxUses() int { return maxUses }

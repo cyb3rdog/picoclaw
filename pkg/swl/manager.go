@@ -94,7 +94,6 @@ func NewManager(workspace string, cfg *Config) (*Manager, error) {
 	// Silently falls back to nil (package-level DeriveLabels used) if YAML load fails.
 	if rules, err := LoadRules(workspace, ""); err == nil {
 		m.rules = rules
-		InitRulesWith(rules) // set the global singleton for RulesEngine methods
 
 		// Also load query intents from swl.query.yaml (Phase B — query externalization).
 		if qcfg, err := LoadQueryConfig(workspace, ""); err == nil {
