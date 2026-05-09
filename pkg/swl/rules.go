@@ -61,6 +61,7 @@ type RulesEngine struct {
 	MaxSections int
 	MaxURLs    int
 	MaxTopics  int
+	SkipHosts  []string
 
 	// Query engine config (Phase B query externalization).
 	QueryIntents   []CompiledIntent  // Tier 1: pattern → handler
@@ -106,12 +107,13 @@ type LabelRulesBlock struct {
 
 // FileRulesBlock contains extraction configuration.
 type FileRulesBlock struct {
-	Symbols         SymbolsBlock  `yaml:"symbols"`
-	Imports         ImportsBlock  `yaml:"imports"`
-	Tasks           TasksBlock    `yaml:"tasks"`
-	URLs            URLsBlock     `yaml:"urls"`
-	IgnoreDirs      []string      `yaml:"ignore_dirs"`
-	IgnoreExtension []string      `yaml:"ignore_extensions"`
+	Symbols         SymbolsBlock   `yaml:"symbols"`
+	Imports         ImportsBlock   `yaml:"imports"`
+	Tasks           TasksBlock     `yaml:"tasks"`
+	URLs            URLsBlock      `yaml:"urls"`
+	Sections        SectionsBlock  `yaml:"sections"`
+	IgnoreDirs      []string       `yaml:"ignore_dirs"`
+	IgnoreExtension []string       `yaml:"ignore_extensions"`
 }
 
 type SymbolsBlock struct {
@@ -132,6 +134,10 @@ type TasksBlock struct {
 type URLsBlock struct {
 	MaxPerFile int      `yaml:"max_per_file"`
 	SkipHosts  []string `yaml:"skip_hosts"`
+}
+
+type SectionsBlock struct {
+	MaxPerFile int `yaml:"max_per_file"`
 }
 
 // LoadRules loads the rules engine from a workspace-level swl.rules.yaml,
@@ -238,29 +244,8 @@ func (r *RulesEngine) DeriveLabels(entityType EntityType, name string) LabelResu
 	var lr LabelResult
 
 	// 1. Path prefix rules
-	lr.applyPathPrefixRules(name)
-
-	// 2. Name pattern rules — files only
-	if entityType == KnownTypeFile {
-		base := filepath.Base(name)
-		lr.applyNamePatternRulesFrom(base, r.NamePatternRules)
-	}
-
-	// 3. Content type from extension — files only
-	if entityType == KnownTypeFile {
-		ext := strings.ToLower(filepath.Ext(name))
-		if ct, ok := r.ContentTypeRules[ext]; ok && lr.ContentType == "" {
-			lr.ContentType = ct
-		}
-	}
-
-	return lr
-}
-
-func (lr *LabelResult) applyPathPrefixRules(path string) {
-	norm := filepath.ToSlash(path)
+	norm := filepath.ToSlash(name)
 	normSlash := norm + "/"
-
 	for _, rule := range r.PathPrefixRules {
 		if strings.HasPrefix(norm, rule.Prefix) || strings.HasPrefix(normSlash, rule.Prefix) {
 			if rule.Role != "" && lr.Role == "" {
@@ -277,6 +262,35 @@ func (lr *LabelResult) applyPathPrefixRules(path string) {
 			}
 		}
 	}
+
+	// 2. Name pattern rules — files only
+	if entityType == KnownTypeFile {
+		base := filepath.Base(name)
+		for _, rule := range r.NamePatternRules {
+			if matchLabelPattern(base, rule.Pattern) {
+				if rule.Role != "" && lr.Role == "" {
+					lr.Role = rule.Role
+				}
+				if rule.Kind != "" && lr.Kind == "" {
+					lr.Kind = rule.Kind
+				}
+				if rule.Domain != "" && lr.Domain == "" {
+					lr.Domain = rule.Domain
+				}
+				break
+			}
+		}
+	}
+
+	// 3. Content type from extension — files only
+	if entityType == KnownTypeFile {
+		ext := strings.ToLower(filepath.Ext(name))
+		if ct, ok := r.ContentTypeRules[ext]; ok && lr.ContentType == "" {
+			lr.ContentType = ct
+		}
+	}
+
+	return lr
 }
 
 func (lr *LabelResult) applyNamePatternRulesFrom(baseName string, rules []NamePatternRule) {

@@ -263,7 +263,7 @@ func ExtractExec(sessionID, command, stdout, stderr string) *GraphDelta {
 	}
 
 	// URLs in output
-	for _, u := range urlRE.FindAllString(combined, m.MaxURLs()) {
+	for _, u := range urlRE.FindAllString(combined, maxURLs) {
 		if isNoisyURL(u) {
 			continue
 		}
@@ -506,7 +506,7 @@ func extractSymbols(ctx context.Context, fileID, filePath, content string, patte
 	count := 0
 	for _, re := range patterns {
 		for _, m := range re.FindAllStringSubmatch(content, -1) {
-			if isDone(ctx) || count >= m.MaxSymbols() {
+			if isDone(ctx) || count >= maxSymbols {
 				goto emitUses
 			}
 			name := strings.TrimSpace(m[1])
@@ -547,7 +547,7 @@ func extractImports(ctx context.Context, fileID, content string, delta *GraphDel
 	count := 0
 	for _, re := range importPatterns {
 		for _, m := range re.FindAllStringSubmatch(content, -1) {
-			if isDone(ctx) || count >= m.MaxImports() {
+			if isDone(ctx) || count >= maxImports {
 				return
 			}
 			name := strings.TrimSpace(m[1])
