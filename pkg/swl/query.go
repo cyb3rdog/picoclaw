@@ -21,45 +21,139 @@ var tier1Patterns []tier1Pattern
 func init() {
 	tier1Patterns = []tier1Pattern{
 		// Session / resume
-		{regexp.MustCompile(`(?i)(?:resume|bring me up to speed|what was i doing|where did we leave)`), func(m *Manager, hint string) string { return m.SessionResume("") }},
+		{
+			regexp.MustCompile(`(?i)(?:resume|bring me up to speed|what was i doing|where did we leave)`),
+			func(m *Manager, hint string) string { return m.SessionResume("") },
+		},
 
 		// Workspace purpose / goals — backed by snapshot AnchorDocument entities
-		{regexp.MustCompile(`(?i)what\s+(?:is\s+)?this\s+(?:workspace|project|repo(?:sitory)?)\s+(?:for|about|doing|used\s+for)`), func(m *Manager, hint string) string { return m.askWorkspacePurpose() }},
-		{regexp.MustCompile(`(?i)what\s+(?:does\s+this|is\s+the)\s+(?:project|workspace|repo(?:sitory)?)\s+(?:do|goal|purpose|aim|about)`), func(m *Manager, hint string) string { return m.askWorkspacePurpose() }},
-		{regexp.MustCompile(`(?i)(?:describe|summaris[e]?|summarize)\s+(?:this\s+)?(?:workspace|project|repo(?:sitory)?)`), func(m *Manager, hint string) string { return m.askWorkspacePurpose() }},
-		{regexp.MustCompile(`(?i)(?:project|workspace)\s+(?:goal|purpose|aim|description|overview)`), func(m *Manager, hint string) string { return m.askWorkspacePurpose() }},
+		{
+			regexp.MustCompile(
+				`(?i)what\s+(?:is\s+)?this\s+(?:workspace|project|repo(?:sitory)?)\s+(?:for|about|doing|used\s+for)`,
+			),
+			func(m *Manager, hint string) string { return m.askWorkspacePurpose() },
+		},
+		{
+			regexp.MustCompile(
+				`(?i)what\s+(?:does\s+this|is\s+the)\s+(?:project|workspace|repo(?:sitory)?)\s+(?:do|goal|purpose|aim|about)`,
+			),
+			func(m *Manager, hint string) string { return m.askWorkspacePurpose() },
+		},
+		{
+			regexp.MustCompile(
+				`(?i)(?:describe|summaris[e]?|summarize)\s+(?:this\s+)?(?:workspace|project|repo(?:sitory)?)`,
+			),
+			func(m *Manager, hint string) string { return m.askWorkspacePurpose() },
+		},
+		{
+			regexp.MustCompile(`(?i)(?:project|workspace)\s+(?:goal|purpose|aim|description|overview)`),
+			func(m *Manager, hint string) string { return m.askWorkspacePurpose() },
+		},
 
 		// Semantic areas
-		{regexp.MustCompile(`(?i)(?:what\s+areas?|semantic\s+areas?|workspace\s+areas?|areas?\s+of\s+(?:the\s+)?workspace)`), func(m *Manager, hint string) string { return m.askSemanticAreas() }},
-		{regexp.MustCompile(`(?i)(?:key|main|important)\s+(?:documents?|files?|areas?)`), func(m *Manager, hint string) string { return m.askAnchorDocuments() }},
-		{regexp.MustCompile(`(?i)(?:anchor|readme|overview)\s+(?:docs?|documents?|files?)`), func(m *Manager, hint string) string { return m.askAnchorDocuments() }},
+		{
+			regexp.MustCompile(
+				`(?i)(?:what\s+areas?|semantic\s+areas?|workspace\s+areas?|areas?\s+of\s+(?:the\s+)?workspace)`,
+			),
+			func(m *Manager, hint string) string { return m.askSemanticAreas() },
+		},
+		{
+			regexp.MustCompile(`(?i)(?:key|main|important)\s+(?:documents?|files?|areas?)`),
+			func(m *Manager, hint string) string { return m.askAnchorDocuments() },
+		},
+		{
+			regexp.MustCompile(`(?i)(?:anchor|readme|overview)\s+(?:docs?|documents?|files?)`),
+			func(m *Manager, hint string) string { return m.askAnchorDocuments() },
+		},
 
 		// File detail — what does a file do?
-		{regexp.MustCompile(`(?i)what\s+does\s+(.+?)\s+do`), func(m *Manager, hint string) string { return m.askFileDetail(hint) }},
-		{regexp.MustCompile(`(?i)describe\s+(?:file\s+)?(.+)`), func(m *Manager, hint string) string { return m.askFileDetail(hint) }},
-		{regexp.MustCompile(`(?i)explain\s+(?:file\s+)?(.+)`), func(m *Manager, hint string) string { return m.askFileDetail(hint) }},
+		{
+			regexp.MustCompile(`(?i)what\s+does\s+(.+?)\s+do`),
+			func(m *Manager, hint string) string { return m.askFileDetail(hint) },
+		},
+		{
+			regexp.MustCompile(`(?i)describe\s+(?:file\s+)?(.+)`),
+			func(m *Manager, hint string) string { return m.askFileDetail(hint) },
+		},
+		{
+			regexp.MustCompile(`(?i)explain\s+(?:file\s+)?(.+)`),
+			func(m *Manager, hint string) string { return m.askFileDetail(hint) },
+		},
 
 		// Find-by-purpose: where is the file that does X? (Phase A.3)
-		{regexp.MustCompile(`(?i)where\s+(?:is|are)\s+(?:the\s+)?(.+?)\s+(?:that\s+)?(?:does|handles|implements|manages|provides)`), func(m *Manager, hint string) string { return m.labelSearch(hint) }},
-		{regexp.MustCompile(`(?i)where\s+(?:is|are)\s+(?:the\s+)?(.+?)\s+(?:code|logic|handler|service|middleware)`), func(m *Manager, hint string) string { return m.labelSearch(hint) }},
-		{regexp.MustCompile(`(?i)find\s+(?:the\s+)?(.+?)\s+(?:files?|code|impl(?:ementation)?)`), func(m *Manager, hint string) string { return m.labelSearch(hint) }},
-		{regexp.MustCompile(`(?i)which\s+(?:file|files)\s+(?:does|handles|implements|handles)\s+(.+)`), func(m *Manager, hint string) string { return m.labelSearch(hint) }},
-		{regexp.MustCompile(`(?i)where\s+(?:are\s+)?(?:the\s+)?(?:entry\s+points?|tests?|config(?:uration)?s?)`), func(m *Manager, hint string) string { return m.labelSearch(hint) }},
+		{
+			regexp.MustCompile(
+				`(?i)where\s+(?:is|are)\s+(?:the\s+)?(.+?)\s+(?:that\s+)?(?:does|handles|implements|manages|provides)`,
+			),
+			func(m *Manager, hint string) string { return m.labelSearch(hint) },
+		},
+		{
+			regexp.MustCompile(`(?i)where\s+(?:is|are)\s+(?:the\s+)?(.+?)\s+(?:code|logic|handler|service|middleware)`),
+			func(m *Manager, hint string) string { return m.labelSearch(hint) },
+		},
+		{
+			regexp.MustCompile(`(?i)find\s+(?:the\s+)?(.+?)\s+(?:files?|code|impl(?:ementation)?)`),
+			func(m *Manager, hint string) string { return m.labelSearch(hint) },
+		},
+		{
+			regexp.MustCompile(`(?i)which\s+(?:file|files)\s+(?:does|handles|implements|handles)\s+(.+)`),
+			func(m *Manager, hint string) string { return m.labelSearch(hint) },
+		},
+		{
+			regexp.MustCompile(`(?i)where\s+(?:are\s+)?(?:the\s+)?(?:entry\s+points?|tests?|config(?:uration)?s?)`),
+			func(m *Manager, hint string) string { return m.labelSearch(hint) },
+		},
 
 		// Existing patterns
-		{regexp.MustCompile(`(?i)functions?\s+in\s+(.+)`), func(m *Manager, hint string) string { return m.askSymbols(hint, "function") }},
-		{regexp.MustCompile(`(?i)symbols?\s+in\s+(.+)`), func(m *Manager, hint string) string { return m.askSymbols(hint, "") }},
-		{regexp.MustCompile(`(?i)classes?\s+in\s+(.+)`), func(m *Manager, hint string) string { return m.askSymbols(hint, "class") }},
-		{regexp.MustCompile(`(?i)(?:todos?|fixmes?|tasks?)\s+in\s+(.+)`), func(m *Manager, hint string) string { return m.askTasks(hint) }},
-		{regexp.MustCompile(`(?i)(?:todos?|fixmes?|tasks?|open\s+tasks?|pending)`), func(m *Manager, hint string) string { return m.askAllTasks() }},
-		{regexp.MustCompile(`(?i)(?:imports?|depends?\s+on|dependencies)\s+(?:in|of|for)\s+(.+)`), func(m *Manager, hint string) string { return m.askImports(hint) }},
-		{regexp.MustCompile(`(?i)files?\s+in\s+(.+)`), func(m *Manager, hint string) string { return m.askFilesIn(hint) }},
-		{regexp.MustCompile(`(?i)(?:stale|drift|outdated|changed)`), func(m *Manager, hint string) string { return m.askStale() }},
+		{
+			regexp.MustCompile(`(?i)functions?\s+in\s+(.+)`),
+			func(m *Manager, hint string) string { return m.askSymbols(hint, "function") },
+		},
+		{
+			regexp.MustCompile(`(?i)symbols?\s+in\s+(.+)`),
+			func(m *Manager, hint string) string { return m.askSymbols(hint, "") },
+		},
+		{
+			regexp.MustCompile(`(?i)classes?\s+in\s+(.+)`),
+			func(m *Manager, hint string) string { return m.askSymbols(hint, "class") },
+		},
+		{
+			regexp.MustCompile(`(?i)(?:todos?|fixmes?|tasks?)\s+in\s+(.+)`),
+			func(m *Manager, hint string) string { return m.askTasks(hint) },
+		},
+		{
+			regexp.MustCompile(`(?i)(?:todos?|fixmes?|tasks?|open\s+tasks?|pending)`),
+			func(m *Manager, hint string) string { return m.askAllTasks() },
+		},
+		{
+			regexp.MustCompile(`(?i)(?:imports?|depends?\s+on|dependencies)\s+(?:in|of|for)\s+(.+)`),
+			func(m *Manager, hint string) string { return m.askImports(hint) },
+		},
+		{
+			regexp.MustCompile(`(?i)files?\s+in\s+(.+)`),
+			func(m *Manager, hint string) string { return m.askFilesIn(hint) },
+		},
+		{
+			regexp.MustCompile(`(?i)(?:stale|drift|outdated|changed)`),
+			func(m *Manager, hint string) string { return m.askStale() },
+		},
 		{regexp.MustCompile(`(?i)project\s+type`), func(m *Manager, hint string) string { return m.askProjectType() }},
-		{regexp.MustCompile(`(?i)(?:most\s+complex|complexity|biggest\s+files?)`), func(m *Manager, hint string) string { return m.askComplexity() }},
-		{regexp.MustCompile(`(?i)(?:top\s+deps?|most\s+imported|popular\s+deps?)`), func(m *Manager, hint string) string { return m.askTopDeps() }},
-		{regexp.MustCompile(`(?i)(?:recent\s+(?:files?|changes?|writes?))`), func(m *Manager, hint string) string { return m.askRecentFiles() }},
-		{regexp.MustCompile(`(?i)(?:urls?|links?|web\s+(?:pages?|sites?))`), func(m *Manager, hint string) string { return m.askURLs() }},
+		{
+			regexp.MustCompile(`(?i)(?:most\s+complex|complexity|biggest\s+files?)`),
+			func(m *Manager, hint string) string { return m.askComplexity() },
+		},
+		{
+			regexp.MustCompile(`(?i)(?:top\s+deps?|most\s+imported|popular\s+deps?)`),
+			func(m *Manager, hint string) string { return m.askTopDeps() },
+		},
+		{
+			regexp.MustCompile(`(?i)(?:recent\s+(?:files?|changes?|writes?))`),
+			func(m *Manager, hint string) string { return m.askRecentFiles() },
+		},
+		{
+			regexp.MustCompile(`(?i)(?:urls?|links?|web\s+(?:pages?|sites?))`),
+			func(m *Manager, hint string) string { return m.askURLs() },
+		},
 		{regexp.MustCompile(`(?i)sessions?`), func(m *Manager, hint string) string { return m.askSessions() }},
 		{regexp.MustCompile(`(?i)stats?`), func(m *Manager, hint string) string { return m.Stats() }},
 		{regexp.MustCompile(`(?i)gaps?`), func(m *Manager, hint string) string { return m.KnowledgeGaps() }},
@@ -105,8 +199,8 @@ func (m *Manager) Ask(question string) string {
 		return result
 	}
 
-	m.recordQueryGap(q)
-	return fmt.Sprintf("[SWL] No pattern matched %q. Try: stats, gaps, resume, or sql:SELECT ...", q)
+	isNewGap := m.recordQueryGap(q)
+	return m.fallthroughResponse(q, isNewGap)
 }
 
 // tryYAMLIntents matches the question against compiled query intents from swl.query.yaml.
@@ -136,7 +230,7 @@ func (m *Manager) dispatchHandler(handlerName, hint string) string {
 	}
 
 	var args []reflect.Value
-	if hint != "" {
+	if method.Type().NumIn() == 1 {
 		args = []reflect.Value{reflect.ValueOf(hint)}
 	}
 
@@ -539,7 +633,6 @@ func (m *Manager) askFileDetail(hint string) string {
 		ORDER BY knowledge_depth DESC LIMIT 1`,
 		KnownTypeFile, "%"+hint+"%",
 	).Scan(&fileID, &fileName, &depth, &desc)
-
 	if err != nil {
 		// Also try AnchorDocument.
 		err2 := m.db.QueryRow(`
@@ -907,8 +1000,8 @@ func (m *Manager) tryTier3(question string) string {
 }
 
 // recordQueryGap upserts a question into query_gaps, incrementing count on
-// repeat.  Used to surface recurring unanswered questions in KnowledgeGaps.
-func (m *Manager) recordQueryGap(question string) {
+// repeat. Returns true if this is the first occurrence of this question.
+func (m *Manager) recordQueryGap(question string) bool {
 	terms := tier3Terms(question)
 	id := contentHash("gap:" + strings.ToLower(strings.TrimSpace(question)))
 	now := nowSQLite()
@@ -920,6 +1013,30 @@ func (m *Manager) recordQueryGap(question string) {
 		id, question, strings.Join(terms, ","), now, now,
 	)
 	m.writer.mu.Unlock()
+	var count int
+	_ = m.db.QueryRow("SELECT count FROM query_gaps WHERE id = ?", id).Scan(&count)
+	return count == 1
+}
+
+// fallthroughResponse returns the message shown when all tiers miss.
+// On first miss (isNewGap=true) it includes next-step guidance.
+func (m *Manager) fallthroughResponse(question string, isNewGap bool) string {
+	if isNewGap {
+		return fmt.Sprintf(
+			"[SWL] Query not yet indexed: %q\n"+
+				"Tried: Tier 1 (intent patterns), Tier 2 (SQL templates), Tier 3 (freetext) — no match.\n"+
+				"Next steps:\n"+
+				"  query_swl {\"scan\":true}  — index the workspace\n"+
+				"  query_swl {\"help\":true}  — see full query syntax\n"+
+				"  query_swl {\"gaps\":true}  — view recurring misses\n"+
+				"(Query recorded — repeated misses generate candidate rules automatically.)",
+			question,
+		)
+	}
+	return fmt.Sprintf(
+		"[SWL] Still no match for %q — workspace may not be indexed yet. Try query_swl {\"scan\":true}.",
+		question,
+	)
 }
 
 // tier3Terms extracts significant words from a question (shared by tryTier3
@@ -995,6 +1112,27 @@ func (m *Manager) Stats() string {
 
 // KnowledgeGaps returns entities with low confidence or unknown status,
 // plus recurring missed queries and their rule suggestions (Phase C).
+// HelpText returns a concise query syntax reference for LLMs operating under
+// compressed context that may have lost the tool description.
+func (m *Manager) HelpText() string {
+	return `[SWL] Query syntax reference (query_swl):
+  {"resume":true}                          — session resume digest
+  {"question":"what does foo.go do?"}      — natural-language (Tier 1/2/3)
+  {"stats":true}                           — entity/edge counts by type
+  {"gaps":true}                            — unknown/low-confidence entities
+  {"drift":true}                           — stale/outdated entities
+  {"scan":true}                            — incremental workspace index
+  {"scan":true,"root":"pkg/swl"}           — scan a subdirectory
+  {"sql":"SELECT name FROM entities ..."}  — raw read-only SQL (200-row cap)
+  {"assert":"fact","subject":"X"}          — record a verified fact
+  {"suggest":true}                         — rule suggestions from recurring misses
+  {"schema":true}                          — DB schema and entity types
+  {"debug":true}                           — last 64 inference events
+  {"help":true}                            — this reference
+
+Tip: always call query_swl before re-reading files — the graph may already know.`
+}
+
 func (m *Manager) KnowledgeGaps() string {
 	// Entity gaps.
 	rows, err := m.db.Query(
@@ -1022,7 +1160,10 @@ func (m *Manager) KnowledgeGaps() string {
 	var sections []string
 
 	if len(entityGaps) > 0 {
-		sections = append(sections, "[SWL] Entity gaps (low confidence / unknown status):\n"+strings.Join(entityGaps, "\n"))
+		sections = append(
+			sections,
+			"[SWL] Entity gaps (low confidence / unknown status):\n"+strings.Join(entityGaps, "\n"),
+		)
 	}
 
 	if len(analysis.MissedQuestions) > 0 {
@@ -1118,7 +1259,17 @@ func (m *Manager) AssertNote(subject, content string, confidence float64, entity
 	})
 	_ = m.writer.upsertEdge(EdgeTuple{FromID: noteID, Rel: KnownRelDescribes, ToID: subjectID})
 
-	return fmt.Sprintf("[SWL] Note recorded about %q (depth %d, conf %.2f).", subject, depth, confidence)
+	shortID := noteID
+	if len(shortID) > 8 {
+		shortID = shortID[:8]
+	}
+	return fmt.Sprintf(
+		"[SWL] Recorded: %q on entity %q [id: %s] at confidence %.2f.",
+		content,
+		subject,
+		shortID,
+		confidence,
+	)
 }
 
 // SafeQuery executes a read-only SQL query with a 200-row cap.

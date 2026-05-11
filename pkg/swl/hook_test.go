@@ -384,13 +384,25 @@ func TestPostHook_Layer0_CustomHandler(t *testing.T) {
 	defer cleanup()
 
 	called := false
-	RegisterToolHandler("my_special_tool", func(mgr *Manager, sessionID string, args map[string]any, result string) *GraphDelta {
-		called = true
-		topicID := entityID(KnownTypeTopic, "custom-topic")
-		return &GraphDelta{
-			Entities: []EntityTuple{{ID: topicID, Type: KnownTypeTopic, Name: "custom-topic", Confidence: 1.0, ExtractionMethod: MethodObserved, KnowledgeDepth: 1}},
-		}
-	})
+	RegisterToolHandler(
+		"my_special_tool",
+		func(mgr *Manager, sessionID string, args map[string]any, result string) *GraphDelta {
+			called = true
+			topicID := entityID(KnownTypeTopic, "custom-topic")
+			return &GraphDelta{
+				Entities: []EntityTuple{
+					{
+						ID:               topicID,
+						Type:             KnownTypeTopic,
+						Name:             "custom-topic",
+						Confidence:       1.0,
+						ExtractionMethod: MethodObserved,
+						KnowledgeDepth:   1,
+					},
+				},
+			}
+		},
+	)
 	defer func() {
 		customToolHandlersMu.Lock()
 		delete(customToolHandlers, "my_special_tool")

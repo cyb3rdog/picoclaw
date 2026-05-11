@@ -5,18 +5,18 @@ package swl
 type EntityType = string
 
 const (
-	KnownTypeFile       EntityType = "File"
-	KnownTypeDirectory  EntityType = "Directory"
-	KnownTypeSymbol     EntityType = "Symbol"
-	KnownTypeDependency EntityType = "Dependency"
-	KnownTypeTask       EntityType = "Task"
-	KnownTypeSection    EntityType = "Section"
-	KnownTypeTopic      EntityType = "Topic"
-	KnownTypeURL        EntityType = "URL"
-	KnownTypeCommit     EntityType = "Commit"
-	KnownTypeSession    EntityType = "Session"
-	KnownTypeNote       EntityType = "Note"
-	KnownTypeCommand    EntityType = "Command"
+	KnownTypeFile           EntityType = "File"
+	KnownTypeDirectory      EntityType = "Directory"
+	KnownTypeSymbol         EntityType = "Symbol"
+	KnownTypeDependency     EntityType = "Dependency"
+	KnownTypeTask           EntityType = "Task"
+	KnownTypeSection        EntityType = "Section"
+	KnownTypeTopic          EntityType = "Topic"
+	KnownTypeURL            EntityType = "URL"
+	KnownTypeCommit         EntityType = "Commit"
+	KnownTypeSession        EntityType = "Session"
+	KnownTypeNote           EntityType = "Note"
+	KnownTypeCommand        EntityType = "Command"
 	KnownTypeIntent         EntityType = "Intent"
 	KnownTypeSubAgent       EntityType = "SubAgent"
 	KnownTypeTool           EntityType = "Tool"
@@ -29,32 +29,32 @@ const (
 type EdgeRel = string
 
 const (
-	KnownRelDefines      EdgeRel = "defines"
-	KnownRelImports      EdgeRel = "imports"
-	KnownRelHasTask      EdgeRel = "has_task"
-	KnownRelHasSection   EdgeRel = "has_section"
-	KnownRelMentions     EdgeRel = "mentions"
-	KnownRelDependsOn    EdgeRel = "depends_on"
-	KnownRelTagged       EdgeRel = "tagged"
-	KnownRelInDir        EdgeRel = "in_dir"
-	KnownRelWrittenIn    EdgeRel = "written_in"
-	KnownRelEditedIn     EdgeRel = "edited_in"
-	KnownRelAppendedIn   EdgeRel = "appended_in"
-	KnownRelRead         EdgeRel = "read"
-	KnownRelFetched      EdgeRel = "fetched"
-	KnownRelExecuted     EdgeRel = "executed"
-	KnownRelDeleted      EdgeRel = "deleted"
-	KnownRelDescribes    EdgeRel = "describes"
-	KnownRelCommittedIn  EdgeRel = "committed_in"
-	KnownRelFound        EdgeRel = "found"
-	KnownRelListed       EdgeRel = "listed"
-	KnownRelSpawnedBy    EdgeRel = "spawned_by"
-	KnownRelContextOf    EdgeRel = "context_of"
-	KnownRelReasoned     EdgeRel = "reasoned"
-	KnownRelIntendedFor  EdgeRel = "intended_for"
-	KnownRelUses         EdgeRel = "uses"
-	KnownRelDocuments    EdgeRel = "documents"  // AnchorDocument → SemanticArea it describes
-	KnownRelHasArea      EdgeRel = "has_area"   // Directory → SemanticArea it contains
+	KnownRelDefines     EdgeRel = "defines"
+	KnownRelImports     EdgeRel = "imports"
+	KnownRelHasTask     EdgeRel = "has_task"
+	KnownRelHasSection  EdgeRel = "has_section"
+	KnownRelMentions    EdgeRel = "mentions"
+	KnownRelDependsOn   EdgeRel = "depends_on"
+	KnownRelTagged      EdgeRel = "tagged"
+	KnownRelInDir       EdgeRel = "in_dir"
+	KnownRelWrittenIn   EdgeRel = "written_in"
+	KnownRelEditedIn    EdgeRel = "edited_in"
+	KnownRelAppendedIn  EdgeRel = "appended_in"
+	KnownRelRead        EdgeRel = "read"
+	KnownRelFetched     EdgeRel = "fetched"
+	KnownRelExecuted    EdgeRel = "executed"
+	KnownRelDeleted     EdgeRel = "deleted"
+	KnownRelDescribes   EdgeRel = "describes"
+	KnownRelCommittedIn EdgeRel = "committed_in"
+	KnownRelFound       EdgeRel = "found"
+	KnownRelListed      EdgeRel = "listed"
+	KnownRelSpawnedBy   EdgeRel = "spawned_by"
+	KnownRelContextOf   EdgeRel = "context_of"
+	KnownRelReasoned    EdgeRel = "reasoned"
+	KnownRelIntendedFor EdgeRel = "intended_for"
+	KnownRelUses        EdgeRel = "uses"
+	KnownRelDocuments   EdgeRel = "documents" // AnchorDocument → SemanticArea it describes
+	KnownRelHasArea     EdgeRel = "has_area"  // Directory → SemanticArea it contains
 )
 
 // CascadeRels lists the ownership relations that propagate stale status from a
@@ -82,10 +82,10 @@ const (
 type ExtractionMethod string
 
 const (
-	MethodObserved  ExtractionMethod = "observed"   // confidence 1.0
-	MethodStated    ExtractionMethod = "stated"      // confidence 0.85
-	MethodExtracted ExtractionMethod = "extracted"   // confidence 0.9
-	MethodInferred  ExtractionMethod = "inferred"    // confidence 0.8
+	MethodObserved  ExtractionMethod = "observed"  // confidence 1.0
+	MethodStated    ExtractionMethod = "stated"    // confidence 0.85
+	MethodExtracted ExtractionMethod = "extracted" // confidence 0.9
+	MethodInferred  ExtractionMethod = "inferred"  // confidence 0.8
 )
 
 // extractionMethodPriority returns a numeric priority for upgrade comparisons.

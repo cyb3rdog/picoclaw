@@ -37,6 +37,7 @@ Input formats (pick one):
   {"sql":"SELECT ..."}                     — raw read-only SQL (200-row cap)
   {"scan":true,"root":"/path"}             — incremental workspace index scan
   {"debug":true}                           — last 64 inference events (ring buffer)
+  {"help":true}                            — full query syntax reference
 
 Returns a text summary. Always consult SWL before re-reading files.`
 }
@@ -45,23 +46,39 @@ func (t *QuerySWLTool) Parameters() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"question": map[string]any{"type": "string", "description": "Natural-language question about the workspace"},
-			"resume":   map[string]any{"type": "boolean", "description": "If true, return session resume digest"},
-			"gaps":     map[string]any{"type": "boolean", "description": "If true, return knowledge gaps"},
-			"suggest":  map[string]any{"type": "boolean", "description": "If true, return rule suggestions from query gaps"},
-			"drift":    map[string]any{"type": "boolean", "description": "If true, return stale entities"},
-			"assert":   map[string]any{"type": "string", "description": "Free-form note to record"},
-			"subject":  map[string]any{"type": "string", "description": "Subject entity for assert"},
+			"question": map[string]any{
+				"type":        "string",
+				"description": "Natural-language question about the workspace",
+			},
+			"resume": map[string]any{"type": "boolean", "description": "If true, return session resume digest"},
+			"gaps":   map[string]any{"type": "boolean", "description": "If true, return knowledge gaps"},
+			"suggest": map[string]any{
+				"type":        "boolean",
+				"description": "If true, return rule suggestions from query gaps",
+			},
+			"drift":      map[string]any{"type": "boolean", "description": "If true, return stale entities"},
+			"assert":     map[string]any{"type": "string", "description": "Free-form note to record"},
+			"subject":    map[string]any{"type": "string", "description": "Subject entity for assert"},
 			"confidence": map[string]any{"type": "number", "description": "Confidence for assert (default 0.85)"},
-			"type":     map[string]any{"type": "string", "description": "Entity type for assert (default Note)"},
-			"stats":    map[string]any{"type": "boolean", "description": "If true, return graph statistics"},
-			"schema":   map[string]any{"type": "boolean", "description": "If true, return DB schema"},
-			"sql":      map[string]any{"type": "string", "description": "Read-only SQL query (SELECT/WITH/EXPLAIN)"},
-			"scan":     map[string]any{"type": "boolean", "description": "If true, run incremental workspace scan"},
-			"root":     map[string]any{"type": "string", "description": "Root path for scan (default: workspace root)"},
-			"decay":    map[string]any{"type": "boolean", "description": "If true, run decay check"},
+			"type":       map[string]any{"type": "string", "description": "Entity type for assert (default Note)"},
+			"stats":      map[string]any{"type": "boolean", "description": "If true, return graph statistics"},
+			"schema":     map[string]any{"type": "boolean", "description": "If true, return DB schema"},
+			"sql":        map[string]any{"type": "string", "description": "Read-only SQL query (SELECT/WITH/EXPLAIN)"},
+			"scan":       map[string]any{"type": "boolean", "description": "If true, run incremental workspace scan"},
+			"root": map[string]any{
+				"type":        "string",
+				"description": "Root path for scan (default: workspace root)",
+			},
+			"decay":     map[string]any{"type": "boolean", "description": "If true, run decay check"},
 			"entity_id": map[string]any{"type": "string", "description": "Entity ID for targeted decay check"},
-			"debug":     map[string]any{"type": "boolean", "description": "If true, return last 64 inference events from in-memory ring buffer"},
+			"debug": map[string]any{
+				"type":        "boolean",
+				"description": "If true, return last 64 inference events from in-memory ring buffer",
+			},
+			"help": map[string]any{
+				"type":        "boolean",
+				"description": "If true, return full query syntax reference",
+			},
 		},
 	}
 }
@@ -69,6 +86,11 @@ func (t *QuerySWLTool) Parameters() map[string]any {
 func (t *QuerySWLTool) Execute(ctx context.Context, args map[string]any) *toolshared.ToolResult {
 	m := t.manager
 	sessionKey := toolshared.ToolSessionKey(ctx)
+
+	// help
+	if v, _ := args["help"].(bool); v {
+		return toolshared.SilentResult(m.HelpText())
+	}
 
 	// resume
 	if v, _ := args["resume"].(bool); v {

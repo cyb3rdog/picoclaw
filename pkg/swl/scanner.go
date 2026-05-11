@@ -234,7 +234,6 @@ func (m *Manager) ScanWorkspace(root string, sessionKey ...string) (ScanStats, e
 
 		return nil
 	})
-
 	if err != nil {
 		return stats, err
 	}
@@ -255,6 +254,28 @@ func (m *Manager) ScanWorkspace(root string, sessionKey ...string) (ScanStats, e
 // This scopes the tombstone phase so it can only delete files that were
 // previously indexed within the same scan root — never files outside it.
 func (m *Manager) loadKnownFilesUnderRoot(rootPrefix string) (map[string]bool, error) {
+	// When rootPrefix is "." (workspace root), load all file entities — the
+	// path filter "name LIKE './%'" would not match workspace-relative names
+	// like "hello.go" that lack the leading "./" prefix.
+	if rootPrefix == "." || rootPrefix == "" {
+		rows, err := m.db.Query(
+			"SELECT id FROM entities WHERE type = ? AND fact_status != ?",
+			KnownTypeFile, FactDeleted,
+		)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		out := map[string]bool{}
+		for rows.Next() {
+			var id string
+			if rows.Scan(&id) == nil {
+				out[id] = true
+			}
+		}
+		return out, rows.Err()
+	}
+
 	// Ensure the prefix ends with / so that "foo/bar" matches "foo/bar/*"
 	// but not "foo/barbaz/*".
 	prefix := rootPrefix

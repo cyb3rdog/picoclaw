@@ -21,7 +21,7 @@ func TestParseIgnoreFile(t *testing.T) {
 	}
 
 	// Test 2: Empty file
-	if err := os.WriteFile(ignorePath, []byte(""), 0644); err != nil {
+	if err := os.WriteFile(ignorePath, []byte(""), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	m, err = ParseIgnoreFile(ignorePath)
@@ -40,7 +40,7 @@ node_modules/
 vendor/
 !important.txt
 `
-	if err := os.WriteFile(ignorePath, []byte(content), 0644); err != nil {
+	if err := os.WriteFile(ignorePath, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	m, err = ParseIgnoreFile(ignorePath)
@@ -67,7 +67,7 @@ build/
 *.exe
 !important.exe
 `
-	if err := os.WriteFile(ignorePath, []byte(content), 0644); err != nil {
+	if err := os.WriteFile(ignorePath, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -128,9 +128,9 @@ func TestMatchPattern(t *testing.T) {
 		{"foo.go", "[f]*.go", true},
 		{"bar.go", "[f]*.go", false},
 
-		// Question mark
-		{"foo.go", "f???.go", true},
-		{"fooo.go", "f???.go", false},
+		// Question mark (? matches exactly one character)
+		{"foo.go", "f???.go", false}, // f+oo+.go=6 chars < f+???+.go=7 required
+		{"fooo.go", "f???.go", true}, // f+ooo+.go=7 chars matches exactly
 	}
 
 	for _, tt := range tests {

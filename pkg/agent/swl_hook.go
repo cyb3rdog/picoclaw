@@ -20,9 +20,11 @@ type SWLHook struct {
 }
 
 // Compile-time interface checks.
-var _ ToolInterceptor = (*SWLHook)(nil)
-var _ LLMInterceptor = (*SWLHook)(nil)
-var _ RuntimeEventObserver = (*SWLHook)(nil)
+var (
+	_ ToolInterceptor      = (*SWLHook)(nil)
+	_ LLMInterceptor       = (*SWLHook)(nil)
+	_ RuntimeEventObserver = (*SWLHook)(nil)
+)
 
 // Close drains all pending async goroutines.
 func (h *SWLHook) Close() error {
@@ -145,7 +147,10 @@ func (h *SWLHook) AfterLLM(ctx context.Context, resp *LLMHookResponse) (*LLMHook
 
 // --- ToolInterceptor ---
 
-func (h *SWLHook) BeforeTool(ctx context.Context, call *ToolCallHookRequest) (*ToolCallHookRequest, HookDecision, error) {
+func (h *SWLHook) BeforeTool(
+	ctx context.Context,
+	call *ToolCallHookRequest,
+) (*ToolCallHookRequest, HookDecision, error) {
 	if !h.matchesAgent(call.Meta.AgentID) {
 		return call, HookDecision{Action: HookActionContinue}, nil
 	}
@@ -156,7 +161,10 @@ func (h *SWLHook) BeforeTool(ctx context.Context, call *ToolCallHookRequest) (*T
 	return call, HookDecision{Action: HookActionContinue}, nil
 }
 
-func (h *SWLHook) AfterTool(ctx context.Context, result *ToolResultHookResponse) (*ToolResultHookResponse, HookDecision, error) {
+func (h *SWLHook) AfterTool(
+	ctx context.Context,
+	result *ToolResultHookResponse,
+) (*ToolResultHookResponse, HookDecision, error) {
 	if !h.matchesAgent(result.Meta.AgentID) {
 		return result, HookDecision{Action: HookActionContinue}, nil
 	}
@@ -167,6 +175,13 @@ func (h *SWLHook) AfterTool(ctx context.Context, result *ToolResultHookResponse)
 	var toolResult string
 	if result.Result != nil {
 		toolResult = result.Result.ForLLM
+	}
+
+	// Check for staleness hint before PostHook marks the entity as verified.
+	_, hint := h.manager.PreHook(toolName, args)
+	if hint != "" && result.Result != nil {
+		result = result.Clone()
+		result.Result.ForLLM = "[SWL] " + hint + "\n\n" + result.Result.ForLLM
 	}
 
 	h.wg.Add(1)

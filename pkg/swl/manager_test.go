@@ -185,10 +185,14 @@ func TestContentHashCascade(t *testing.T) {
 	fileID := entityID(KnownTypeFile, "/src/foo.go")
 	symID := entityID(KnownTypeSymbol, "/src/foo.go:Foo")
 
-	_ = m.UpsertEntity(EntityTuple{ID: fileID, Type: KnownTypeFile, Name: "/src/foo.go",
-		Confidence: 1.0, ExtractionMethod: MethodObserved, KnowledgeDepth: 1})
-	_ = m.UpsertEntity(EntityTuple{ID: symID, Type: KnownTypeSymbol, Name: "Foo",
-		Confidence: 0.9, ExtractionMethod: MethodExtracted, KnowledgeDepth: 2})
+	_ = m.UpsertEntity(EntityTuple{
+		ID: fileID, Type: KnownTypeFile, Name: "/src/foo.go",
+		Confidence: 1.0, ExtractionMethod: MethodObserved, KnowledgeDepth: 1,
+	})
+	_ = m.UpsertEntity(EntityTuple{
+		ID: symID, Type: KnownTypeSymbol, Name: "Foo",
+		Confidence: 0.9, ExtractionMethod: MethodExtracted, KnowledgeDepth: 2,
+	})
 	_ = m.UpsertEdge(EdgeTuple{FromID: fileID, Rel: KnownRelDefines, ToID: symID})
 	_ = m.SetFactStatus(symID, FactVerified)
 
@@ -215,8 +219,10 @@ func TestKnowledgeDepthResetsOnContentChange(t *testing.T) {
 	m := newTestManager(t)
 
 	id := entityID(KnownTypeFile, "/main.go")
-	_ = m.UpsertEntity(EntityTuple{ID: id, Type: KnownTypeFile, Name: "/main.go",
-		Confidence: 1.0, ExtractionMethod: MethodObserved, KnowledgeDepth: 3})
+	_ = m.UpsertEntity(EntityTuple{
+		ID: id, Type: KnownTypeFile, Name: "/main.go",
+		Confidence: 1.0, ExtractionMethod: MethodObserved, KnowledgeDepth: 3,
+	})
 
 	// Set existing hash
 	m.writer.mu.Lock()
@@ -258,7 +264,9 @@ func TestSafeQueryRejectsNonSelect(t *testing.T) {
 		t.Error("SafeQuery should reject DROP TABLE")
 	}
 
-	_, err = m.SafeQuery("INSERT INTO entities VALUES ('a','b','c','{}',1.0,0,'observed','unknown','now','now','now',0,NULL)")
+	_, err = m.SafeQuery(
+		"INSERT INTO entities VALUES ('a','b','c','{}',1.0,0,'observed','unknown','now','now','now',0,NULL)",
+	)
 	if err == nil {
 		t.Error("SafeQuery should reject INSERT")
 	}
@@ -278,8 +286,10 @@ func TestApplyDeltaAtomicRollback(t *testing.T) {
 	// Delta with a duplicate edge that would cause an issue if not transactional
 	delta := &GraphDelta{
 		Entities: []EntityTuple{
-			{ID: "e1", Type: KnownTypeFile, Name: "/a.go",
-				Confidence: 1.0, ExtractionMethod: MethodObserved, KnowledgeDepth: 1},
+			{
+				ID: "e1", Type: KnownTypeFile, Name: "/a.go",
+				Confidence: 1.0, ExtractionMethod: MethodObserved, KnowledgeDepth: 1,
+			},
 		},
 	}
 
@@ -399,7 +409,7 @@ func TestPathNormalizationIdempotency(t *testing.T) {
 
 	// Write the same file via three different path representations.
 	absPath := filepath.Join(ws, "pkg", "foo.go")
-	_ = os.MkdirAll(filepath.Dir(absPath), 0755)
+	_ = os.MkdirAll(filepath.Dir(absPath), 0o755)
 
 	content := "package foo\nfunc Bar() {}"
 	m.PostHook("sess", "write_file", map[string]any{"path": absPath, "content": content}, "ok")
@@ -421,10 +431,10 @@ func TestScanWorkspace(t *testing.T) {
 	root := m.workspace
 
 	// Create some files
-	_ = os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\nfunc main() {}"), 0644)
-	_ = os.WriteFile(filepath.Join(root, "README.md"), []byte("# Project\n\n## Setup\n"), 0644)
-	_ = os.MkdirAll(filepath.Join(root, "node_modules"), 0755)
-	_ = os.WriteFile(filepath.Join(root, "node_modules", "skip.js"), []byte("ignored"), 0644)
+	_ = os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\nfunc main() {}"), 0o644)
+	_ = os.WriteFile(filepath.Join(root, "README.md"), []byte("# Project\n\n## Setup\n"), 0o644)
+	_ = os.MkdirAll(filepath.Join(root, "node_modules"), 0o755)
+	_ = os.WriteFile(filepath.Join(root, "node_modules", "skip.js"), []byte("ignored"), 0o644)
 
 	stats, err := m.ScanWorkspace(root)
 	if err != nil {
@@ -477,7 +487,8 @@ func Subtract(a, b int) int { return a - b }
 
 	// Symbols should be extracted
 	var symCount int
-	m.db.QueryRow("SELECT COUNT(*) FROM entities WHERE type = ? AND fact_status != 'deleted'", KnownTypeSymbol).Scan(&symCount)
+	m.db.QueryRow("SELECT COUNT(*) FROM entities WHERE type = ? AND fact_status != 'deleted'", KnownTypeSymbol).
+		Scan(&symCount)
 	if symCount == 0 {
 		t.Error("expected Symbol entities after write_file")
 	}
@@ -710,9 +721,9 @@ func TestBuildSnapshotPathIdempotency(t *testing.T) {
 	defer m.Close()
 
 	ws := m.workspace
-	_ = os.WriteFile(filepath.Join(ws, "README.md"), []byte("# Project\n\nTest."), 0644)
-	_ = os.MkdirAll(filepath.Join(ws, "pkg"), 0755)
-	_ = os.WriteFile(filepath.Join(ws, "pkg", "foo.go"), []byte("package pkg\nfunc Bar() {}\n"), 0644)
+	_ = os.WriteFile(filepath.Join(ws, "README.md"), []byte("# Project\n\nTest."), 0o644)
+	_ = os.MkdirAll(filepath.Join(ws, "pkg"), 0o755)
+	_ = os.WriteFile(filepath.Join(ws, "pkg", "foo.go"), []byte("package pkg\nfunc Bar() {}\n"), 0o644)
 
 	// Three equivalent path representations must produce identical entity sets.
 	m.BuildSnapshot(ws)

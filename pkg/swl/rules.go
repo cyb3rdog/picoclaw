@@ -28,17 +28,17 @@ type QueryIntent struct {
 
 // QueryConfig holds the parsed swl.query.default.yaml intent list + Tier 2 SQL templates.
 type QueryConfig struct {
-	Version  string       `yaml:"version"`
+	Version  string        `yaml:"version"`
 	Intents  []QueryIntent `yaml:"intents"`
 	SQLTmpls []SQLTemplate `yaml:"tier2_templates"`
 }
 
 // SQLTemplate is a Tier 2 named query bound by keyword.
 type SQLTemplate struct {
-	ID          string   `yaml:"id"`
-	Desc        string   `yaml:"description"`
-	Keywords    []string `yaml:"keywords"`
-	Query       string   `yaml:"query"`
+	ID       string   `yaml:"id"`
+	Desc     string   `yaml:"description"`
+	Keywords []string `yaml:"keywords"`
+	Query    string   `yaml:"query"`
 }
 
 // RulesEngine loads and manages swl.rules.yaml with deep-merge overrides.
@@ -55,17 +55,17 @@ type RulesEngine struct {
 	IgnoreExtensions map[string]bool
 
 	// Extraction limits (loaded from file_rules in swl.rules.yaml).
-	MaxSymbols int
-	MaxImports int
-	MaxTasks   int
+	MaxSymbols  int
+	MaxImports  int
+	MaxTasks    int
 	MaxSections int
-	MaxURLs    int
-	MaxTopics  int
-	SkipHosts  []string
+	MaxURLs     int
+	MaxTopics   int
+	SkipHosts   []string
 
 	// Query engine config (Phase B query externalization).
-	QueryIntents   []CompiledIntent  // Tier 1: pattern → handler
-	SQLTemplates   []SQLTemplate     // Tier 2: keyword → SQL
+	QueryIntents []CompiledIntent // Tier 1: pattern → handler
+	SQLTemplates []SQLTemplate    // Tier 2: keyword → SQL
 }
 
 // PathPrefixRule maps a path prefix to semantic labels.
@@ -93,27 +93,27 @@ type ContentTypeRule struct {
 
 // RulesConfig is the full YAML config structure.
 type RulesConfig struct {
-	Version    string           `yaml:"version"`
-	LabelRules LabelRulesBlock  `yaml:"label_rules"`
-	FileRules  FileRulesBlock   `yaml:"file_rules"`
+	Version    string          `yaml:"version"`
+	LabelRules LabelRulesBlock `yaml:"label_rules"`
+	FileRules  FileRulesBlock  `yaml:"file_rules"`
 }
 
 // LabelRulesBlock contains label derivation rules.
 type LabelRulesBlock struct {
-	PathPrefixes  []PathPrefixRule   `yaml:"path_prefixes"`
-	NamePatterns  []NamePatternRule  `yaml:"name_patterns"`
-	ContentTypes  []ContentTypeRule  `yaml:"content_types"`
+	PathPrefixes []PathPrefixRule  `yaml:"path_prefixes"`
+	NamePatterns []NamePatternRule `yaml:"name_patterns"`
+	ContentTypes []ContentTypeRule `yaml:"content_types"`
 }
 
 // FileRulesBlock contains extraction configuration.
 type FileRulesBlock struct {
-	Symbols         SymbolsBlock   `yaml:"symbols"`
-	Imports         ImportsBlock   `yaml:"imports"`
-	Tasks           TasksBlock     `yaml:"tasks"`
-	URLs            URLsBlock      `yaml:"urls"`
-	Sections        SectionsBlock  `yaml:"sections"`
-	IgnoreDirs      []string       `yaml:"ignore_dirs"`
-	IgnoreExtension []string       `yaml:"ignore_extensions"`
+	Symbols         SymbolsBlock  `yaml:"symbols"`
+	Imports         ImportsBlock  `yaml:"imports"`
+	Tasks           TasksBlock    `yaml:"tasks"`
+	URLs            URLsBlock     `yaml:"urls"`
+	Sections        SectionsBlock `yaml:"sections"`
+	IgnoreDirs      []string      `yaml:"ignore_dirs"`
+	IgnoreExtension []string      `yaml:"ignore_extensions"`
 }
 
 type SymbolsBlock struct {
@@ -239,6 +239,7 @@ func (r *RulesEngine) compileFromConfig() {
 	// Topics limit (from section rules, section extraction is the proxy for topics)
 	r.MaxTopics = maxTopics
 }
+
 // This replaces the hardcoded DeriveLabels() in labels.go when Phase B is active.
 func (r *RulesEngine) DeriveLabels(entityType EntityType, name string) LabelResult {
 	var lr LabelResult
@@ -310,14 +311,12 @@ func (lr *LabelResult) applyNamePatternRulesFrom(baseName string, rules []NamePa
 	}
 }
 
-
-
 // CompiledIntent pairs a compiled regex with handler metadata for Tier 1 dispatch.
 type CompiledIntent struct {
-	ID       string
-	Handler  string // method name on Manager
+	ID        string
+	Handler   string // method name on Manager
 	HintGroup int    // capture group for hint (0 = no hint)
-	RE       *regexp.Regexp
+	RE        *regexp.Regexp
 }
 
 // LoadQueryConfig loads query intents and SQL templates from swl.query.default.yaml.
@@ -447,7 +446,7 @@ func loadOptionalFile(path string) ([]byte, error) {
 		return nil, err
 	}
 	return data, nil
-}// mergeQueryConfig deep-merges overrideCfg into cfg (intents + SQL templates).
+} // mergeQueryConfig deep-merges overrideCfg into cfg (intents + SQL templates).
 func mergeQueryConfig(cfg, override *QueryConfig) {
 	// Intents: append override intents (no deduplication; user manages their own)
 	if len(override.Intents) > 0 {

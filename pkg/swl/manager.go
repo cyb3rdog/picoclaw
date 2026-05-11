@@ -29,16 +29,15 @@ type Manager struct {
 	// ignoreMatcher for .swlignore file
 	ignore *ignoreMatcher
 
-	// activeSessions maps a picoclaw session key to a SWL session UUID.
-	sessionsMu     sync.RWMutex
+	// sessionsMu guards both activeSessions and syncedSessions under a single
+	// lock so that EnsureSession can atomically check-then-create without a
+	// separate read-lock → write-lock promotion step that could race.
+	sessionsMu     sync.Mutex
 	activeSessions map[string]string // picoclaw sessionKey → SWL session UUID
-
-	// syncedSessions tracks which session UUIDs have already run sessionSync.
-	syncedMu      sync.Mutex
 	syncedSessions map[string]bool
 
 	// decayHandlers allow extensible per-type decay logic.
-	decayMu      sync.RWMutex
+	decayMu       sync.RWMutex
 	decayHandlers map[EntityType]DecayHandlerFunc
 
 	// pendingHooks tracks async PostHook goroutines for graceful drain.

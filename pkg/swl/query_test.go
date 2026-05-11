@@ -44,7 +44,13 @@ func TestAsk_Tier1_Symbols(t *testing.T) {
 	defer cleanup()
 
 	sessionID := m.EnsureSession("s1")
-	seedFile(t, m, sessionID, "pkg/foo/bar.go", "func ParseConfig(path string) error { return nil }\nfunc loadFile(p string) {}")
+	seedFile(
+		t,
+		m,
+		sessionID,
+		"pkg/foo/bar.go",
+		"func ParseConfig(path string) error { return nil }\nfunc loadFile(p string) {}",
+	)
 
 	result := m.Ask("functions in pkg/foo/bar.go")
 	if !strings.Contains(result, "ParseConfig") {
@@ -133,7 +139,9 @@ func TestAsk_Tier1_ProjectType(t *testing.T) {
 		ID: topicID, Type: KnownTypeTopic, Name: "go",
 		Confidence: 1.0, ExtractionMethod: MethodObserved, KnowledgeDepth: 1,
 	})
-	_ = m.writer.upsertEdge(EdgeTuple{FromID: entityID(KnownTypeFile, "go.mod"), Rel: KnownRelTagged, ToID: topicID, SessionID: sessionID})
+	_ = m.writer.upsertEdge(
+		EdgeTuple{FromID: entityID(KnownTypeFile, "go.mod"), Rel: KnownRelTagged, ToID: topicID, SessionID: sessionID},
+	)
 
 	result := m.Ask("project type")
 	if !strings.Contains(result, "go") {
@@ -198,7 +206,16 @@ func TestAsk_Tier2_DependencyChain(t *testing.T) {
 	sessionID := m.EnsureSession("s1")
 	aID := seedFile(t, m, sessionID, "a.go", "")
 	bID := entityID(KnownTypeDependency, "github.com/foo/b")
-	_ = m.writer.upsertEntity(EntityTuple{ID: bID, Type: KnownTypeDependency, Name: "github.com/foo/b", Confidence: 1.0, ExtractionMethod: MethodObserved, KnowledgeDepth: 1})
+	_ = m.writer.upsertEntity(
+		EntityTuple{
+			ID:               bID,
+			Type:             KnownTypeDependency,
+			Name:             "github.com/foo/b",
+			Confidence:       1.0,
+			ExtractionMethod: MethodObserved,
+			KnowledgeDepth:   1,
+		},
+	)
 	_ = m.writer.upsertEdge(EdgeTuple{FromID: aID, Rel: KnownRelImports, ToID: bID, SessionID: sessionID})
 
 	result := m.tryTier2("dependency chain a.go")
@@ -261,7 +278,10 @@ func TestSafeQuery_RowCap(t *testing.T) {
 	// Insert 250 entities and verify the cap is enforced
 	sessionID := m.EnsureSession("s1")
 	for i := 0; i < 250; i++ {
-		id := entityID(KnownTypeFile, filepath.Join("dir", strings.Repeat("f", 3)+string(rune('a'+i%26))+string(rune('0'+i/26))))
+		id := entityID(
+			KnownTypeFile,
+			filepath.Join("dir", strings.Repeat("f", 3)+string(rune('a'+i%26))+string(rune('0'+i/26))),
+		)
 		_ = m.writer.upsertEntity(EntityTuple{
 			ID: id, Type: KnownTypeFile, Name: id,
 			Confidence: 1.0, ExtractionMethod: MethodObserved, KnowledgeDepth: 1,

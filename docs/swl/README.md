@@ -6,16 +6,17 @@
 
 | Document | Purpose |
 |----------|---------|
-| **[SWL-DESIGN.md](./SWL-DESIGN.md)** | Full system design — purpose, vision, mission, principles, conceptual model, extraction tiers, query model, feedback loop, system architecture, configuration, known behaviors |
-| **[SWL-REFACTOR.md](./SWL-REFACTOR.md)** | Live refactor tracker — root causes, design principles, phase sequencing with verification criteria, current KG state, Phase A/B/C status |
-| [swl-refactor-plan.md](./swl-refactor-plan.md) | **Legacy** — original plan, superseded by SWL-REFACTOR.md |
-| [swl-refactor-requirements.md](./swl-refactor-requirements.md) | **Legacy** — original requirements, consolidated into SWL-DESIGN.md |
+| **[SWL-DESIGN.md](./SWL-DESIGN.md)** | Full system design — purpose, vision, principles, extraction tiers, query model, feedback loop, architecture, configuration, known gaps |
+| **[SWL-PHASE-B-SPEC.md](./SWL-PHASE-B-SPEC.md)** | Phase B design spec — YAML rules framework, separation of signal types vs. derivation methods. Keep until B1/B3 gaps are closed. |
+| **[SWL-PHASE-B-AUDIT.md](./SWL-PHASE-B-AUDIT.md)** | Root-cause audit of Phase B wiring gaps (B1: label rules, B3: extraction limits). Keep until B1/B3 are fixed and verified. |
+| **[swl-refactor-requirements.md](./swl-refactor-requirements.md)** | Canonical verbatim requirements — source of truth for R1–R5. |
 
 ## Quick Reference
 
 ```bash
 # Query the knowledge graph
 query_swl {"resume":true}                   # session resume digest
+query_swl {"help":true}                     # query syntax reference
 query_swl {"stats":true}                    # entity/edge counts by type
 query_swl {"gaps":true}                     # unknown/low-confidence entities
 query_swl {"drift":true}                    # stale/outdated entities
@@ -40,12 +41,14 @@ GET /api/swl/stream    # SSE delta stream
 GET /api/swl/topology  # gzip paginated full graph
 ```
 
-## Refactor Status
+## Phase Status
 
 | Phase | Status | Description |
 |-------|--------|-------------|
 | A | ✅ Done | BuildSnapshot, lazy extraction, events table, access_count fix, gap recording |
-| B | ⏳ Pending | Externalize to swl.rules.yaml + swl.query.yaml |
-| C | ⏳ Pending | Autonomous feedback loop with cross-agent convergence |
+| A.2 | ✅ Done | Path pattern → semantic label derivation (Tier 1 inference, no LLM) |
+| A.3 | ✅ Done | labelSearch handler, 30+ Tier 1 intent patterns, label-weighted scoring |
+| B | ⚠️ Partial | Infrastructure complete; **B1** (label rules) and **B3** (extraction limits) not wired to YAML |
+| C | ✅ Done | Autonomous feedback loop, gap → candidate rule generation |
 
-See [SWL-REFACTOR.md](./SWL-REFACTOR.md) for detailed phase contents and verification criteria.
+See [SWL-DESIGN.md § Known Gaps](./SWL-DESIGN.md) for details on open B1/B3 items.

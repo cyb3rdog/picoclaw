@@ -13,23 +13,23 @@ type GapAnalysis struct {
 
 // GapEntry is a single missed query with its analysis.
 type GapEntry struct {
-	Question    string
-	Terms       []string
-	Count       int
-	Suggestion  string
-	RuleKind    string // "path_prefix" | "name_pattern" | "new_intent" | "label_match"
+	Question   string
+	Terms      []string
+	Count      int
+	Suggestion string
+	RuleKind   string // "path_prefix" | "name_pattern" | "new_intent" | "label_match"
 }
 
 // RuleSuggestion is a concrete candidate rule to add to swl.rules.yaml.
 type RuleSuggestion struct {
-	Kind    string      // "path_prefix" | "name_pattern" | "content_type" | "query_intent"
-	Prefix  string      // for path_prefix
-	Pattern string      // for name_pattern
+	Kind    string // "path_prefix" | "name_pattern" | "content_type" | "query_intent"
+	Prefix  string // for path_prefix
+	Pattern string // for name_pattern
 	Role    string
 	Domain  string
-	KindLbl string      // for kind label
-	YAML    string      // ready-to-paste YAML snippet
-	Why     string      // human-readable reason
+	KindLbl string // for kind label
+	YAML    string // ready-to-paste YAML snippet
+	Why     string // human-readable reason
 }
 
 // AnalyzeGaps reads all query_gaps with count >= threshold and produces
@@ -137,9 +137,9 @@ func suggestForGap(gap GapEntry) RuleSuggestion {
 
 	// No actionable rule → return a note.
 	return RuleSuggestion{
-		Kind:  "none",
-		YAML:  "# No automatic rule possible for: " + strings.Join(clean, " "),
-		Why:   "terms do not map to a path or naming convention",
+		Kind: "none",
+		YAML: "# No automatic rule possible for: " + strings.Join(clean, " "),
+		Why:  "terms do not map to a path or naming convention",
 	}
 }
 
@@ -148,32 +148,32 @@ func suggestForGap(gap GapEntry) RuleSuggestion {
 func suggestPathPrefix(terms []string, question string) RuleSuggestion {
 	// Domain keyword → conventional path mapping.
 	domainToPath := map[string][]string{
-		"auth":       {"pkg/auth/", "auth/"},
+		"auth":           {"pkg/auth/", "auth/"},
 		"authentication": {"pkg/auth/", "auth/"},
-		"security":   {"security/", "pkg/security/"},
-		"database":   {"pkg/db/", "pkg/database/"},
-		"data":       {"pkg/data/", "pkg/db/"},
-		"api":        {"pkg/api/", "pkg/rest/"},
-		"http":       {"pkg/http/"},
-		"grpc":       {"pkg/grpc/"},
-		"config":     {"config/", "configs/"},
-		"deploy":     {"pkg/deploy/", "deploy/"},
-		"logging":    {"pkg/logging/"},
-		"metrics":    {"pkg/metrics/"},
-		"telemetry":  {"pkg/telemetry/"},
-		"cache":      {"pkg/cache/"},
-		"queue":      {"pkg/queue/"},
-		"messaging":  {"pkg/msg/", "pkg/events/"},
-		"middleware": {"middleware/", "pkg/middleware/"},
-		"model":      {"pkg/model/", "pkg/models/"},
-		"schema":     {"pkg/schema/"},
-		"validation": {"pkg/valid/", "pkg/validator/"},
-		"test":       {"test/", "tests/"},
-		"docs":       {"docs/", "doc/"},
-		"script":     {"scripts/"},
-		"tool":       {"tools/"},
-		"frontend":   {"frontend/", "web/"},
-		"ui":         {"ui/", "web/"},
+		"security":       {"security/", "pkg/security/"},
+		"database":       {"pkg/db/", "pkg/database/"},
+		"data":           {"pkg/data/", "pkg/db/"},
+		"api":            {"pkg/api/", "pkg/rest/"},
+		"http":           {"pkg/http/"},
+		"grpc":           {"pkg/grpc/"},
+		"config":         {"config/", "configs/"},
+		"deploy":         {"pkg/deploy/", "deploy/"},
+		"logging":        {"pkg/logging/"},
+		"metrics":        {"pkg/metrics/"},
+		"telemetry":      {"pkg/telemetry/"},
+		"cache":          {"pkg/cache/"},
+		"queue":          {"pkg/queue/"},
+		"messaging":      {"pkg/msg/", "pkg/events/"},
+		"middleware":     {"middleware/", "pkg/middleware/"},
+		"model":          {"pkg/model/", "pkg/models/"},
+		"schema":         {"pkg/schema/"},
+		"validation":     {"pkg/valid/", "pkg/validator/"},
+		"test":           {"test/", "tests/"},
+		"docs":           {"docs/", "doc/"},
+		"script":         {"scripts/"},
+		"tool":           {"tools/"},
+		"frontend":       {"frontend/", "web/"},
+		"ui":             {"ui/", "web/"},
 	}
 
 	q := strings.ToLower(question)
@@ -243,11 +243,11 @@ func suggestNamePattern(terms []string) RuleSuggestion {
 			}
 
 			return RuleSuggestion{
-				Kind:   "name_pattern",
+				Kind:    "name_pattern",
 				Pattern: pattern,
-				Role:   role,
+				Role:    role,
 				KindLbl: "configuration",
-				Domain: "infrastructure",
+				Domain:  "infrastructure",
 				YAML: `  # Added from gap analysis:
   - pattern: "` + pattern + `"
     role: ` + role + `
@@ -264,26 +264,26 @@ func suggestNamePattern(terms []string) RuleSuggestion {
 // suggestContentType suggests a content_type rule from query terms.
 func suggestContentType(terms []string) RuleSuggestion {
 	typeToExt := map[string]string{
-		"go":       "go",
-		"python":   "py",
+		"go":         "go",
+		"python":     "py",
 		"javascript": "js",
 		"typescript": "ts",
-		"rust":     "rs",
-		"sql":      "sql",
-		"shell":    "sh",
-		"yaml":     "yaml",
-		"json":     "json",
-		"html":     "html",
-		"css":      "css",
-		"markdown": "md",
+		"rust":       "rs",
+		"sql":        "sql",
+		"shell":      "sh",
+		"yaml":       "yaml",
+		"json":       "json",
+		"html":       "html",
+		"css":        "css",
+		"markdown":   "md",
 	}
 
 	for _, term := range terms {
 		if ext, ok := typeToExt[term]; ok {
 			return RuleSuggestion{
-				Kind:        "content_type",
-				Pattern:     "." + ext,
-				KindLbl:     ext,
+				Kind:    "content_type",
+				Pattern: "." + ext,
+				KindLbl: ext,
 				YAML: `  # Added from gap analysis:
   - extension: ".` + ext + `"
     content_type: ` + ext,
@@ -351,40 +351,38 @@ func inferRuleKind(suggestion string) string {
 // domainForTerm maps a term to its domain label.
 func domainForTerm(term string) string {
 	domainMap := map[string]string{
-		"auth":          "security",
+		"auth":           "security",
 		"authentication": "security",
-		"security":      "security",
-		"database":      "data-access",
-		"data":          "data-access",
-		"api":           "networking",
-		"http":          "networking",
-		"grpc":          "networking",
-		"config":        "infrastructure",
-		"deploy":        "infrastructure",
-		"logging":       "observability",
-		"metrics":       "observability",
-		"telemetry":     "observability",
-		"cache":         "data-access",
-		"queue":         "messaging",
-		"messaging":     "messaging",
-		"middleware":    "networking",
-		"model":         "data-access",
-		"schema":        "data-access",
-		"validation":    "security",
-		"test":          "testing",
-		"docs":          "meta",
-		"script":        "infrastructure",
-		"tool":          "infrastructure",
-		"frontend":      "frontend",
-		"ui":            "frontend",
+		"security":       "security",
+		"database":       "data-access",
+		"data":           "data-access",
+		"api":            "networking",
+		"http":           "networking",
+		"grpc":           "networking",
+		"config":         "infrastructure",
+		"deploy":         "infrastructure",
+		"logging":        "observability",
+		"metrics":        "observability",
+		"telemetry":      "observability",
+		"cache":          "data-access",
+		"queue":          "messaging",
+		"messaging":      "messaging",
+		"middleware":     "networking",
+		"model":          "data-access",
+		"schema":         "data-access",
+		"validation":     "security",
+		"test":           "testing",
+		"docs":           "meta",
+		"script":         "infrastructure",
+		"tool":           "infrastructure",
+		"frontend":       "frontend",
+		"ui":             "frontend",
 	}
 	if d, ok := domainMap[term]; ok {
 		return d
 	}
 	return "business"
 }
-
-
 
 // sliceContains checks if a slice contains a string (case-insensitive).
 func sliceContains(slice []string, s string) bool {
@@ -400,7 +398,9 @@ func sliceContains(slice []string, s string) bool {
 // Compile-time RE2 patterns for gap analysis.
 var (
 	// findByPurposeRE matches "where is the X that handles/does Y" patterns.
-	findByPurposeRE = regexp.MustCompile(`(?i)where\s+(?:is|are)\s+(?:the\s+)?(.+?)\s+(?:that\s+)?(?:does|handles?|implements?|manages?|provides?)`)
+	findByPurposeRE = regexp.MustCompile(
+		`(?i)where\s+(?:is|are)\s+(?:the\s+)?(.+?)\s+(?:that\s+)?(?:does|handles?|implements?|manages?|provides?)`,
+	)
 
 	// findFilesRE matches "find files that do X" patterns.
 	findFilesRE = regexp.MustCompile(`(?i)find\s+(?:the\s+)?(.+?)\s+(?:files?|code|logic)`)

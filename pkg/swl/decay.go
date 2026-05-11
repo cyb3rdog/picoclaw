@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/rs/zerolog/log"
 )
 
 // MaybeDecay runs decay checks with 5% probability — called from PostHook.
@@ -154,5 +156,6 @@ func parseRFC3339(s string) time.Time {
 			return t
 		}
 	}
+	log.Warn().Str("value", s).Msg("swl: malformed modified_at timestamp — decay check skipped")
 	return time.Time{}
 }

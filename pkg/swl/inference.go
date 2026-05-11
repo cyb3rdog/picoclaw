@@ -80,21 +80,40 @@ func (m *Manager) recordToolEvent(sessionID, toolName string, args map[string]an
 	m.writer.mu.Unlock()
 }
 
-// PreHook runs pre-call guard checks. Currently a pass-through.
-// Returns (shouldBlock bool, reason string).
+// PreHook runs pre-call guard checks.
+// Returns (shouldBlock bool, hint string). hint is non-empty when the LLM
+// should be notified (e.g., stale file) but execution is still allowed.
 func (m *Manager) PreHook(toolName string, args map[string]any) (bool, string) {
-	// Future: constraint registry lookup here.
+	switch toolName {
+	case "read_file", "write_file", "edit_file", "append_file":
+		if path, _ := args["path"].(string); path != "" {
+			normPath := m.normalizePath(path)
+			fileID := entityID(KnownTypeFile, normPath)
+			var status string
+			_ = m.db.QueryRow(
+				"SELECT fact_status FROM entities WHERE id = ?", fileID,
+			).Scan(&status)
+			if status == string(FactStale) {
+				return false, "Note: " + normPath + " is marked stale — file may have changed since last indexed. Consider query_swl {\"scan\":true} to refresh."
+			}
+		}
+	}
 	return false, ""
 }
 
 // --- Three-layer inference ---
 
 // customToolHandlers holds Layer 0 programmatic overrides.
-var customToolHandlersMu sync.RWMutex
-var customToolHandlers = map[string]func(m *Manager, sessionID string, args map[string]any, result string) *GraphDelta{}
+var (
+	customToolHandlersMu sync.RWMutex
+	customToolHandlers   = map[string]func(m *Manager, sessionID string, args map[string]any, result string) *GraphDelta{}
+)
 
 // RegisterToolHandler registers a Layer 0 custom inference function for a named tool.
-func RegisterToolHandler(toolName string, fn func(m *Manager, sessionID string, args map[string]any, result string) *GraphDelta) {
+func RegisterToolHandler(
+	toolName string,
+	fn func(m *Manager, sessionID string, args map[string]any, result string) *GraphDelta,
+) {
 	customToolHandlersMu.Lock()
 	customToolHandlers[toolName] = fn
 	customToolHandlersMu.Unlock()
@@ -109,14 +128,54 @@ type declRule struct {
 }
 
 var toolMap = map[string]declRule{
-	"write_file":  {entityExpr: "args.path", entityType: KnownTypeFile, rel: KnownRelWrittenIn, postApply: postApplyWriteFile},
-	"edit_file":   {entityExpr: "args.path", entityType: KnownTypeFile, rel: KnownRelEditedIn, postApply: postApplyWriteFile},
-	"append_file": {entityExpr: "args.path", entityType: KnownTypeFile, rel: KnownRelAppendedIn, postApply: postApplyAppendFile},
-	"read_file":   {entityExpr: "args.path", entityType: KnownTypeFile, rel: KnownRelRead, postApply: postApplyReadFile},
-	"delete_file": {entityExpr: "args.path", entityType: KnownTypeFile, rel: KnownRelDeleted, postApply: postApplyDeleteFile},
-	"list_dir":    {entityExpr: "args.path", entityType: KnownTypeDirectory, rel: KnownRelListed, postApply: postApplyListDir},
-	"exec":        {entityExpr: "args.command", entityType: KnownTypeCommand, rel: KnownRelExecuted, postApply: postApplyExec},
-	"web_fetch":   {entityExpr: "args.url", entityType: KnownTypeURL, rel: KnownRelFetched, postApply: postApplyWebFetch},
+	"write_file": {
+		entityExpr: "args.path",
+		entityType: KnownTypeFile,
+		rel:        KnownRelWrittenIn,
+		postApply:  postApplyWriteFile,
+	},
+	"edit_file": {
+		entityExpr: "args.path",
+		entityType: KnownTypeFile,
+		rel:        KnownRelEditedIn,
+		postApply:  postApplyWriteFile,
+	},
+	"append_file": {
+		entityExpr: "args.path",
+		entityType: KnownTypeFile,
+		rel:        KnownRelAppendedIn,
+		postApply:  postApplyAppendFile,
+	},
+	"read_file": {
+		entityExpr: "args.path",
+		entityType: KnownTypeFile,
+		rel:        KnownRelRead,
+		postApply:  postApplyReadFile,
+	},
+	"delete_file": {
+		entityExpr: "args.path",
+		entityType: KnownTypeFile,
+		rel:        KnownRelDeleted,
+		postApply:  postApplyDeleteFile,
+	},
+	"list_dir": {
+		entityExpr: "args.path",
+		entityType: KnownTypeDirectory,
+		rel:        KnownRelListed,
+		postApply:  postApplyListDir,
+	},
+	"exec": {
+		entityExpr: "args.command",
+		entityType: KnownTypeCommand,
+		rel:        KnownRelExecuted,
+		postApply:  postApplyExec,
+	},
+	"web_fetch": {
+		entityExpr: "args.url",
+		entityType: KnownTypeURL,
+		rel:        KnownRelFetched,
+		postApply:  postApplyWebFetch,
+	},
 }
 
 func (m *Manager) runInference(sessionID, toolName string, args map[string]any, result string) {
@@ -193,7 +252,10 @@ func postApplyWriteFile(m *Manager, fileID, sessionID string, args map[string]an
 		filePath := m.normalizePath(argString(args, "path"))
 		if delta := m.ExtractContent(fileID, filePath, content); delta != nil && !delta.IsEmpty() {
 			_ = m.writer.applyDelta(delta, sessionID)
-			m.logInferenceEvent("write_file", fmt.Sprintf("extracted %d entities from %s", len(delta.Entities), filePath))
+			m.logInferenceEvent(
+				"write_file",
+				fmt.Sprintf("extracted %d entities from %s", len(delta.Entities), filePath),
+			)
 		}
 	}
 	_ = m.writer.setFactStatus(fileID, FactVerified)
@@ -233,7 +295,10 @@ func postApplyReadFile(m *Manager, fileID, sessionID string, args map[string]any
 		filePath := m.normalizePath(argString(args, "path"))
 		if delta := m.ExtractContent(fileID, filePath, content); delta != nil && !delta.IsEmpty() {
 			_ = m.writer.applyDelta(delta, sessionID)
-			m.logInferenceEvent("read_file", fmt.Sprintf("extracted %d entities from %s", len(delta.Entities), filePath))
+			m.logInferenceEvent(
+				"read_file",
+				fmt.Sprintf("extracted %d entities from %s", len(delta.Entities), filePath),
+			)
 		}
 	}
 	_ = m.writer.setFactStatus(fileID, FactVerified)

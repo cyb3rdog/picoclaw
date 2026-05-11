@@ -285,8 +285,12 @@ func (h *Handler) handleSWLGraph(w http.ResponseWriter, r *http.Request) {
 
 	// Collect DB-wide totals for the frontend scale indicator.
 	var totalNodes, totalEdges int
-	db.QueryRowContext(r.Context(), "SELECT COUNT(*) FROM entities WHERE fact_status != 'deleted'").Scan(&totalNodes) //nolint:errcheck
-	db.QueryRowContext(r.Context(), "SELECT COUNT(*) FROM edges").Scan(&totalEdges)                                  //nolint:errcheck
+	db.QueryRowContext(r.Context(), "SELECT COUNT(*) FROM entities WHERE fact_status != 'deleted'").
+		Scan(&totalNodes)
+		//nolint:errcheck
+	db.QueryRowContext(r.Context(), "SELECT COUNT(*) FROM edges").
+		Scan(&totalEdges)
+		//nolint:errcheck
 
 	data := swlGraphData{Nodes: nodes, Links: validLinks}
 	data.Meta.NodeCount = len(nodes)
@@ -471,8 +475,12 @@ func (h *Handler) handleSWLNeighborhood(w http.ResponseWriter, r *http.Request) 
 	}
 
 	var totalNodes, totalEdges int
-	db.QueryRowContext(r.Context(), "SELECT COUNT(*) FROM entities WHERE fact_status != 'deleted'").Scan(&totalNodes) //nolint:errcheck
-	db.QueryRowContext(r.Context(), "SELECT COUNT(*) FROM edges").Scan(&totalEdges)                                  //nolint:errcheck
+	db.QueryRowContext(r.Context(), "SELECT COUNT(*) FROM entities WHERE fact_status != 'deleted'").
+		Scan(&totalNodes)
+		//nolint:errcheck
+	db.QueryRowContext(r.Context(), "SELECT COUNT(*) FROM edges").
+		Scan(&totalEdges)
+		//nolint:errcheck
 
 	data := swlGraphData{Nodes: nodes, Links: validLinks}
 	data.Meta.NodeCount = len(nodes)
@@ -828,7 +836,9 @@ func (h *Handler) handleSWLStream(w http.ResponseWriter, r *http.Request) {
 	// This prevents re-flooding data that the initial REST call already delivered.
 	var lastModAt string
 	if db != nil {
-		db.QueryRowContext(r.Context(), "SELECT COALESCE(MAX(modified_at),'') FROM entities").Scan(&lastModAt) //nolint:errcheck
+		db.QueryRowContext(r.Context(), "SELECT COALESCE(MAX(modified_at),'') FROM entities").
+			Scan(&lastModAt)
+		//nolint:errcheck
 	}
 
 	const (
@@ -848,13 +858,17 @@ func (h *Handler) handleSWLStream(w http.ResponseWriter, r *http.Request) {
 		if db == nil {
 			if db2, _ := openSWLReadOnly(dbPath); db2 != nil {
 				db = db2
-				db.QueryRowContext(r.Context(), "SELECT COALESCE(MAX(modified_at),'') FROM entities").Scan(&lastModAt) //nolint:errcheck
+				db.QueryRowContext(r.Context(), "SELECT COALESCE(MAX(modified_at),'') FROM entities").
+					Scan(&lastModAt)
+				//nolint:errcheck
 			}
 			continue
 		}
 
 		var maxModAt string
-		db.QueryRowContext(r.Context(), "SELECT COALESCE(MAX(modified_at),'') FROM entities").Scan(&maxModAt) //nolint:errcheck
+		db.QueryRowContext(r.Context(), "SELECT COALESCE(MAX(modified_at),'') FROM entities").
+			Scan(&maxModAt)
+			//nolint:errcheck
 
 		if maxModAt == "" || maxModAt == lastModAt {
 			// No change — back off up to maxInterval
@@ -969,7 +983,7 @@ func (h *Handler) handleSWLTopology(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		
+
 		count := 0
 		for nodeRows.Next() {
 			var n topologyNode
@@ -980,12 +994,12 @@ func (h *Handler) handleSWLTopology(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		nodeRows.Close()
-		
+
 		if count < nodesPerPage {
 			break
 		}
 		offset += nodesPerPage
-		
+
 		// Safety limit: max 50k nodes
 		if len(allNodes) >= 50000 {
 			break
@@ -1003,7 +1017,7 @@ func (h *Handler) handleSWLTopology(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		
+
 		count := 0
 		for edgeRows.Next() {
 			var l topologyLink
@@ -1016,12 +1030,12 @@ func (h *Handler) handleSWLTopology(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		edgeRows.Close()
-		
+
 		if count < edgesPerPage {
 			break
 		}
 		edgeOffset += edgesPerPage
-		
+
 		// Safety limit: max 100k edges
 		if len(allLinks) >= 100000 {
 			break

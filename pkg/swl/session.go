@@ -15,29 +15,22 @@ func (m *Manager) EnsureSession(sessionKey string) string {
 	if sessionKey == "" {
 		return ""
 	}
-	m.sessionsMu.RLock()
-	id, ok := m.activeSessions[sessionKey]
-	m.sessionsMu.RUnlock()
-	if ok {
+
+	m.sessionsMu.Lock()
+	if id, ok := m.activeSessions[sessionKey]; ok {
+		m.sessionsMu.Unlock()
 		return id
 	}
+	id := newUUID()
+	m.activeSessions[sessionKey] = id
+	m.sessionsMu.Unlock()
 
-	id = newUUID()
 	m.mu.Lock()
 	_, _ = m.db.Exec(
 		`INSERT OR IGNORE INTO sessions (id, started_at, workspace_state) VALUES (?, ?, '{}')`,
 		id, nowSQLite(),
 	)
 	m.mu.Unlock()
-
-	m.sessionsMu.Lock()
-	// Double-check in case another goroutine raced us.
-	if existing, raced := m.activeSessions[sessionKey]; raced {
-		m.sessionsMu.Unlock()
-		return existing
-	}
-	m.activeSessions[sessionKey] = id
-	m.sessionsMu.Unlock()
 
 	// Session entity for graph visibility
 	_ = m.writer.upsertEntity(EntityTuple{
@@ -70,13 +63,13 @@ func (m *Manager) SessionSync(sessionID string) {
 	if sessionID == "" {
 		return
 	}
-	m.syncedMu.Lock()
+	m.sessionsMu.Lock()
 	if m.syncedSessions[sessionID] {
-		m.syncedMu.Unlock()
+		m.sessionsMu.Unlock()
 		return
 	}
 	m.syncedSessions[sessionID] = true
-	m.syncedMu.Unlock()
+	m.sessionsMu.Unlock()
 
 	rows, err := m.db.Query(
 		`SELECT id, name FROM entities WHERE type = ? AND fact_status = ?`,
@@ -128,10 +121,8 @@ func (m *Manager) SessionSync(sessionID string) {
 // endAllSessions closes all active session rows with a summary.
 func (m *Manager) endAllSessions() {
 	m.sessionsMu.Lock()
-	keys := make([]string, 0, len(m.activeSessions))
 	ids := make([]string, 0, len(m.activeSessions))
-	for k, id := range m.activeSessions {
-		keys = append(keys, k)
+	for _, id := range m.activeSessions {
 		ids = append(ids, id)
 	}
 	m.sessionsMu.Unlock()
@@ -147,8 +138,6 @@ func (m *Manager) endAllSessions() {
 		)
 	}
 	m.mu.Unlock()
-
-	_ = keys // suppress unused warning; key list used for logging if needed
 }
 
 // autoSummary produces a short stats string for the session summary field.
@@ -302,8 +291,8 @@ func (m *Manager) WorkspaceSnapshot() string {
 	snapshot := map[string]any{}
 
 	var fileCount, symCount int
-	m.db.QueryRow("SELECT COUNT(*) FROM entities WHERE type = ?", KnownTypeFile).Scan(&fileCount)           //nolint:errcheck
-	m.db.QueryRow("SELECT COUNT(*) FROM entities WHERE type = ?", KnownTypeSymbol).Scan(&symCount)          //nolint:errcheck
+	m.db.QueryRow("SELECT COUNT(*) FROM entities WHERE type = ?", KnownTypeFile).Scan(&fileCount)  //nolint:errcheck
+	m.db.QueryRow("SELECT COUNT(*) FROM entities WHERE type = ?", KnownTypeSymbol).Scan(&symCount) //nolint:errcheck
 	snapshot["files"] = fileCount
 	snapshot["symbols"] = symCount
 

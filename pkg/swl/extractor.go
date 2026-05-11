@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/rs/zerolog/log"
 )
 
 // --- Anti-bloat limits ---
@@ -32,26 +34,48 @@ var noiseSymbols = map[string]bool{
 
 var (
 	symPatterns = []*regexp.Regexp{
-		regexp.MustCompile(`(?m)^func\s+(?:\(\w+\s+\*?\w+\)\s+)?(\w+)\s*\(`),                          // Go
-		regexp.MustCompile(`(?m)^def\s+(\w+)\s*\(`),                                                    // Python
-		regexp.MustCompile(`(?m)^\s*(?:export\s+)?(?:async\s+)?function\s+(\w+)\s*\(`),                 // JS/TS function
-		regexp.MustCompile(`(?m)^\s*(?:pub\s+)?fn\s+(\w+)\s*[(<]`),                                    // Rust fn
-		regexp.MustCompile(`(?m)^\s*(?:public|private|protected)?\s*(?:static\s+)?\w[\w<>\[\]]+\s+(\w+)\s*\(`), // Java/C#
-		regexp.MustCompile(`(?m)^\s*class\s+(\w+)\s*[({:]`),                                            // multi-lang class
-		regexp.MustCompile(`(?m)^\s*(?:export\s+)?(?:interface|type)\s+(\w+)\s*[={<]`),                 // TS interface/type
-		regexp.MustCompile(`(?m)^\s*(?:pub\s+)?(?:struct|enum|trait)\s+(\w+)\b`),                      // Rust struct/enum/trait
-		regexp.MustCompile(`(?m)^type\s+(\w+)\s+(?:struct|interface|func|map|chan|slice|\[)`),          // Go type declarations
-		regexp.MustCompile(`(?m)^\s*(?:const|var|let)\s+([A-Z][A-Z0-9_]{2,})\s*=`),                   // exported constants
+		regexp.MustCompile(`(?m)^func\s+(?:\(\w+\s+\*?\w+\)\s+)?(\w+)\s*\(`), // Go
+		regexp.MustCompile(
+			`(?m)^def\s+(\w+)\s*\(`,
+		), // Python
+		regexp.MustCompile(
+			`(?m)^\s*(?:export\s+)?(?:async\s+)?function\s+(\w+)\s*\(`,
+		), // JS/TS function
+		regexp.MustCompile(
+			`(?m)^\s*(?:pub\s+)?fn\s+(\w+)\s*[(<]`,
+		), // Rust fn
+		regexp.MustCompile(
+			`(?m)^\s*(?:public|private|protected)?\s*(?:static\s+)?\w[\w<>\[\]]+\s+(\w+)\s*\(`,
+		), // Java/C#
+		regexp.MustCompile(
+			`(?m)^\s*class\s+(\w+)\s*[({:]`,
+		), // multi-lang class
+		regexp.MustCompile(
+			`(?m)^\s*(?:export\s+)?(?:interface|type)\s+(\w+)\s*[={<]`,
+		), // TS interface/type
+		regexp.MustCompile(
+			`(?m)^\s*(?:pub\s+)?(?:struct|enum|trait)\s+(\w+)\b`,
+		), // Rust struct/enum/trait
+		regexp.MustCompile(
+			`(?m)^type\s+(\w+)\s+(?:struct|interface|func|map|chan|slice|\[)`,
+		), // Go type declarations
+		regexp.MustCompile(
+			`(?m)^\s*(?:const|var|let)\s+([A-Z][A-Z0-9_]{2,})\s*=`,
+		), // exported constants
 	}
 
 	importPatterns = []*regexp.Regexp{
-		regexp.MustCompile(`(?m)^import\s+"?([^\s"]+)"?`),                              // Python bare / generic
-		regexp.MustCompile(`(?m)^from\s+(\S+)\s+import`),                               // Python from
-		regexp.MustCompile(`(?m)^\t"([^"]+)"`),                                         // Go (tab-indented in import block)
-		regexp.MustCompile(`(?m)^import\s+(?:\{[^}]+\}|\*\s+as\s+\w+|\w+)\s+from\s+"([^"]+)"`), // ES6 named/star/default
-		regexp.MustCompile(`(?m)^\s*use\s+([\w:]+)`),                                  // Rust use
-		regexp.MustCompile(`(?m)^#include\s+[<"]([^>"]+)[>"]`),                        // C/C++
-		regexp.MustCompile(`(?m)^\s*require\s*\(?['"]([^'"]+)['"]\)?`),                // Ruby/Node.js require
+		regexp.MustCompile(`(?m)^import\s+"?([^\s"]+)"?`), // Python bare / generic
+		regexp.MustCompile(`(?m)^from\s+(\S+)\s+import`),  // Python from
+		regexp.MustCompile(
+			`(?m)^\t"([^"]+)"`,
+		), // Go (tab-indented in import block)
+		regexp.MustCompile(
+			`(?m)^import\s+(?:\{[^}]+\}|\*\s+as\s+\w+|\w+)\s+from\s+"([^"]+)"`,
+		), // ES6 named/star/default
+		regexp.MustCompile(`(?m)^\s*use\s+([\w:]+)`),                   // Rust use
+		regexp.MustCompile(`(?m)^#include\s+[<"]([^>"]+)[>"]`),         // C/C++
+		regexp.MustCompile(`(?m)^\s*require\s*\(?['"]([^'"]+)['"]\)?`), // Ruby/Node.js require
 	}
 
 	taskRE    = regexp.MustCompile(`(?i)(?:TODO|FIXME|HACK|NOTE|BUG|XXX|OPTIMIZE|REFACTOR|REVIEW|DEPRECATED)[:\s]+(.+)`)
@@ -84,12 +108,12 @@ var (
 	backtickFileRE = regexp.MustCompile("`([^`]+\\.\\w+)`")
 
 	// exec output patterns
-	gitCommitRE  = regexp.MustCompile(`(?m)^commit\s+([0-9a-f]{7,40})`)
-	testPassRE   = regexp.MustCompile(`(?i)(?:PASS|ok)\s+([\w./]+)`)
-	testFailRE   = regexp.MustCompile(`(?i)(?:FAIL|--- FAIL)\s+([\w./]+)`)
-	pipPkgRE     = regexp.MustCompile(`(?m)^Successfully installed\s+(.+)`)
-	npmPkgRE     = regexp.MustCompile(`(?m)^\+\s+([\w@/-]+)`)
-	goPkgRE      = regexp.MustCompile(`(?m)^go:\s+(?:downloading|adding)\s+([\w./]+)`)
+	gitCommitRE = regexp.MustCompile(`(?m)^commit\s+([0-9a-f]{7,40})`)
+	testPassRE  = regexp.MustCompile(`(?i)(?:PASS|ok)\s+([\w./]+)`)
+	testFailRE  = regexp.MustCompile(`(?i)(?:FAIL|--- FAIL)\s+([\w./]+)`)
+	pipPkgRE    = regexp.MustCompile(`(?m)^Successfully installed\s+(.+)`)
+	npmPkgRE    = regexp.MustCompile(`(?m)^\+\s+([\w@/-]+)`)
+	goPkgRE     = regexp.MustCompile(`(?m)^go:\s+(?:downloading|adding)\s+([\w./]+)`)
 
 	// topic detection: special filenames → project type
 	projectTypeFiles = map[string]string{
@@ -98,10 +122,10 @@ var (
 		"requirements.txt": "python", "setup.py": "python", "pyproject.toml": "python", "Pipfile": "python",
 		"Cargo.toml": "rust", "Cargo.lock": "rust",
 		"pom.xml": "java", "build.gradle": "java",
-		"Gemfile": "ruby",
+		"Gemfile":        "ruby",
 		"CMakeLists.txt": "cmake",
-		"Makefile": "make",
-		"Dockerfile": "docker", "docker-compose.yml": "docker",
+		"Makefile":       "make",
+		"Dockerfile":     "docker", "docker-compose.yml": "docker",
 		".github": "github-actions",
 	}
 
@@ -165,10 +189,10 @@ func (m *Manager) ExtractContent(fileID, filePath, content string) *GraphDelta {
 	}
 
 	if m.cfg.effectiveExtractSymbols() {
-		extractSymbols(ctx, fileID, normFilePath, content, m.compiledSymPatterns, delta)
+		extractSymbols(ctx, fileID, normFilePath, content, m.compiledSymPatterns, delta, m.MaxSymbols())
 	}
 	if m.cfg.effectiveExtractImports() {
-		extractImports(ctx, fileID, content, delta)
+		extractImports(ctx, fileID, content, delta, m.MaxImports())
 	}
 	if m.cfg.effectiveExtractTasks() {
 		extractTasks(ctx, fileID, content, delta, m.MaxTasks())
@@ -178,6 +202,10 @@ func (m *Manager) ExtractContent(fileID, filePath, content string) *GraphDelta {
 	}
 	if m.cfg.effectiveExtractURLs() {
 		extractURLs(ctx, fileID, content, delta, m.MaxURLs())
+	}
+
+	if ctx.Err() != nil {
+		log.Warn().Str("file", filePath).Msg("swl: extraction timed out — results are partial")
 	}
 
 	return delta
@@ -226,7 +254,10 @@ func ExtractExec(sessionID, command, stdout, stderr string) *GraphDelta {
 			ID: commitID, Type: KnownTypeCommit, Name: m[1],
 			Confidence: 1.0, ExtractionMethod: MethodObserved, KnowledgeDepth: 1,
 		})
-		delta.Edges = append(delta.Edges, EdgeTuple{FromID: cmdID, Rel: KnownRelCommittedIn, ToID: commitID, SessionID: sessionID})
+		delta.Edges = append(
+			delta.Edges,
+			EdgeTuple{FromID: cmdID, Rel: KnownRelCommittedIn, ToID: commitID, SessionID: sessionID},
+		)
 	}
 
 	// Test results
@@ -272,7 +303,10 @@ func ExtractExec(sessionID, command, stdout, stderr string) *GraphDelta {
 			ID: urlID, Type: KnownTypeURL, Name: u,
 			Confidence: 0.9, ExtractionMethod: MethodObserved, KnowledgeDepth: 1,
 		})
-		delta.Edges = append(delta.Edges, EdgeTuple{FromID: cmdID, Rel: KnownRelFound, ToID: urlID, SessionID: sessionID})
+		delta.Edges = append(
+			delta.Edges,
+			EdgeTuple{FromID: cmdID, Rel: KnownRelFound, ToID: urlID, SessionID: sessionID},
+		)
 	}
 
 	return delta
@@ -359,7 +393,7 @@ func (m *Manager) ExtractLLMResponse(sessionID, content string) *GraphDelta {
 
 	// URLs the LLM mentions
 	if !isDone(ctx) {
-		for _, u := range urlRE.FindAllString(content, maxURLs) {
+		for _, u := range urlRE.FindAllString(content, m.MaxURLs()) {
 			if isNoisyURL(u) {
 				continue
 			}
@@ -500,14 +534,21 @@ func (m *Manager) ExtractGeneric(toolName, result string) *GraphDelta {
 
 // --- internal helpers ---
 
-func extractSymbols(ctx context.Context, fileID, filePath, content string, patterns []*regexp.Regexp, delta *GraphDelta) {
+func extractSymbols(
+	ctx context.Context,
+	fileID, filePath, content string,
+	patterns []*regexp.Regexp,
+	delta *GraphDelta,
+	max int,
+) {
 	// symIDs maps name → entity ID for the post-extraction uses pass.
 	symIDs := map[string]string{}
 	count := 0
+outer:
 	for _, re := range patterns {
 		for _, m := range re.FindAllStringSubmatch(content, -1) {
-			if isDone(ctx) || count >= maxSymbols {
-				goto emitUses
+			if isDone(ctx) || count >= max {
+				break outer
 			}
 			name := strings.TrimSpace(m[1])
 			if name == "" || noiseSymbols[name] || symIDs[name] != "" {
@@ -523,8 +564,6 @@ func extractSymbols(ctx context.Context, fileID, filePath, content string, patte
 			count++
 		}
 	}
-
-emitUses:
 	// Emit uses edges for symbols that are called (not just defined) within the
 	// same file.  A symbol defined and called in the same file appears at least
 	// twice as "name(" — once at the definition site and once at the call site.
@@ -542,12 +581,12 @@ emitUses:
 	}
 }
 
-func extractImports(ctx context.Context, fileID, content string, delta *GraphDelta) {
+func extractImports(ctx context.Context, fileID, content string, delta *GraphDelta, max int) {
 	seen := map[string]bool{}
 	count := 0
 	for _, re := range importPatterns {
 		for _, m := range re.FindAllStringSubmatch(content, -1) {
-			if isDone(ctx) || count >= maxImports {
+			if isDone(ctx) || count >= max {
 				return
 			}
 			name := strings.TrimSpace(m[1])

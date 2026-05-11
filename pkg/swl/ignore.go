@@ -8,8 +8,8 @@ import (
 
 // ignorePattern represents a single pattern from a .swlignore file.
 type ignorePattern struct {
-	dirOnly  bool  // pattern ends with /
-	negation bool  // pattern starts with !
+	dirOnly  bool   // pattern ends with /
+	negation bool   // pattern starts with !
 	raw      string // original pattern text
 }
 
@@ -21,39 +21,39 @@ type ignoreMatcher struct {
 
 // defaultIgnoreDirNames are always-ignored directory names (fallback when .swlignore missing).
 var defaultIgnoreDirNames = map[string]bool{
-	".git":         true,
-	".svn":         true,
-	".hg":          true,
-	".bzr":         true,
-	"CVS":          true,
-	"node_modules": true,
-	"vendor":       true,
+	".git":             true,
+	".svn":             true,
+	".hg":              true,
+	".bzr":             true,
+	"CVS":              true,
+	"node_modules":     true,
+	"vendor":           true,
 	"bower_components": true,
-	"jspm_packages": true,
-	".venv":        true,
-	"venv":         true,
-	".env":         true,
-	"ENV":          true,
-	"__pycache__":  true,
-	".tox":         true,
-	".pytest_cache": true,
-	".mypy_cache":  true,
-	".ruff_cache":  true,
-	".hypothesis":  true,
-	"dist":         true,
-	"build":        true,
-	".build":       true,
-	"target":       true,
-	".gradle":      true,
-	".cargo":       true,
-	".dart_tool":   true,
-	".pub-cache":   true,
-	".pub":         true,
-	"bin":          true,
-	"obj":          true,
-	".idea":        true,
-	".vscode":      true,
-	".swl":         true, // never index the SWL DB directory itself
+	"jspm_packages":    true,
+	".venv":            true,
+	"venv":             true,
+	".env":             true,
+	"ENV":              true,
+	"__pycache__":      true,
+	".tox":             true,
+	".pytest_cache":    true,
+	".mypy_cache":      true,
+	".ruff_cache":      true,
+	".hypothesis":      true,
+	"dist":             true,
+	"build":            true,
+	".build":           true,
+	"target":           true,
+	".gradle":          true,
+	".cargo":           true,
+	".dart_tool":       true,
+	".pub-cache":       true,
+	".pub":             true,
+	"bin":              true,
+	"obj":              true,
+	".idea":            true,
+	".vscode":          true,
+	".swl":             true, // never index the SWL DB directory itself
 }
 
 // defaultIgnoreExtensions are always-ignored file extensions.
@@ -158,8 +158,8 @@ func parseIgnorePatterns(content string) []ignorePattern {
 }
 
 // Matches returns true if path matches the ignore patterns.
-// dirOnly patterns only match directories.
-// negation patterns (starting with !) return false (un-ignore).
+// Patterns are evaluated in order; later patterns override earlier ones.
+// dirOnly patterns match the directory itself and any file inside it.
 func (m *ignoreMatcher) Matches(absPath string, isDir bool) bool {
 	relPath := absPath
 	if m.root != "" {
@@ -167,21 +167,55 @@ func (m *ignoreMatcher) Matches(absPath string, isDir bool) bool {
 			relPath = r
 		}
 	}
+	relPath = filepath.ToSlash(relPath)
 
-	negated := false
+	ignored := false
 	for _, p := range m.patterns {
+		var matches bool
 		if p.dirOnly && !isDir {
-			continue
+			// For files, check if any ancestor directory matches the pattern.
+			matches = anyAncestorDirMatches(relPath, p.raw)
+		} else {
+			matches = matchPatternAnyDepth(relPath, p.raw)
 		}
-		if matchPattern(relPath, p.raw) {
+		if matches {
 			if p.negation {
-				negated = true
+				ignored = false
 			} else {
+				ignored = true
+			}
+		}
+	}
+	return ignored
+}
+
+// matchPatternAnyDepth tries matchPattern from each starting path component.
+// Non-anchored patterns (no leading /) can match at any directory level.
+func matchPatternAnyDepth(path, pattern string) bool {
+	if matchPattern(path, pattern) {
+		return true
+	}
+	if !strings.HasPrefix(pattern, "/") {
+		parts := strings.Split(path, "/")
+		for start := 1; start < len(parts); start++ {
+			if matchPattern(strings.Join(parts[start:], "/"), pattern) {
 				return true
 			}
 		}
 	}
-	return negated // true = was negated back to not-ignored
+	return false
+}
+
+// anyAncestorDirMatches returns true if any ancestor directory of path matches pattern.
+func anyAncestorDirMatches(path, pattern string) bool {
+	parts := strings.Split(path, "/")
+	for i := 1; i < len(parts); i++ {
+		dir := strings.Join(parts[:i], "/")
+		if matchPatternAnyDepth(dir, pattern) {
+			return true
+		}
+	}
+	return false
 }
 
 // matchPattern returns true if path matches a gitignore-style pattern.
@@ -263,6 +297,10 @@ func matchPattern(path, pattern string) bool {
 			return matchSegments(parts[pi+1:], pats[i+1:])
 		} else {
 			// Literal match
+			if pat == "" {
+				// Empty segment from trailing /: match anything remaining.
+				return true
+			}
 			if len(parts) <= pi {
 				return pat == "" && len(pats) == i+1
 			}
@@ -337,7 +375,6 @@ func globMatch(s, pattern string) bool {
 }
 
 func matchGlob(s, pat []byte) bool {
-	// Simple recursive glob matching
 	sIdx := 0
 	pIdx := 0
 	savedS := -1
@@ -348,7 +385,46 @@ func matchGlob(s, pat []byte) bool {
 			savedS = sIdx
 			savedP = pIdx
 			pIdx++
-		} else if pat[pIdx] == '?' || (len(s) > sIdx && pat[pIdx] == s[sIdx]) {
+		} else if pat[pIdx] == '[' {
+			// Find closing ']'
+			end := pIdx + 1
+			for end < len(pat) && pat[end] != ']' {
+				end++
+			}
+			if end < len(pat) {
+				cls := string(pat[pIdx+1 : end])
+				negated := strings.HasPrefix(cls, "!")
+				if negated {
+					cls = cls[1:]
+				}
+				matched := matchCharClass(string(s[sIdx:sIdx+1]), cls)
+				if negated {
+					matched = !matched
+				}
+				if matched {
+					sIdx++
+					pIdx = end + 1
+				} else if savedS >= 0 {
+					sIdx = savedS + 1
+					pIdx = savedP + 1
+					savedS++
+				} else {
+					return false
+				}
+			} else {
+				// Malformed '[': treat as literal
+				if s[sIdx] == '[' {
+					sIdx++
+					pIdx++
+				} else if savedS >= 0 {
+					sIdx = savedS + 1
+					pIdx = savedP + 1
+					savedS++
+				} else {
+					return false
+				}
+			}
+		} else if pat[pIdx] == '?' || pat[pIdx] == s[sIdx] {
 			sIdx++
 			pIdx++
 		} else if savedS >= 0 {
