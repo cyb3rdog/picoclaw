@@ -16,6 +16,103 @@ PicoClaw is an ultra-lightweight AI assistant written entirely in Go. It targets
 
 ---
 
+## Agentic Workflow
+
+These rules govern how AI assistants should approach all work in this codebase. They apply regardless of task size and are designed to be followed by any capable agent.
+
+### Principles
+
+1. **Understand before act** — Never edit code you have not read. State your understanding before changing anything.
+2. **Plan before implement** — Write a numbered plan with file paths and expected outcomes. Get alignment. Then build.
+3. **Minimum context, maximum precision** — Read the least necessary to act with certainty. Expand only when blocked.
+4. **Verify, don't assume** — If something is unknown, research it or ask. Never infer behavior from names or structure alone.
+5. **One active task** — Track work with a todo list. Only one item in progress at a time.
+6. **Quality gates are not optional** — Tests, lint, and build pass before any step is called done.
+
+### Context Economy
+
+Context is finite and expensive. Read the minimum necessary to act with certainty.
+
+- **Search before read.** Use `grep` or `find` to locate before using Read to understand. Never open a file to discover where something is defined.
+- **Read ranges, not whole files.** When you know where the relevant code is, use `offset` + `limit`. A 2000-line file does not need to be fully read to understand one function.
+- **Never re-read.** If a file has been read this session, use what is already known.
+- **Delegate large-output tasks to subagents.** Any task producing hundreds of lines of output belongs in a subagent. The agent returns a summary; raw output never enters the main context.
+- **Skip generated and vendored files.** Never read `go.sum`, `pnpm-lock.yaml`, `*.pb.go`, `dist/`, `vendor/`, or any auto-generated file unless the task is specifically about them.
+- **Stop when the gap is filled.** Before searching, state the specific unknown being resolved. Stop the moment it is answered.
+
+### Development Loop
+
+```
+EXPLORE → PLAN → REFINE → IMPLEMENT → VALIDATE → REFLECT
+```
+
+| Phase | What happens | Exit condition |
+|-------|-------------|---------------|
+| **Explore** | Targeted research. Grep first. Read only what's needed. State unknowns explicitly. | No unresolved unknowns in scope. |
+| **Plan** | Write a numbered plan: action + target file(s) + expected outcome per step. | Plan is complete and written down. |
+| **Refine** | Present the plan. Resolve disagreements before writing a single line of code. | User aligned, or open questions answered. |
+| **Implement** | Execute step by step. One todo active at a time. No scope creep beyond the plan. | All steps done, no partial work. |
+| **Validate** | Run the full quality gate suite. Fix every failure before moving on. | `make check` passes. |
+| **Reflect** | "What's missing?" audit — edge cases, error paths, docs, regressions. | Nothing outstanding, or a new loop is started. |
+
+Skipping **Explore** leads to wrong assumptions. Skipping **Plan** causes scope creep. Skipping **Validate** ships broken code. Skipping **Reflect** leaves tasks half-done.
+
+### Planning Rules
+
+- Number every step. State: what to do, which file(s), and the expected outcome.
+- Flag unknowns before finalising: *"Unknown: whether X — will verify before step N."* A plan with unresolved unknowns is a draft, not a plan.
+- If a plan exceeds ~15 steps, the task needs splitting into a series of smaller loops.
+- Never present a plan as ready if gaps remain. Research first.
+
+### Specialist Agent Dispatch
+
+Use subagents to parallelize independent work and keep the main context clean.
+
+| Task | Agent type | Notes |
+|------|-----------|-------|
+| Locating files, symbols, or patterns | `Explore` | Fastest; excerpt-based; does not flood main context |
+| Architecture or design trade-offs | `Plan` | Returns a structured plan only; no implementation |
+| Deep multi-file codebase research | `Explore` (thorough) | Give each agent a distinct, specific search focus |
+| Self-contained implementation or refactor | `general-purpose` | Prompt must be fully self-contained with all context |
+
+**When dispatching agents:**
+- Provide: relevant file paths, what is already known, and the exact deliverable expected.
+- Do not spawn an agent for work that takes fewer than 3 targeted reads — do it directly.
+- Launch independent agents in parallel (single message, multiple calls) when their inputs do not depend on each other.
+- Synthesize results yourself. Do not chain agents without verifying each intermediate output.
+
+### Quality Gates
+
+**Before implementation starts:**
+- [ ] Relevant source files have been read (not just grepped)
+- [ ] Existing patterns being extended are understood
+- [ ] Plan is written, numbered, and user-aligned
+- [ ] No unresolved unknowns remain in scope
+
+**Before marking each step done:**
+- [ ] Code compiles
+- [ ] Affected tests pass
+- [ ] No new lint errors introduced
+
+**Before closing any task:**
+- [ ] `make check` passes (full suite: deps + fmt + vet + test + lint-docs)
+- [ ] New behaviour is covered by tests, or existing tests are updated
+- [ ] Docs updated if public APIs, config schema, or CLI behaviour changed
+- [ ] "What's missing?" audit: edge cases, error paths, regressions checked
+
+### Anti-patterns
+
+- Edit a file without having read it first
+- Fix a symptom without understanding the root cause
+- Assume a function is unused without grepping its callsites
+- Add abstractions, helpers, or cleanup not required by the stated task
+- Skip `make check` for changes that seem small
+- Mark a todo complete when tests are failing or work is partial
+- Follow a rabbit hole deeper without surfacing it to the user first
+- Use `--no-verify`, force-push, or bypass any hook to unblock yourself
+
+---
+
 ## Repository Layout
 
 ```
