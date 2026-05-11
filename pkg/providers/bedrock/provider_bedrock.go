@@ -137,10 +137,10 @@ func NewProvider(ctx context.Context, opts ...Option) (*Provider, error) {
 
 // converseParams holds the shared request parameters for Converse and ConverseStream.
 type converseParams struct {
-	messages       []types.Message
-	system         []types.SystemContentBlock
+	messages        []types.Message
+	system          []types.SystemContentBlock
 	inferenceConfig *types.InferenceConfiguration
-	toolConfig     *types.ToolConfiguration
+	toolConfig      *types.ToolConfiguration
 }
 
 func buildConverseParams(messages []Message, tools []ToolDefinition, options map[string]any) converseParams {
@@ -174,10 +174,10 @@ func buildConverseParams(messages []Message, tools []ToolDefinition, options map
 	}
 
 	return converseParams{
-		messages:       bedrockMessages,
-		system:         systemPrompts,
+		messages:        bedrockMessages,
+		system:          systemPrompts,
 		inferenceConfig: inferenceConfig,
-		toolConfig:     toolConfig,
+		toolConfig:      toolConfig,
 	}
 }
 
