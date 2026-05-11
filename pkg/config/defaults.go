@@ -47,6 +47,13 @@ func DefaultConfig() *Config {
 		Session: SessionConfig{
 			Dimensions: []string{"chat"},
 		},
+		Evolution: EvolutionConfig{
+			Enabled:         false,
+			Mode:            "observe",
+			MinTaskCount:    2,
+			MinSuccessRatio: 0.7,
+			ColdPathTrigger: "after_turn",
+		},
 		Channels: defaultChannels(),
 		Hooks: HooksConfig{
 			Enabled: true,

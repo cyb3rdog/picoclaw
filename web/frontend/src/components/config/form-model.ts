@@ -26,6 +26,29 @@ export interface CoreConfigForm {
   devicesEnabled: boolean
   monitorUSB: boolean
   swlEnabled: boolean
+  mcpEnabled: boolean
+  mcpDiscoveryEnabled: boolean
+  mcpDiscoveryTTL: string
+  mcpDiscoveryMaxSearchResults: string
+  mcpDiscoveryUseBM25: boolean
+  mcpDiscoveryUseRegex: boolean
+  mcpServers: MCPServerForm[]
+}
+
+export type MCPServerType = "http" | "sse" | "stdio"
+
+export interface MCPServerForm {
+  id: string
+  name: string
+  enabled: boolean
+  deferredOverride: boolean | null
+  type: MCPServerType
+  url: string
+  command: string
+  argsText: string
+  envText: string
+  envFile: string
+  headersText: string
 }
 
 export interface LauncherForm {
@@ -93,6 +116,13 @@ export const EMPTY_FORM: CoreConfigForm = {
   devicesEnabled: false,
   monitorUSB: true,
   swlEnabled: false,
+  mcpEnabled: false,
+  mcpDiscoveryEnabled: false,
+  mcpDiscoveryTTL: "5",
+  mcpDiscoveryMaxSearchResults: "5",
+  mcpDiscoveryUseBM25: true,
+  mcpDiscoveryUseRegex: false,
+  mcpServers: [],
 }
 
 export const EMPTY_LAUNCHER_FORM: LauncherForm = {
@@ -118,6 +148,10 @@ function asBool(value: unknown): boolean {
   return value === true
 }
 
+function asOptionalBool(value: unknown): boolean | null {
+  return typeof value === "boolean" ? value : null
+}
+
 function asNumberString(value: unknown, fallback: string): string {
   if (typeof value === "number" && Number.isFinite(value)) {
     return String(value)
@@ -128,6 +162,54 @@ function asNumberString(value: unknown, fallback: string): string {
   return fallback
 }
 
+function toMCPServerType(value: unknown): MCPServerType {
+  if (value === "http" || value === "sse") {
+    return value
+  }
+  return "stdio"
+}
+
+function makeMCPServerID(name: string): string {
+  const encoded = encodeURIComponent(name)
+  if (encoded.length > 0) {
+    return `mcp-${encoded}`
+  }
+  return `mcp-${Math.random().toString(36).slice(2, 10)}`
+}
+
+function mapMCPServers(value: unknown): MCPServerForm[] {
+  const servers = asRecord(value)
+  return Object.entries(servers).map(([name, rawConfig]) => {
+    const cfg = asRecord(rawConfig)
+    const argsList = Array.isArray(cfg.args)
+      ? cfg.args.filter((item): item is string => typeof item === "string")
+      : []
+    const url = asString(cfg.url)
+    const type =
+      cfg.type === undefined
+        ? url
+          ? "sse"
+          : "stdio"
+        : toMCPServerType(cfg.type)
+    const env = asRecord(cfg.env)
+    const headers = asRecord(cfg.headers)
+
+    return {
+      id: makeMCPServerID(name),
+      name,
+      enabled: cfg.enabled !== false,
+      deferredOverride: asOptionalBool(cfg.deferred),
+      type,
+      url,
+      command: asString(cfg.command),
+      argsText: argsList.join("\n"),
+      envText: JSON.stringify(env, null, 2),
+      envFile: asString(cfg.env_file),
+      headersText: JSON.stringify(headers, null, 2),
+    }
+  })
+}
+
 export function buildFormFromConfig(config: unknown): CoreConfigForm {
   const root = asRecord(config)
   const agents = asRecord(root.agents)
@@ -136,6 +218,8 @@ export function buildFormFromConfig(config: unknown): CoreConfigForm {
   const heartbeat = asRecord(root.heartbeat)
   const devices = asRecord(root.devices)
   const tools = asRecord(root.tools)
+  const mcp = asRecord(tools.mcp)
+  const mcpDiscovery = asRecord(mcp.discovery)
   const cron = asRecord(tools.cron)
   const exec = asRecord(tools.exec)
   const swl = asRecord(tools.swl)
@@ -235,6 +319,29 @@ export function buildFormFromConfig(config: unknown): CoreConfigForm {
       swl.enabled === undefined
         ? EMPTY_FORM.swlEnabled
         : asBool(swl.enabled),
+    mcpEnabled:
+      mcp.enabled === undefined ? EMPTY_FORM.mcpEnabled : asBool(mcp.enabled),
+    mcpDiscoveryEnabled:
+      mcpDiscovery.enabled === undefined
+        ? EMPTY_FORM.mcpDiscoveryEnabled
+        : asBool(mcpDiscovery.enabled),
+    mcpDiscoveryTTL: asNumberString(
+      mcpDiscovery.ttl,
+      EMPTY_FORM.mcpDiscoveryTTL,
+    ),
+    mcpDiscoveryMaxSearchResults: asNumberString(
+      mcpDiscovery.max_search_results,
+      EMPTY_FORM.mcpDiscoveryMaxSearchResults,
+    ),
+    mcpDiscoveryUseBM25:
+      mcpDiscovery.use_bm25 === undefined
+        ? EMPTY_FORM.mcpDiscoveryUseBM25
+        : asBool(mcpDiscovery.use_bm25),
+    mcpDiscoveryUseRegex:
+      mcpDiscovery.use_regex === undefined
+        ? EMPTY_FORM.mcpDiscoveryUseRegex
+        : asBool(mcpDiscovery.use_regex),
+    mcpServers: mapMCPServers(mcp.servers),
   }
 }
 
@@ -274,4 +381,35 @@ export function parseMultilineList(raw: string): string[] {
     .split("\n")
     .map((value) => value.trim())
     .filter((value) => value.length > 0)
+}
+
+export function parseJSONObjectField(
+  rawValue: string,
+  label: string,
+): Record<string, string> {
+  const trimmed = rawValue.trim()
+  if (trimmed === "") {
+    return {}
+  }
+
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(trimmed)
+  } catch {
+    throw new Error(`${label} must be valid JSON.`)
+  }
+
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(`${label} must be a JSON object.`)
+  }
+
+  const entries = Object.entries(parsed as Record<string, unknown>)
+  const result: Record<string, string> = {}
+  for (const [key, value] of entries) {
+    if (typeof value !== "string") {
+      throw new Error(`${label}.${key} must be a string.`)
+    }
+    result[key] = value
+  }
+  return result
 }
