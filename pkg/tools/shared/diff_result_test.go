@@ -26,7 +26,7 @@ func TestDiffResult_UserVisibleUnifiedDiff(t *testing.T) {
 		"```diff",
 		"--- a/tmp/example.txt",
 		"+++ b/tmp/example.txt",
-		"@@ -1,4 +1,4 @@",
+		"@@ -1,3 +1,3 @@",
 		" alpha",
 		"-beta",
 		"+beta 2",
@@ -45,6 +45,42 @@ func TestBuildUnifiedDiff_NoContentChange(t *testing.T) {
 	}
 	if diff != noContentChangeDiffMessage {
 		t.Fatalf("buildUnifiedDiff() = %q, want %q", diff, noContentChangeDiffMessage)
+	}
+}
+
+func TestBuildUnifiedDiff_PreservesTrailingNewlineRemoval(t *testing.T) {
+	diff, err := buildUnifiedDiff("test.txt", []byte("same\n"), []byte("same"))
+	if err != nil {
+		t.Fatalf("buildUnifiedDiff() error = %v", err)
+	}
+
+	for _, want := range []string{
+		"--- a/test.txt",
+		"+++ b/test.txt",
+		" same",
+		"+" + noNewlineAtEOFMarker,
+	} {
+		if !strings.Contains(diff, want) {
+			t.Fatalf("buildUnifiedDiff() missing %q:\n%s", want, diff)
+		}
+	}
+}
+
+func TestBuildUnifiedDiff_PreservesTrailingNewlineAddition(t *testing.T) {
+	diff, err := buildUnifiedDiff("test.txt", []byte("same"), []byte("same\n"))
+	if err != nil {
+		t.Fatalf("buildUnifiedDiff() error = %v", err)
+	}
+
+	for _, want := range []string{
+		"--- a/test.txt",
+		"+++ b/test.txt",
+		" same",
+		"-" + noNewlineAtEOFMarker,
+	} {
+		if !strings.Contains(diff, want) {
+			t.Fatalf("buildUnifiedDiff() missing %q:\n%s", want, diff)
+		}
 	}
 }
 
