@@ -427,3 +427,53 @@ func TestScanWorkspace_PicksUpNewFiles(t *testing.T) {
 		t.Errorf("expected 0 new on rescan, got %d", stats2.New)
 	}
 }
+
+// --- L1: actionable fallthrough response ---
+
+func TestAsk_FallthroughIsActionable(t *testing.T) {
+	m, cleanup := newQueryTestManager(t)
+	defer cleanup()
+
+	result := m.Ask("xyzzy-unrecognizable-42-gibberish-querymiss")
+	if result == "" {
+		t.Error("expected non-empty fallthrough response, got empty string")
+	}
+	if !strings.Contains(result, "scan") {
+		t.Errorf("expected fallthrough response to mention 'scan', got: %s", result)
+	}
+}
+
+// --- L2: help mode ---
+
+func TestHelpText_ContainsSyntaxReference(t *testing.T) {
+	m, cleanup := newQueryTestManager(t)
+	defer cleanup()
+
+	help := m.HelpText()
+	if help == "" {
+		t.Error("expected non-empty help text")
+	}
+	for _, keyword := range []string{"resume", "scan", "sql", "assert", "schema"} {
+		if !strings.Contains(help, keyword) {
+			t.Errorf("expected help text to contain %q", keyword)
+		}
+	}
+}
+
+// --- L5: assert echo ---
+
+func TestAssertNote_EchosIDAndConfidence(t *testing.T) {
+	m, cleanup := newQueryTestManager(t)
+	defer cleanup()
+
+	result := m.AssertNote("pkg/swl/foo.go", "This is a test note", 0.9, "")
+	if !strings.Contains(result, "Recorded") {
+		t.Errorf("expected 'Recorded' in AssertNote result, got: %s", result)
+	}
+	if !strings.Contains(result, "0.90") {
+		t.Errorf("expected confidence '0.90' in AssertNote result, got: %s", result)
+	}
+	if !strings.Contains(result, "[id:") {
+		t.Errorf("expected short entity ID '[id:' in AssertNote result, got: %s", result)
+	}
+}

@@ -1,9 +1,11 @@
 package swl
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -752,4 +754,107 @@ func countAll(m *Manager) int {
 	var n int
 	_ = m.db.QueryRow("SELECT COUNT(*) FROM entities").Scan(&n)
 	return n
+}
+
+// --- B1: workspace label override ---
+
+func TestDeriveLabels_WorkspaceRuleOverride(t *testing.T) {
+	dir := t.TempDir()
+	rulesDir := filepath.Join(dir, ".swl")
+	if err := os.MkdirAll(rulesDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rulesYAML := "version: \"1\"\nlabel_rules:\n  path_prefixes:\n    - prefix: \"myservice/\"\n      role: \"custom-role\"\n      domain: \"custom-domain\"\n"
+	if err := os.WriteFile(filepath.Join(rulesDir, "swl.rules.yaml"), []byte(rulesYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	m, err := NewManager(dir, &Config{})
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	defer m.Close()
+
+	lr := m.DeriveLabels(KnownTypeFile, "myservice/handler.go")
+	if lr.Role != "custom-role" {
+		t.Errorf("expected role %q from workspace override, got %q", "custom-role", lr.Role)
+	}
+	if lr.Domain != "custom-domain" {
+		t.Errorf("expected domain %q from workspace override, got %q", "custom-domain", lr.Domain)
+	}
+}
+
+// --- B3: extraction limit override via rules ---
+
+func TestExtractContent_SymbolLimitFromRules(t *testing.T) {
+	dir := t.TempDir()
+	rulesDir := filepath.Join(dir, ".swl")
+	if err := os.MkdirAll(rulesDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rulesYAML := "version: \"1\"\nfile_rules:\n  symbols:\n    max_per_file: 5\n"
+	if err := os.WriteFile(filepath.Join(rulesDir, "swl.rules.yaml"), []byte(rulesYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	m, err := NewManager(dir, &Config{})
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	defer m.Close()
+
+	var sb strings.Builder
+	for i := range 20 {
+		sb.WriteString(fmt.Sprintf("func Function%d() {}\n", i))
+	}
+
+	fileID := entityID(KnownTypeFile, "big.go")
+	delta := m.ExtractContent(fileID, "big.go", sb.String())
+
+	symbolCount := 0
+	for _, e := range delta.Entities {
+		if e.Type == KnownTypeSymbol {
+			symbolCount++
+		}
+	}
+	if symbolCount > 5 {
+		t.Errorf("expected ≤5 symbols from rules limit override, got %d", symbolCount)
+	}
+}
+
+// --- C1: concurrent EnsureSession safety ---
+
+func TestEnsureSession_ConcurrentSafety(t *testing.T) {
+	m := newTestManager(t)
+
+	const n = 100
+	var mu sync.Mutex
+	seen := map[string]int{}
+
+	var wg sync.WaitGroup
+	wg.Add(n)
+	start := make(chan struct{})
+	for range n {
+		go func() {
+			defer wg.Done()
+			<-start
+			id := m.EnsureSession("concurrent-key")
+			mu.Lock()
+			seen[id]++
+			mu.Unlock()
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	if len(seen) != 1 {
+		t.Errorf("expected exactly 1 unique session UUID across %d concurrent calls, got %d: %v", n, len(seen), seen)
+	}
+	for uuid := range seen {
+		var count int
+		_ = m.db.QueryRow("SELECT COUNT(*) FROM sessions WHERE id = ?", uuid).Scan(&count)
+		if count != 1 {
+			t.Errorf("expected 1 session row for UUID %q, got %d", uuid, count)
+		}
+	}
 }
