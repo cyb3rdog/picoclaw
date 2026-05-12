@@ -88,23 +88,6 @@ const (
 	MethodInferred  ExtractionMethod = "inferred"  // confidence 0.8
 )
 
-// extractionMethodPriority returns a numeric priority for upgrade comparisons.
-// Higher = more authoritative.
-func extractionMethodPriority(m ExtractionMethod) int {
-	switch m {
-	case MethodObserved:
-		return 4
-	case MethodStated:
-		return 3
-	case MethodExtracted:
-		return 2
-	case MethodInferred:
-		return 1
-	default:
-		return 0
-	}
-}
-
 // EntityTuple is the atomic unit for upsert operations.
 type EntityTuple struct {
 	ID               string

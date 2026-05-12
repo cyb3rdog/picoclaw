@@ -36,7 +36,7 @@ func extractToolCallsFromText(text string) []ToolCall {
 		return nil
 	}
 
-	var result []ToolCall
+	result := make([]ToolCall, 0, len(wrapper.ToolCalls))
 	for _, tc := range wrapper.ToolCalls {
 		var args map[string]any
 		json.Unmarshal([]byte(tc.Function.Arguments), &args)

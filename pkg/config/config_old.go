@@ -571,7 +571,7 @@ func v0ProvidersMapToModelList(providers map[string]any, userProvider, userModel
 	// The caller (migrateV0ToV1) would need to pass this information if needed
 	// For now, we skip the user provider/model matching
 
-	var result []any
+	result := make([]any, 0, len(migrations))
 
 	for _, migration := range migrations {
 		// Find the provider in the providers map

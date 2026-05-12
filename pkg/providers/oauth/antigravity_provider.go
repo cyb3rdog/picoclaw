@@ -598,7 +598,7 @@ func FetchAntigravityModels(accessToken, projectID string) ([]AntigravityModelIn
 		return nil, fmt.Errorf("parsing models response: %w", err)
 	}
 
-	var models []AntigravityModelInfo
+	models := make([]AntigravityModelInfo, 0, len(result.Models))
 	for id, info := range result.Models {
 		models = append(models, AntigravityModelInfo{
 			ID:          id,

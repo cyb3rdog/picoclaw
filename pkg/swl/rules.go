@@ -17,7 +17,7 @@ var defaultRulesFS embed.FS
 var defaultQueryFS embed.FS
 
 // QueryIntent maps a regex pattern to a handler method name.
-// Serialised from swl.query.default.yaml via LoadQueryConfig.
+// Serialized from swl.query.default.yaml via LoadQueryConfig.
 type QueryIntent struct {
 	ID        string   `yaml:"id"`
 	Desc      string   `yaml:"description"`
@@ -151,8 +151,8 @@ func LoadRules(workspace, rulesPath string) (*RulesEngine, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := yaml.Unmarshal(defaultData, &r.cfg); err != nil {
-		return nil, err
+	if unmarshalErr := yaml.Unmarshal(defaultData, &r.cfg); unmarshalErr != nil {
+		return nil, unmarshalErr
 	}
 
 	// Load workspace-level overrides if present
@@ -165,8 +165,8 @@ func LoadRules(workspace, rulesPath string) (*RulesEngine, error) {
 	}
 	if len(overrideData) > 0 {
 		var overrideCfg RulesConfig
-		if err := yaml.Unmarshal(overrideData, &overrideCfg); err != nil {
-			return nil, err
+		if unmarshalErr := yaml.Unmarshal(overrideData, &overrideCfg); unmarshalErr != nil {
+			return nil, unmarshalErr
 		}
 		deepMergeRules(&r.cfg, &overrideCfg)
 	}
@@ -240,7 +240,8 @@ func (r *RulesEngine) compileFromConfig() {
 	r.MaxTopics = maxTopics
 }
 
-// This replaces the hardcoded DeriveLabels() in labels.go when Phase B is active.
+// DeriveLabels computes semantic labels using config-driven rules, replacing the
+// hardcoded DeriveLabels() in labels.go when Phase B is active.
 func (r *RulesEngine) DeriveLabels(entityType EntityType, name string) LabelResult {
 	var lr LabelResult
 
@@ -294,23 +295,6 @@ func (r *RulesEngine) DeriveLabels(entityType EntityType, name string) LabelResu
 	return lr
 }
 
-func (lr *LabelResult) applyNamePatternRulesFrom(baseName string, rules []NamePatternRule) {
-	for _, rule := range rules {
-		if matchLabelPattern(baseName, rule.Pattern) {
-			if rule.Role != "" && lr.Role == "" {
-				lr.Role = rule.Role
-			}
-			if rule.Kind != "" && lr.Kind == "" {
-				lr.Kind = rule.Kind
-			}
-			if rule.Domain != "" && lr.Domain == "" {
-				lr.Domain = rule.Domain
-			}
-			break
-		}
-	}
-}
-
 // CompiledIntent pairs a compiled regex with handler metadata for Tier 1 dispatch.
 type CompiledIntent struct {
 	ID        string
@@ -330,8 +314,8 @@ func LoadQueryConfig(workspace, queryPath string) (*QueryConfig, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := yaml.Unmarshal(data, cfg); err != nil {
-		return nil, err
+	if unmarshalErr := yaml.Unmarshal(data, cfg); unmarshalErr != nil {
+		return nil, unmarshalErr
 	}
 
 	// Override with workspace-level if present
@@ -344,8 +328,8 @@ func LoadQueryConfig(workspace, queryPath string) (*QueryConfig, error) {
 	}
 	if len(overrideData) > 0 {
 		var overrideCfg QueryConfig
-		if err := yaml.Unmarshal(overrideData, &overrideCfg); err != nil {
-			return nil, err
+		if unmarshalErr := yaml.Unmarshal(overrideData, &overrideCfg); unmarshalErr != nil {
+			return nil, unmarshalErr
 		}
 		mergeQueryConfig(cfg, &overrideCfg)
 	}
@@ -353,9 +337,8 @@ func LoadQueryConfig(workspace, queryPath string) (*QueryConfig, error) {
 	return cfg, nil
 }
 
-// LoadQueryConfigWith loads intents + templates from a QueryConfig struct,
+// CompileQueryConfig loads intents + templates from a QueryConfig struct,
 // compiling all regexes into CompiledIntent for the Tier 1 dispatcher.
-// Call this after LoadQueryConfig or with a custom QueryConfig.
 func CompileQueryConfig(cfg *QueryConfig) []CompiledIntent {
 	intents := make([]CompiledIntent, 0, len(cfg.Intents))
 	for _, intent := range cfg.Intents {

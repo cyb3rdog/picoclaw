@@ -448,7 +448,7 @@ func activeSkillNames(agent *AgentInstance, opts processOptions) []string {
 		return nil
 	}
 
-	var resolved []string
+	resolved := make([]string, 0, len(combined))
 	seen := make(map[string]struct{}, len(combined))
 	for _, name := range combined {
 		name = strings.TrimSpace(name)

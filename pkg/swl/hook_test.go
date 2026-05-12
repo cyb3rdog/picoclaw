@@ -471,16 +471,16 @@ func TestExtractLLMResponse_ReasoningConfidenceCapped(t *testing.T) {
 		t.Fatal("expected non-nil delta")
 	}
 	// Cap confidence as AfterLLM does
-	cap := m.cfg.EffectiveReasoningConfidenceCap()
+	confCap := m.cfg.EffectiveReasoningConfidenceCap()
 	for i := range delta.Entities {
-		if delta.Entities[i].Confidence > cap {
-			delta.Entities[i].Confidence = cap
+		if delta.Entities[i].Confidence > confCap {
+			delta.Entities[i].Confidence = confCap
 		}
 		delta.Entities[i].ExtractionMethod = MethodInferred
 	}
 	for _, e := range delta.Entities {
-		if e.Confidence > cap {
-			t.Errorf("entity %s confidence %f exceeds cap %f", e.Name, e.Confidence, cap)
+		if e.Confidence > confCap {
+			t.Errorf("entity %s confidence %f exceeds cap %f", e.Name, e.Confidence, confCap)
 		}
 		if e.ExtractionMethod != MethodInferred {
 			t.Errorf("entity %s method %s expected inferred", e.Name, e.ExtractionMethod)

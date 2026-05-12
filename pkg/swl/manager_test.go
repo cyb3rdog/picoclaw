@@ -385,7 +385,7 @@ func TestExtractContent_AntiBloomLimits(t *testing.T) {
 		sb.WriteString("func ")
 		sb.WriteString("Function")
 		sb.WriteRune(rune('A' + i%26))
-		sb.WriteString(string(rune('0' + i/26)))
+		sb.WriteRune(rune('0' + i/26))
 		sb.WriteString("() {}\n")
 	}
 

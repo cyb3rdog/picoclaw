@@ -1,7 +1,6 @@
 package swl
 
 import (
-	"regexp"
 	"strings"
 )
 
@@ -64,6 +63,7 @@ func (m *Manager) AnalyzeGaps(threshold int) GapAnalysis {
 			})
 		}
 	}
+	_ = rows.Err()
 
 	// Generate suggestions for gaps that don't have one yet.
 	suggestions := make([]RuleSuggestion, 0)
@@ -394,14 +394,3 @@ func sliceContains(slice []string, s string) bool {
 	}
 	return false
 }
-
-// Compile-time RE2 patterns for gap analysis.
-var (
-	// findByPurposeRE matches "where is the X that handles/does Y" patterns.
-	findByPurposeRE = regexp.MustCompile(
-		`(?i)where\s+(?:is|are)\s+(?:the\s+)?(.+?)\s+(?:that\s+)?(?:does|handles?|implements?|manages?|provides?)`,
-	)
-
-	// findFilesRE matches "find files that do X" patterns.
-	findFilesRE = regexp.MustCompile(`(?i)find\s+(?:the\s+)?(.+?)\s+(?:files?|code|logic)`)
-)

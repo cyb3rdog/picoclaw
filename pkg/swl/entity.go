@@ -22,7 +22,7 @@ var cascadeRelIn string
 func init() {
 	parts := make([]string, len(CascadeRels))
 	for i, r := range CascadeRels {
-		parts[i] = "'" + string(r) + "'"
+		parts[i] = "'" + r + "'"
 	}
 	cascadeRelIn = "(" + strings.Join(parts, ",") + ")"
 }
@@ -156,7 +156,7 @@ func (w *entityWriter) invalidateChildrenLocked(fileID, now string) {
 			SELECT DISTINCT to_id FROM edges
 			WHERE from_id = ? AND rel IN ` + cascadeRelIn + `
 		) AND fact_status NOT IN ('deleted','stale')`
-	w.db.Exec(invalidateSQL, now, fileID) //nolint:errcheck — best-effort cascade
+	w.db.Exec(invalidateSQL, now, fileID) //nolint:errcheck // best-effort cascade
 }
 
 // checkAndInvalidate compares the current content_hash of entityID with a

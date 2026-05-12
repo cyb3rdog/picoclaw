@@ -145,7 +145,7 @@ func (h *Handler) handleSWLGraph(w http.ResponseWriter, r *http.Request) {
 			ph := "'" + strings.Join(sessionIDs, "','") + "'"
 			sessionEdgeFilter = `AND (e.source_session IN (` + ph + `) OR n1.type = 'Session' OR n2.type = 'Session')`
 		}
-		// Fall back to map behaviour if no sessions found.
+		// Fall back to map behavior if no sessions found.
 	}
 
 	// Phase 1: Select the highest-quality edges (both endpoints non-deleted).
@@ -164,6 +164,7 @@ func (h *Handler) handleSWLGraph(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	defer edgeRows.Close()
 
 	links := make([]swlLink, 0, maxEdges)
 	neededIDs := map[string]bool{}
@@ -185,7 +186,7 @@ func (h *Handler) handleSWLGraph(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
-	edgeRows.Close()
+	_ = edgeRows.Err()
 
 	// Phase 2: Fetch entity details for all edge-endpoint IDs in batches of 400
 	// (SQLite 999-parameter limit).
@@ -243,6 +244,7 @@ func (h *Handler) handleSWLGraph(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		scanNode(brows)
+		_ = brows.Err()
 		brows.Close()
 	}
 
@@ -268,7 +270,8 @@ func (h *Handler) handleSWLGraph(w http.ResponseWriter, r *http.Request) {
 		`, remaining*3)
 		if ferr == nil {
 			scanNode(fillRows)
-			fillRows.Close()
+			_ = fillRows.Err()
+			fillRows.Close() //nolint:sqlclosecheck // explicitly closed after use
 		}
 		if len(nodes) > maxNodes {
 			nodes = nodes[:maxNodes]
@@ -349,6 +352,7 @@ func (h *Handler) handleSWLNeighborhood(w http.ResponseWriter, r *http.Request) 
 	nodeDegree := map[string]int{}
 	hop1Neighbors := map[string]bool{}
 
+	defer hop1Rows.Close()
 	for hop1Rows.Next() {
 		var l swlLink
 		if hop1Rows.Scan(&l.Source, &l.Rel, &l.Target, &l.SessionID) != nil {
@@ -365,7 +369,7 @@ func (h *Handler) handleSWLNeighborhood(w http.ResponseWriter, r *http.Request) 
 		nodeDegree[l.Source]++
 		nodeDegree[l.Target]++
 	}
-	hop1Rows.Close()
+	_ = hop1Rows.Err()
 
 	// Depth-2 pass: edges between any two hop-1 neighbors (cross-links only;
 	// skip edges that expand to unknown nodes to keep the graph focused).
@@ -385,18 +389,21 @@ func (h *Handler) handleSWLNeighborhood(w http.ResponseWriter, r *http.Request) 
 			ph := strings.Repeat("?,", len(batch))
 			ph = ph[:len(ph)-1]
 			// Build args twice (from_id IN (...) AND to_id IN (...))
-			args := make([]any, len(batch)*2)
-			for j, id := range batch {
-				args[j] = id
-				args[len(batch)+j] = id
+			args := make([]any, 0, len(batch)*2+1)
+			for _, id := range batch {
+				args = append(args, id)
 			}
+			for _, id := range batch {
+				args = append(args, id)
+			}
+			args = append(args, maxEdges-len(links))
 			hop2Rows, err := db.QueryContext(r.Context(), `
 				SELECT e.from_id, e.rel, e.to_id, COALESCE(e.source_session,'')
 				FROM edges e
 				JOIN entities n1 ON n1.id = e.from_id AND n1.fact_status != 'deleted'
 				JOIN entities n2 ON n2.id = e.to_id   AND n2.fact_status != 'deleted'
 				WHERE e.from_id IN (`+ph+`) AND e.to_id IN (`+ph+`)
-				LIMIT ?`, append(args, maxEdges-len(links))...)
+				LIMIT ?`, args...)
 			if err == nil {
 				for hop2Rows.Next() {
 					var l swlLink
@@ -410,7 +417,8 @@ func (h *Handler) handleSWLNeighborhood(w http.ResponseWriter, r *http.Request) 
 					nodeDegree[l.Source]++
 					nodeDegree[l.Target]++
 				}
-				hop2Rows.Close()
+				_ = hop2Rows.Err()
+				hop2Rows.Close() //nolint:sqlclosecheck // explicitly closed per batch iteration
 			}
 		}
 	}
@@ -463,7 +471,8 @@ func (h *Handler) handleSWLNeighborhood(w http.ResponseWriter, r *http.Request) 
 			continue
 		}
 		scanNode(brows)
-		brows.Close()
+		_ = brows.Err()
+		brows.Close() //nolint:sqlclosecheck // explicitly closed per batch iteration
 	}
 
 	// Re-filter edges.
@@ -509,6 +518,7 @@ func swlRecentSessionIDs(r *http.Request, db *sql.DB, n int) []string {
 			ids = append(ids, id)
 		}
 	}
+	_ = rows.Err()
 	return ids
 }
 
@@ -562,6 +572,7 @@ func (h *Handler) handleSWLStats(w http.ResponseWriter, r *http.Request) {
 			data.Rows = append(data.Rows, sr)
 		}
 	}
+	_ = rows.Err()
 	db.QueryRow("SELECT COUNT(*) FROM edges").Scan(&data.EdgeCount) //nolint:errcheck
 
 	w.Header().Set("Content-Type", "application/json")
@@ -625,7 +636,7 @@ func computeHealth(ctx context.Context, db *sql.DB, dbPath string) swlHealthData
 		}
 	}
 
-	level := "good"
+	var level string
 	switch {
 	case totalEntities == 0:
 		level = "empty"
@@ -718,6 +729,7 @@ func (h *Handler) handleSWLSessions(w http.ResponseWriter, r *http.Request) {
 		s.Summary = summary.String
 		sessions = append(sessions, s)
 	}
+	_ = rows.Err()
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(sessions) //nolint:errcheck
@@ -769,6 +781,7 @@ func (h *Handler) handleSWLOverview(w http.ResponseWriter, r *http.Request) {
 				out.Stats.Rows = append(out.Stats.Rows, sr)
 			}
 		}
+		_ = srows.Err()
 	}
 	db.QueryRowContext(r.Context(), "SELECT COUNT(*) FROM edges").Scan(&out.Stats.EdgeCount) //nolint:errcheck
 
@@ -793,6 +806,7 @@ func (h *Handler) handleSWLOverview(w http.ResponseWriter, r *http.Request) {
 			s.Summary = summary.String
 			out.Sessions = append(out.Sessions, s)
 		}
+		_ = rrows.Err()
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -832,7 +846,7 @@ func (h *Handler) handleSWLStream(w http.ResponseWriter, r *http.Request) {
 		flusher.Flush()
 	}
 
-	// Initialise watermark at connect time so we only stream changes from now on.
+	// Initialize watermark at connect time so we only stream changes from now on.
 	// This prevents re-flooding data that the initial REST call already delivered.
 	var lastModAt string
 	if db != nil {
@@ -910,7 +924,8 @@ func (h *Handler) handleSWLStream(w http.ResponseWriter, r *http.Request) {
 				updates = append(updates, n)
 			}
 		}
-		rows.Close()
+		_ = rows.Err()
+		rows.Close() //nolint:sqlclosecheck // explicitly closed per poll iteration
 
 		if len(updates) > 0 && lastProcessedModAt != "" {
 			lastModAt = lastProcessedModAt
@@ -993,7 +1008,8 @@ func (h *Handler) handleSWLTopology(w http.ResponseWriter, r *http.Request) {
 				count++
 			}
 		}
-		nodeRows.Close()
+		_ = nodeRows.Err()
+		nodeRows.Close() //nolint:sqlclosecheck // explicitly closed per page iteration
 
 		if count < nodesPerPage {
 			break
@@ -1029,7 +1045,8 @@ func (h *Handler) handleSWLTopology(w http.ResponseWriter, r *http.Request) {
 				count++
 			}
 		}
-		edgeRows.Close()
+		_ = edgeRows.Err()
+		edgeRows.Close() //nolint:sqlclosecheck // explicitly closed per page iteration
 
 		if count < edgesPerPage {
 			break

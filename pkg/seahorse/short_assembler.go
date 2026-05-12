@@ -151,7 +151,7 @@ func (a *Assembler) Assemble(ctx context.Context, convID int64, input AssembleIn
 	}
 
 	// Build Summary field: all XML summaries + system prompt addition
-	var summaryParts []string
+	summaryParts := make([]string, 0, len(summaries))
 	for _, sum := range summaries {
 		if sum.Content == "" {
 			continue

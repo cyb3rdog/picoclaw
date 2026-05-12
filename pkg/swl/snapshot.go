@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 )
 
@@ -35,14 +34,12 @@ const snapshotMaxDepth = 3
 // we only need the opening paragraphs for description extraction.
 const snapshotMaxAnchorBytes = 8192
 
-var markdownH1RE = regexp.MustCompile(`(?m)^#\s+.+`)
-
 // BuildSnapshot produces a bounded workspace semantic snapshot by walking up
 // to snapshotMaxDepth levels of the workspace.  It emits:
 //   - AnchorDocument entities for README-class and manifest files (with
 //     extracted description stored in metadata["description"])
 //   - SemanticArea entities for directories that contain anchor documents
-//     or have a recognisable content profile
+//     or have a recognizable content profile
 //
 // This replaces the per-file ExtractContent call that was previously run
 // inside ScanWorkspace, eliminating the scan-time entity bloat.
@@ -81,7 +78,7 @@ func (m *Manager) snapshotDir(absRoot, path string, depth int, delta *GraphDelta
 
 	extCounts := map[string]int{}
 	totalFiles := 0
-	var anchorIDs []string
+	anchorIDs := make([]string, 0, len(entries))
 
 	for _, entry := range entries {
 		name := entry.Name()
@@ -251,7 +248,7 @@ func extractDescription(filename, content string) string {
 func extractMarkdownDescription(content string) string {
 	lines := strings.Split(content, "\n")
 	inParagraph := false
-	var para []string
+	para := make([]string, 0, len(lines))
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "#") {

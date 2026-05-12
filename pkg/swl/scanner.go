@@ -17,27 +17,6 @@ type ScanStats struct {
 	Skipped int
 }
 
-var skipDirs = map[string]bool{
-	".git": true, ".svn": true, ".hg": true,
-	"node_modules": true, "vendor": true, ".venv": true,
-	"venv": true, "__pycache__": true, ".tox": true,
-	"dist": true, "build": true, ".build": true,
-	".swl": true, // never index the SWL DB directory itself
-}
-
-var skipExts = map[string]bool{
-	".png": true, ".jpg": true, ".jpeg": true, ".gif": true,
-	".bmp": true, ".ico": true, ".svg": true, ".webp": true,
-	".pdf": true, ".doc": true, ".docx": true, ".xls": true,
-	".xlsx": true, ".ppt": true, ".pptx": true,
-	".zip": true, ".tar": true, ".gz": true, ".bz2": true,
-	".xz": true, ".7z": true, ".rar": true,
-	".so": true, ".a": true, ".o": true, ".dylib": true,
-	".exe": true, ".dll": true, ".bin": true,
-	".db": true, ".sqlite": true, ".sqlite3": true,
-	".lock": true,
-}
-
 // ScanWorkspace does an incremental mtime-based walk of root, upserting
 // File and Directory entities and extracting content for new/changed files.
 // It also tombstones files that were previously indexed but no longer exist.
@@ -100,7 +79,7 @@ func (m *Manager) ScanWorkspace(root string, sessionKey ...string) (ScanStats, e
 	err = filepath.WalkDir(root, func(path string, d os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			stats.Skipped++
-			return nil
+			return nil //nolint:nilerr // skip inaccessible entries; nil tells WalkDir to continue
 		}
 
 		name := d.Name()
@@ -119,7 +98,7 @@ func (m *Manager) ScanWorkspace(root string, sessionKey ...string) (ScanStats, e
 			// ensures both paths to the same file produce the same entity ID.
 			relPath := path
 			if m.workspace != "" {
-				if r, err := filepath.Rel(m.workspace, path); err == nil && !strings.HasPrefix(r, "..") {
+				if r, relErr := filepath.Rel(m.workspace, path); relErr == nil && !strings.HasPrefix(r, "..") {
 					relPath = r
 				}
 			}
@@ -160,15 +139,15 @@ func (m *Manager) ScanWorkspace(root string, sessionKey ...string) (ScanStats, e
 		// Normalize to workspace-relative for consistent entity IDs.
 		relPath := path
 		if m.workspace != "" {
-			if r, err := filepath.Rel(m.workspace, path); err == nil && !strings.HasPrefix(r, "..") {
+			if r, relErr := filepath.Rel(m.workspace, path); relErr == nil && !strings.HasPrefix(r, "..") {
 				relPath = r
 			}
 		}
 
-		info, err := d.Info()
-		if err != nil {
+		info, infoErr := d.Info()
+		if infoErr != nil {
 			stats.Skipped++
-			return nil
+			return nil //nolint:nilerr // skip unreadable file entries; nil tells WalkDir to continue
 		}
 		if info.Size() > maxSize {
 			stats.Skipped++

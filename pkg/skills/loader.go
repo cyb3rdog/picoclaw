@@ -198,7 +198,7 @@ func (sl *SkillsLoader) BuildSkillsSummary() string {
 		return ""
 	}
 
-	var lines []string
+	lines := make([]string, 0, 1+len(allSkills)*5)
 	lines = append(lines, "<skills>")
 	for _, s := range allSkills {
 		escapedName := escapeXML(s.Name)

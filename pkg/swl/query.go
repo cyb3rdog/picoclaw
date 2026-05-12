@@ -406,6 +406,7 @@ func (m *Manager) labelSearch(hint string) string {
 		}
 		out = append(out, line)
 	}
+	_ = rows.Err()
 
 	// Fallback: directory-based search if no label matches
 	if scoredRows == 0 {
@@ -435,6 +436,7 @@ func (m *Manager) labelSearch(hint string) string {
 					out = append(out, line)
 				}
 			}
+			_ = dirRows.Err()
 		}
 	}
 
@@ -461,8 +463,9 @@ func extractSearchTerms(hint string) []string {
 		"code": true, "logic": true, "my": true, "this": true, "all": true,
 		"some": true, "any": true, "do": true, "does": true,
 	}
-	var terms []string
-	for _, w := range strings.Fields(strings.ToLower(hint)) {
+	words := strings.Fields(strings.ToLower(hint))
+	terms := make([]string, 0, len(words))
+	for _, w := range words {
 		w = strings.TrimSpace(w)
 		if w == "" || len(w) < 2 {
 			continue
@@ -512,6 +515,7 @@ func (m *Manager) askWorkspacePurpose() string {
 		}
 		out = append(out, line)
 	}
+	_ = rows.Err()
 
 	// Also pull the most recent session goal.
 	var goal sql.NullString
@@ -567,6 +571,7 @@ func (m *Manager) askSemanticAreas() string {
 		}
 		out = append(out, line)
 	}
+	_ = rows.Err()
 	if len(out) == 0 {
 		return "[SWL] No semantic areas indexed yet. Run query_swl {\"scan\":true}."
 	}
@@ -606,6 +611,7 @@ func (m *Manager) askAnchorDocuments() string {
 		}
 		out = append(out, line)
 	}
+	_ = rows.Err()
 	if len(out) == 0 {
 		return "[SWL] No anchor documents indexed yet. Run query_swl {\"scan\":true}."
 	}
@@ -676,6 +682,7 @@ func (m *Manager) askFileDetail(hint string) string {
 				syms = append(syms, s)
 			}
 		}
+		_ = symRows.Err()
 		if len(syms) > 0 {
 			out += "\n  Symbols: " + strings.Join(syms, ", ")
 		}
@@ -696,6 +703,7 @@ func (m *Manager) askFileDetail(hint string) string {
 				tasks = append(tasks, truncate(t, 80))
 			}
 		}
+		_ = taskRows.Err()
 		if len(tasks) > 0 {
 			out += "\n  Tasks: " + strings.Join(tasks, "; ")
 		}
@@ -731,6 +739,7 @@ func (m *Manager) askSymbols(hint, symType string) string {
 			out = append(out, fmt.Sprintf("  %s (depth %d)", name, depth))
 		}
 	}
+	_ = rows.Err()
 	if len(out) == 0 {
 		return "[SWL] No symbols found" + suffix(hint)
 	}
@@ -805,6 +814,7 @@ func (m *Manager) askStale() string {
 			out = append(out, fmt.Sprintf("  [%s] %s", t, name))
 		}
 	}
+	_ = rows.Err()
 	if len(out) == 0 {
 		return "[SWL] No stale entities — knowledge graph is current."
 	}
@@ -844,6 +854,7 @@ func (m *Manager) askComplexity() string {
 			out = append(out, fmt.Sprintf("  %3d symbols  %s", count, name))
 		}
 	}
+	_ = rows.Err()
 	if len(out) == 0 {
 		return "[SWL] No complexity data yet."
 	}
@@ -870,6 +881,7 @@ func (m *Manager) askTopDeps() string {
 			out = append(out, fmt.Sprintf("  %3d files  %s", count, name))
 		}
 	}
+	_ = rows.Err()
 	if len(out) == 0 {
 		return "[SWL] No dependency data yet."
 	}
@@ -925,6 +937,7 @@ func (m *Manager) askSessions() string {
 		}
 		out = append(out, line)
 	}
+	_ = rows.Err()
 	if len(out) == 0 {
 		return "[SWL] No sessions recorded yet."
 	}
@@ -993,6 +1006,7 @@ func (m *Manager) tryTier3(question string) string {
 			out = append(out, fmt.Sprintf("  [%s] %s (%s)", etype, name, status))
 		}
 	}
+	_ = rows.Err()
 	if len(out) == 0 {
 		return ""
 	}
@@ -1104,14 +1118,13 @@ func (m *Manager) Stats() string {
 			out = append(out, fmt.Sprintf("  %-14s %6d %8d %6d", t, total, verified, stale))
 		}
 	}
+	_ = rows.Err()
 	var edgeCount int
 	m.db.QueryRow("SELECT COUNT(*) FROM edges").Scan(&edgeCount) //nolint:errcheck
 	out = append(out, fmt.Sprintf("\n  Edges: %d", edgeCount))
 	return "[SWL] Graph stats:\n" + strings.Join(out, "\n")
 }
 
-// KnowledgeGaps returns entities with low confidence or unknown status,
-// plus recurring missed queries and their rule suggestions (Phase C).
 // HelpText returns a concise query syntax reference for LLMs operating under
 // compressed context that may have lost the tool description.
 func (m *Manager) HelpText() string {
@@ -1133,6 +1146,8 @@ func (m *Manager) HelpText() string {
 Tip: always call query_swl before re-reading files — the graph may already know.`
 }
 
+// KnowledgeGaps returns entities with low confidence or unknown status,
+// plus recurring missed queries and their rule suggestions (Phase C).
 func (m *Manager) KnowledgeGaps() string {
 	// Entity gaps.
 	rows, err := m.db.Query(
@@ -1153,6 +1168,7 @@ func (m *Manager) KnowledgeGaps() string {
 			entityGaps = append(entityGaps, fmt.Sprintf("  [%s] %.2f %s  %s", status, conf, t, name))
 		}
 	}
+	_ = rows.Err()
 
 	// Query gaps with suggestions (Phase C).
 	analysis := m.AnalyzeGaps(3)
@@ -1192,7 +1208,7 @@ func (m *Manager) SuggestRules() string {
 	if len(analysis.RuleSuggestions) == 0 {
 		return "[SWL] No rule suggestions — no recurring query gaps (≥3 misses) yet."
 	}
-	var out []string
+	out := make([]string, 0, len(analysis.RuleSuggestions)+1)
 	out = append(out, "[SWL] Rule suggestions (add to ~/.swl/swl.rules.yaml):\n")
 	for i, s := range analysis.RuleSuggestions {
 		out = append(out, fmt.Sprintf("\n--- Suggestion %d (%s) ---\n  Why: %s\n  %s",
@@ -1316,6 +1332,7 @@ func (m *Manager) SafeQuery(sqlStr string) (string, error) {
 		lines = append(lines, strings.Join(parts, "\t"))
 		count++
 	}
+	_ = rows.Err()
 	return strings.Join(lines, "\n"), nil
 }
 

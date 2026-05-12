@@ -127,8 +127,9 @@ func ParseIgnoreFile(path string) (*ignoreMatcher, error) {
 
 // parseIgnorePatterns converts a .swlignore file content into a list of patterns.
 func parseIgnorePatterns(content string) []ignorePattern {
-	var patterns []ignorePattern
-	for _, line := range strings.Split(content, "\n") {
+	splitLines := strings.Split(content, "\n")
+	patterns := make([]ignorePattern, 0, len(splitLines))
+	for _, line := range splitLines {
 		line = strings.TrimRight(line, " \t\r")
 		// Skip empty lines and comments
 		if line == "" || strings.HasPrefix(line, "#") {

@@ -387,7 +387,7 @@ func HtmlToMarkdown(htmlStr string) (string, error) {
 	res = reEmptyHeader.ReplaceAllString(res, "")
 
 	lines := strings.Split(res, "\n")
-	var cleanLines []string
+	cleanLines := make([]string, 0, len(lines))
 	for _, line := range lines {
 		line = strings.TrimRight(line, " \t")
 		cleanTest := strings.TrimSpace(line)

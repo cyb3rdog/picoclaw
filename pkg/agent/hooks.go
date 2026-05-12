@@ -420,7 +420,7 @@ type systemMessageFingerprint struct {
 }
 
 func systemMessageFingerprints(messages []providers.Message) []systemMessageFingerprint {
-	var fingerprints []systemMessageFingerprint
+	fingerprints := make([]systemMessageFingerprint, 0, len(messages))
 	for i, msg := range messages {
 		if msg.Role != "system" {
 			continue

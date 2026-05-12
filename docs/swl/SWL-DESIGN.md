@@ -371,17 +371,15 @@ Path pattern → semantic label derivation. `labels.go` + `scanner.go` + `snapsh
 **New files:** `pkg/swl/query.go` refactored with `labelSearch()` handler. 30+ Tier 1 patterns matching workspace purpose, semantic areas, file detail, find-by-purpose, symbols, tasks, imports, files, stale, complexity, deps, recent, URLs, sessions, stats, gaps, schema.
 **Modified:** `query.go` — `Ask()` dispatches via tryYAMLIntents → dispatchHandler → tryHardcodedPatterns → tryTier2 → tryTier3 pipeline; `manager.go` — loads query intents from `swl.query.default.yaml` at init.
 
-### Phase B — ⚠️ Infrastructure complete; B1 and B3 wiring pending (2026-05-08)
+### Phase B — ✅ Done (2026-05-12)
 Externalize extraction and query logic to `swl.rules.yaml` and `swl.query.yaml`. YAML intents tried first; hardcoded fallbacks preserved for forward compatibility. Zero behavioral change when no workspace overrides present.
 
 **New files:** `pkg/swl/rules.go` (RulesEngine, QueryConfig, CompiledIntent, LoadRules, LoadQueryConfig, CompileQueryConfig); `pkg/swl/swl.rules.default.yaml` (embedded, 30 path prefix rules, 18 name patterns, 35 content types, extraction limits, noise symbols); `pkg/swl/swl.query.default.yaml` (embedded, 18 Tier 1 intents, 3 Tier 2 SQL templates, label search weights); `pkg/swl/gap_analysis.go` (AnalyzeGaps, SuggestRules, RuleSuggestion, GapEntry).
 **Modified:** `manager.go` (loads rules + query intents at init, `m.rules` field); `query.go` (tryYAMLIntents, tryYAMLTier2, tryHardcodedPatterns, dispatchHandler pipeline); `scanner.go`, `snapshot.go` (use `m.DeriveLabels()` via RulesEngine when available).
 **New schema:** `query_gaps.suggestion TEXT` column (migration on open). Deep-merge workspace-level `{workspace}/.swl/swl.rules.yaml` / `{workspace}/.swl/swl.query.yaml` overrides.
 
-**Open gaps (see § 11 Known Gaps):**
-- **B1**: `scanner.go` and `snapshot.go` call `DeriveLabels()` from `labels.go` (hardcoded), not `m.rules.DeriveLabels()`. Workspace label rule overrides are silently ignored.
-- **B3**: `extractor.go` uses package-level constants for limits, not `m.rules.ExtractionLimits`. Workspace limit overrides are silently ignored.
-- **B5**: `query_swl {"snapshot":true}` not implemented (minor; covered indirectly by existing handlers).
+**B1 (wired):** `Manager.DeriveLabels()` delegates to `m.rules.DeriveLabels()`; workspace label rule overrides in `.swl/swl.rules.yaml` are honoured at scan time.
+**B3 (wired):** `ExtractContent()` receives limits from `m.MaxSymbols()`, `m.MaxImports()`, etc.; workspace limit overrides (important for constrained hardware) are honoured.
 
 ### Phase C — ✅ Done (2026-05-07)
 Activate autonomous feedback loop. Self-improvement with use across sessions and agents. Gap → candidate rule generation.
@@ -394,63 +392,19 @@ Activate autonomous feedback loop. Self-improvement with use across sessions and
 
 ## 11. Known Gaps
 
-These are confirmed implementation gaps — the design is correct, the wiring is missing.
+_As of 2026-05-12, all previously identified gaps (B1, B3, LLM-1 through LLM-5) have been resolved._
 
-### B1 — Label rules not wired to RulesEngine
+| ID | Gap | Resolution |
+|----|-----|-----------|
+| B1 | Label rules not wired | `Manager.DeriveLabels()` delegates to `m.rules.DeriveLabels()`; workspace overrides honoured |
+| B3 | Extraction limits not wired | `ExtractContent()` receives limits from `m.MaxSymbols()` etc.; workspace overrides honoured |
+| LLM-1 | Silent query fallthrough | `fallthroughResponse()` returns actionable next-step hint on every miss |
+| LLM-2 | No inline help mode | `HelpText()` + `{"help":true}` operation added |
+| LLM-3 | No staleness signal at use | `PreHook` checks `fact_status`; prepends stale notice to tool result in `AfterTool` |
+| LLM-4 | Gap recording silent | First-miss response includes "(Query recorded — repeated misses generate candidate rules automatically.)" |
+| LLM-5 | Assert no confirmation echo | `AssertNote()` returns `"Recorded: '<fact>' on entity '<name>' [id: <short-id>] at confidence <n>"` |
 
-**Files:** `pkg/swl/labels.go`, `pkg/swl/rules.go`, `pkg/swl/scanner.go`, `pkg/swl/snapshot.go`
-
-`DeriveLabels()` in `labels.go` contains a hardcoded copy of the path-prefix, name-pattern, and content-type rules that also exist in `swl.rules.default.yaml`. `scanner.go` and `snapshot.go` call the `labels.go` function directly. `m.rules.DeriveLabels()` in `rules.go` (which reads from YAML) is never called.
-
-**Consequence:** Workspace-level label rule overrides in `.swl/swl.rules.yaml` are silently ignored. R3 (configurable extractor) is not met for labels.
-
-**Fix:** `Manager.DeriveLabels()` must delegate to `m.rules.DeriveLabels()`. `labels.go` becomes a pure fallback for nil-rules scenarios.
-
-### B3 — Extraction limits not wired to RulesEngine
-
-**Files:** `pkg/swl/extractor.go`, `pkg/swl/inference.go`, `pkg/swl/config.go`
-
-`extractor.go` declares five package-level constants (`maxSymbols=60` etc.). `swl.rules.default.yaml` has a correct `extraction_limits` block. `Config` has `EffectiveMaxFileSize()` helpers but no equivalent for symbol/import/task/section/URL limits.
-
-**Consequence:** Per-workspace limit tuning is impossible without a Go code change. Important for constrained hardware (RPi Zero).
-
-**Fix:** Pass extraction limits from `m.rules.ExtractionLimits` (or `m.cfg`) into `ExtractContent()` and related calls.
-
-### LLM-1 — Silent query fallthrough
-
-**File:** `pkg/swl/query.go`
-
-When all three query tiers return no results, `Ask()` returns an empty string. The LLM interprets this as "SWL doesn't know" and reaches for `read_file` directly, defeating the purpose.
-
-**Fix:** Return an actionable hint message when all tiers fail, not empty string.
-
-### LLM-2 — No inline help mode
-
-**File:** `pkg/swl/tool.go`
-
-There is no `{"help":true}` operation. An LLM operating under compressed context that has lost the system hint has no recovery path to discover query syntax.
-
-**Fix:** Add a `help` operation returning concise query syntax reference.
-
-### LLM-3 — No staleness signal at point of use
-
-**File:** `pkg/agent/swl_hook.go`
-
-When the LLM is about to `read_file` or `write_file` on an entity SWL knows is stale, `PreHook` returns `continue=true` with no warning. The LLM works on stale content without knowing it.
-
-**Fix:** PreHook checks target entity's `fact_status`; returns a one-line hint if stale.
-
-### LLM-4 — Query gap recording is silent
-
-**File:** `pkg/swl/query.go`
-
-When a query misses all tiers and is recorded as a new gap, the LLM receives no feedback that its query pattern was novel or unindexable.
-
-### LLM-5 — Assert has no confirmation echo
-
-**File:** `pkg/swl/tool.go`
-
-`query_swl {"assert":"..."}` succeeds silently. No entity ID, no confidence echo. LLM cannot reference the recorded entity in subsequent queries.
+No open implementation gaps at this revision.
 
 ---
 

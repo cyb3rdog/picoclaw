@@ -23,7 +23,7 @@ type Manager struct {
 	writer *entityWriter
 
 	// rules drives label derivation from configuration (Phase B).
-	// Initialised in NewManager from swl.rules.yaml; nil until then (falls back to package-level DeriveLabels).
+	// Initialized in NewManager from swl.rules.yaml; nil until then (falls back to package-level DeriveLabels).
 	rules *RulesEngine
 
 	// ignoreMatcher for .swlignore file
@@ -44,7 +44,7 @@ type Manager struct {
 	wg sync.WaitGroup
 
 	// compiledSymPatterns holds the compiled symbol extraction regexes.
-	// Initialised once in NewManager from cfg.ExtractSymbolPatterns (or defaults).
+	// Initialized once in NewManager from cfg.ExtractSymbolPatterns (or defaults).
 	compiledSymPatterns []*regexp.Regexp
 
 	// inferenceLog is a fixed-size ring buffer of recent extraction events.
@@ -89,7 +89,7 @@ func NewManager(workspace string, cfg *Config) (*Manager, error) {
 	// Load .swlignore file
 	_ = m.loadSwlignore() // non-fatal if missing
 
-	// Initialise rules engine from swl.rules.yaml (Phase B).
+	// Initialize rules engine from swl.rules.yaml (Phase B).
 	// Silently falls back to nil (package-level DeriveLabels used) if YAML load fails.
 	if rules, err := LoadRules(workspace, ""); err == nil {
 		m.rules = rules

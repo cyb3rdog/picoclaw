@@ -88,7 +88,7 @@ func ExtractKeywords(question string) []string {
 		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
 	})
 
-	var keywords []string
+	keywords := make([]string, 0, len(words))
 	for _, w := range words {
 		if w == "" || len(w) < 2 {
 			continue

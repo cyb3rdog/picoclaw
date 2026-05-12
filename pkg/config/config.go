@@ -1612,7 +1612,7 @@ func (c *Config) SecurityCopyFrom(path string) error {
 }
 
 func expandMultiKeyModels(models []*ModelConfig) []*ModelConfig {
-	var expanded []*ModelConfig
+	expanded := make([]*ModelConfig, 0, len(models))
 
 	for _, m := range models {
 		keys := m.APIKeys.Values()

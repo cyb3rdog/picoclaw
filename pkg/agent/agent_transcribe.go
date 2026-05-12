@@ -17,8 +17,8 @@ func (al *AgentLoop) transcribeAudioInMessage(ctx context.Context, msg bus.Inbou
 	}
 
 	// Transcribe each audio media ref in order.
-	var transcriptions []string
-	var keptMedia []string
+	transcriptions := make([]string, 0, len(msg.Media))
+	keptMedia := make([]string, 0, len(msg.Media))
 	for _, ref := range msg.Media {
 		path, meta, err := al.mediaStore.ResolveWithMeta(ref)
 		if err != nil {

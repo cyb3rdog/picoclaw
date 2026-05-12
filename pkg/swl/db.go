@@ -108,17 +108,6 @@ func openDB(dbPath string) (*sql.DB, error) {
 	return db, nil
 }
 
-func openDBReadOnly(dbPath string) (*sql.DB, error) {
-	dsn := "file:" + dbPath + "?mode=ro&_pragma=journal_mode(WAL)"
-	db, err := sql.Open("sqlite", dsn)
-	if err != nil {
-		return nil, fmt.Errorf("swl: open db read-only: %w", err)
-	}
-	db.SetMaxOpenConns(4)
-	db.SetMaxIdleConns(2)
-	return db, nil
-}
-
 func applySchema(db *sql.DB) error {
 	if _, err := db.Exec(schema); err != nil {
 		return fmt.Errorf("swl: apply schema: %w", err)

@@ -221,7 +221,7 @@ func DeriveLabels(entityType EntityType, name string) LabelResult {
 }
 
 // ToMetadata converts LabelResult to a metadata map, excluding zero-value fields.
-func (lr LabelResult) ToMetadata() map[string]any {
+func (lr *LabelResult) ToMetadata() map[string]any {
 	m := map[string]any{}
 	if lr.Role != "" {
 		m["role"] = lr.Role

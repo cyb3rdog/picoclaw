@@ -644,7 +644,7 @@ func (p *DuckDuckGoSearchProvider) extractResults(
 		return fmt.Sprintf("No results found or extraction failed. Query: %s", query), nil
 	}
 
-	var lines []string
+	lines := make([]string, 0, 1+len(matches))
 	lines = append(lines, fmt.Sprintf("Results for: %s (via DuckDuckGo)", query))
 
 	// Pre-compile snippet regex to run inside the loop
@@ -970,7 +970,7 @@ func (p *GLMSearchProvider) Search(
 		return fmt.Sprintf("No results for: %s", query), nil
 	}
 
-	var lines []string
+	lines := make([]string, 0, 1+len(results))
 	lines = append(lines, fmt.Sprintf("Results for: %s (via GLM Search)", query))
 	for i, item := range results {
 		if i >= count {
@@ -1422,7 +1422,7 @@ func containsLatinLetter(text string) bool {
 func prefersDuckDuckGoQuery(text string) bool {
 	trimmed := strings.TrimSpace(text)
 	if trimmed == "" {
-		return false
+		return GetPreferredWebSearchLanguage() == "en"
 	}
 	if containsHan(trimmed) {
 		return false

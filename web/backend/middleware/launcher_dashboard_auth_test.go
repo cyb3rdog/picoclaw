@@ -263,22 +263,3 @@ func TestLauncherDashboardAuth_WebSocketUnauthorizedDoesNotRedirect(t *testing.T
 		t.Fatalf("Location = %q, want empty", got)
 	}
 }
-
-func TestLauncherDashboardAuth_WebSocketUnauthorizedDoesNotRedirect(t *testing.T) {
-	cfg := LauncherDashboardAuthConfig{ExpectedCookie: "deadbeef", Token: "x"}
-	next := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
-		t.Fatal("next handler should not run without auth")
-	})
-	h := LauncherDashboardAuth(cfg, next)
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/pico/ws", nil)
-	h.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
-	}
-	if got := rec.Header().Get("Location"); got != "" {
-		t.Fatalf("Location = %q, want empty", got)
-	}
-}

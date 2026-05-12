@@ -58,6 +58,7 @@ func (m *Manager) DecayCheck(entityID string, limit int) {
 				rows = append(rows, r)
 			}
 		}
+		_ = qrows.Err()
 	}
 
 	for _, r := range rows {

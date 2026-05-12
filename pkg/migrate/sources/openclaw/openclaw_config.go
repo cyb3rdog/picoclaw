@@ -925,12 +925,11 @@ func (c *OpenClawConfig) convertChannels(warnings *[]string) ChannelsConfig {
 }
 
 func (c *OpenClawConfig) convertAgents(warnings *[]string) []AgentConfig {
-	var agents []AgentConfig
-
 	if c.Agents == nil {
-		return agents
+		return nil
 	}
 
+	agents := make([]AgentConfig, 0, len(c.Agents.List))
 	for _, entry := range c.Agents.List {
 		agentID := entry.ID
 		if agentID == "" {

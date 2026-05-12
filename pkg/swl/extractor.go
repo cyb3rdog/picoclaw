@@ -30,7 +30,7 @@ var noiseSymbols = map[string]bool{
 	"main": true, "init": true, "test": true,
 }
 
-// --- Compiled patterns (initialised once at package load) ---
+// --- Compiled patterns (initialized once at package load) ---
 
 var (
 	symPatterns = []*regexp.Regexp{
@@ -539,7 +539,7 @@ func extractSymbols(
 	fileID, filePath, content string,
 	patterns []*regexp.Regexp,
 	delta *GraphDelta,
-	max int,
+	limit int,
 ) {
 	// symIDs maps name → entity ID for the post-extraction uses pass.
 	symIDs := map[string]string{}
@@ -547,7 +547,7 @@ func extractSymbols(
 outer:
 	for _, re := range patterns {
 		for _, m := range re.FindAllStringSubmatch(content, -1) {
-			if isDone(ctx) || count >= max {
+			if isDone(ctx) || count >= limit {
 				break outer
 			}
 			name := strings.TrimSpace(m[1])
@@ -581,12 +581,12 @@ outer:
 	}
 }
 
-func extractImports(ctx context.Context, fileID, content string, delta *GraphDelta, max int) {
+func extractImports(ctx context.Context, fileID, content string, delta *GraphDelta, limit int) {
 	seen := map[string]bool{}
 	count := 0
 	for _, re := range importPatterns {
 		for _, m := range re.FindAllStringSubmatch(content, -1) {
-			if isDone(ctx) || count >= max {
+			if isDone(ctx) || count >= limit {
 				return
 			}
 			name := strings.TrimSpace(m[1])
@@ -605,10 +605,10 @@ func extractImports(ctx context.Context, fileID, content string, delta *GraphDel
 	}
 }
 
-func extractTasks(ctx context.Context, fileID, content string, delta *GraphDelta, max int) {
+func extractTasks(ctx context.Context, fileID, content string, delta *GraphDelta, limit int) {
 	count := 0
 	for _, m := range taskRE.FindAllStringSubmatch(content, -1) {
-		if isDone(ctx) || count >= max {
+		if isDone(ctx) || count >= limit {
 			return
 		}
 		text := strings.TrimSpace(m[1])
@@ -625,10 +625,10 @@ func extractTasks(ctx context.Context, fileID, content string, delta *GraphDelta
 	}
 }
 
-func extractSections(ctx context.Context, fileID, content string, delta *GraphDelta, max int) {
+func extractSections(ctx context.Context, fileID, content string, delta *GraphDelta, limit int) {
 	count := 0
 	for _, m := range headingRE.FindAllStringSubmatch(content, -1) {
-		if isDone(ctx) || count >= max {
+		if isDone(ctx) || count >= limit {
 			return
 		}
 		title := strings.TrimSpace(m[2])
@@ -645,10 +645,10 @@ func extractSections(ctx context.Context, fileID, content string, delta *GraphDe
 	}
 }
 
-func extractURLs(ctx context.Context, fileID, content string, delta *GraphDelta, max int) {
+func extractURLs(ctx context.Context, fileID, content string, delta *GraphDelta, limit int) {
 	count := 0
 	for _, u := range urlRE.FindAllString(content, -1) {
-		if isDone(ctx) || count >= max {
+		if isDone(ctx) || count >= limit {
 			return
 		}
 		if isNoisyURL(u) {

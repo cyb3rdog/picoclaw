@@ -48,7 +48,6 @@ linters:
     - lll
     - maintidx
     - mnd
-    - modernize
     - nestif
     - nilnil
     - paralleltest
@@ -148,6 +147,9 @@ linters:
       - linters:
           - nolintlint
         path: 'pkg/tools/(i2c\.go|spi\.go)$'
+      - linters:
+          - prealloc
+        path: 'pkg/channels/'
 
 issues:
   max-issues-per-linter: 0

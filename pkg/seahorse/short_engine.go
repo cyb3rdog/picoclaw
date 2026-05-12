@@ -248,7 +248,7 @@ func (e *Engine) Ingest(ctx context.Context, sessionKey string, messages []Messa
 	}
 
 	var totalTokens int
-	var msgIDs []int64
+	msgIDs := make([]int64, 0, len(messages))
 	for _, msg := range messages {
 		var added *Message
 		var err error
@@ -552,11 +552,11 @@ func (e *Engine) repairBootstrapReasoningContent(ctx context.Context, dbMsgs, me
 
 	overlap := min(len(messages), len(dbMsgs))
 
-	var updates []struct {
+	updates := make([]struct {
 		index            int
 		messageID        int64
 		reasoningContent string
-	}
+	}, 0, overlap)
 
 	for i := range overlap {
 		if !messageMatchesIgnoringReasoning(dbMsgs[i], messages[i]) {

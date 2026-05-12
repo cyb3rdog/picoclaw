@@ -233,7 +233,7 @@ func (e *CompactionEngine) compactLeaf(ctx context.Context, convID int64, force 
 	chunk = items[chunkStart : chunkEnd+1]
 
 	// Collect messages for the chunk
-	var messages []Message
+	messages := make([]Message, 0, len(chunk))
 	for _, item := range chunk {
 		msg, innerErr := e.store.GetMessageByID(ctx, item.MessageID)
 		if innerErr != nil {
@@ -491,7 +491,7 @@ func (e *CompactionEngine) selectShallowestCondensationCandidate(
 
 	// Find shallowest depth with enough candidates
 	// Collect all depths and sort to handle non-consecutive depths
-	var depths []int
+	depths := make([]int, 0, len(depthGroups))
 	for depth := range depthGroups {
 		depths = append(depths, depth)
 	}

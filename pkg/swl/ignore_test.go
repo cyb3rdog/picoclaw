@@ -21,8 +21,8 @@ func TestParseIgnoreFile(t *testing.T) {
 	}
 
 	// Test 2: Empty file
-	if err := os.WriteFile(ignorePath, []byte(""), 0o644); err != nil {
-		t.Fatal(err)
+	if writeErr := os.WriteFile(ignorePath, []byte(""), 0o644); writeErr != nil {
+		t.Fatal(writeErr)
 	}
 	m, err = ParseIgnoreFile(ignorePath)
 	if err != nil {
@@ -40,8 +40,8 @@ node_modules/
 vendor/
 !important.txt
 `
-	if err := os.WriteFile(ignorePath, []byte(content), 0o644); err != nil {
-		t.Fatal(err)
+	if writeErr := os.WriteFile(ignorePath, []byte(content), 0o644); writeErr != nil {
+		t.Fatal(writeErr)
 	}
 	m, err = ParseIgnoreFile(ignorePath)
 	if err != nil {

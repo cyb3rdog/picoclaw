@@ -1078,7 +1078,7 @@ func (cb *ContextBuilder) ResolveActiveSkillsForContext(skillNames []string) []s
 		return nil
 	}
 
-	var ordered []string
+	ordered := make([]string, 0, len(skillNames))
 	seen := make(map[string]struct{}, len(skillNames))
 	for _, name := range skillNames {
 		canonical, ok := cb.ResolveSkillName(name)

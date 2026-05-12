@@ -160,7 +160,7 @@ func helpIntro(c *cobra.Command) (head, sub string) {
 		return head, ""
 	}
 	lines := strings.Split(long, "\n")
-	var rest []string
+	rest := make([]string, 0, len(lines))
 	for i, ln := range lines {
 		ln = strings.TrimSpace(ln)
 		if ln == "" {
@@ -176,7 +176,7 @@ func helpIntro(c *cobra.Command) (head, sub string) {
 }
 
 func visibleSubcommands(c *cobra.Command) []*cobra.Command {
-	var out []*cobra.Command
+	out := make([]*cobra.Command, 0, len(c.Commands()))
 	for _, sub := range c.Commands() {
 		if sub.Hidden {
 			continue

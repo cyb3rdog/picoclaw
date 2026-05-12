@@ -88,6 +88,7 @@ func (m *Manager) SessionSync(sessionID string) {
 			files = append(files, r)
 		}
 	}
+	_ = rows.Err()
 
 	for _, f := range files {
 		// Resolve workspace-relative paths before os.Stat.
@@ -178,6 +179,7 @@ func (m *Manager) SessionResume(sessionKey string) string {
 			stats = append(stats, s)
 		}
 	}
+	_ = rows.Err()
 
 	if len(stats) == 0 {
 		return "[SWL] Graph is empty — cold start.\n" +
@@ -189,7 +191,7 @@ func (m *Manager) SessionResume(sessionKey string) string {
 	// is essentially fresh. Give a short bootstrap hint.
 	var nonSessionCount int
 	for _, s := range stats {
-		if s.entityType != string(KnownTypeSession) {
+		if s.entityType != KnownTypeSession {
 			nonSessionCount += s.count
 		}
 	}
@@ -239,6 +241,7 @@ func (m *Manager) SessionResume(sessionKey string) string {
 			}
 			anchors = append(anchors, line)
 		}
+		_ = anchorRows.Err()
 		if len(anchors) > 0 {
 			out += "\nWorkspace anchors:\n" + strings.Join(anchors, "\n")
 		}
@@ -267,6 +270,7 @@ func (m *Manager) SessionResume(sessionKey string) string {
 			}
 			areas = append(areas, line)
 		}
+		_ = areaRows.Err()
 		if len(areas) > 0 {
 			out += "\nSemantic areas:\n" + strings.Join(areas, "\n")
 		}
@@ -285,7 +289,7 @@ func (m *Manager) SessionResume(sessionKey string) string {
 	return out
 }
 
-// WorkspaceSnapshot returns a JSON object summarising the workspace for
+// WorkspaceSnapshot returns a JSON object summarizing the workspace for
 // storage in sessions.workspace_state.
 func (m *Manager) WorkspaceSnapshot() string {
 	snapshot := map[string]any{}

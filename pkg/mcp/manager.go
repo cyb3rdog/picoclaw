@@ -251,7 +251,7 @@ func (m *Manager) LoadFromMCPConfig(
 	close(errs)
 
 	// Collect errors
-	var allErrors []error
+	allErrors := make([]error, 0, enabledCount)
 	for err := range errs {
 		allErrors = append(allErrors, err)
 	}
@@ -576,7 +576,7 @@ func listServerTools(
 	session *mcp.ClientSession,
 	initResult *mcp.InitializeResult,
 ) ([]*mcp.Tool, error) {
-	var tools []*mcp.Tool
+	tools := make([]*mcp.Tool, 0)
 	if initResult.Capabilities.Tools == nil {
 		return tools, nil
 	}
