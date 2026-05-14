@@ -188,19 +188,23 @@ func (m *Manager) ExtractContent(fileID, filePath, content string) *GraphDelta {
 		delta.Edges = append(delta.Edges, EdgeTuple{FromID: fileID, Rel: KnownRelTagged, ToID: topicID})
 	}
 
-	if m.cfg.effectiveExtractSymbols() {
+	// Per-extension extraction overrides (Phase B): look up any configured override
+	// for this file's extension. A nil override means use the global config defaults.
+	override := m.rules.OverrideForExt(ext)
+
+	if m.cfg.effectiveExtractSymbols() && (override == nil || override.ExtractSymbols == nil || *override.ExtractSymbols) {
 		extractSymbols(ctx, fileID, normFilePath, content, m.compiledSymPatterns, delta, m.MaxSymbols())
 	}
-	if m.cfg.effectiveExtractImports() {
+	if m.cfg.effectiveExtractImports() && (override == nil || override.ExtractImports == nil || *override.ExtractImports) {
 		extractImports(ctx, fileID, content, delta, m.MaxImports())
 	}
-	if m.cfg.effectiveExtractTasks() {
+	if m.cfg.effectiveExtractTasks() && (override == nil || override.ExtractTasks == nil || *override.ExtractTasks) {
 		extractTasks(ctx, fileID, content, delta, m.MaxTasks())
 	}
-	if m.cfg.effectiveExtractSections() {
+	if m.cfg.effectiveExtractSections() && (override == nil || override.ExtractSections == nil || *override.ExtractSections) {
 		extractSections(ctx, fileID, content, delta, m.MaxSections())
 	}
-	if m.cfg.effectiveExtractURLs() {
+	if m.cfg.effectiveExtractURLs() && (override == nil || override.ExtractURLs == nil || *override.ExtractURLs) {
 		extractURLs(ctx, fileID, content, delta, m.MaxURLs())
 	}
 

@@ -2,6 +2,7 @@ package swl
 
 import (
 	"embed"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -63,6 +64,14 @@ type RulesEngine struct {
 	MaxTopics   int
 	SkipHosts   []string
 
+	// Snapshot configuration (Phase B — moved from hardcoded constants).
+	AnchorPatterns      []string // file base-name patterns qualifying as anchor docs
+	SnapshotMaxDepth    int      // max directory depth for BuildSnapshot walk
+	AreaMinExtensionPct int      // min % of files sharing one extension to qualify as a SemanticArea
+
+	// Per-extension extraction overrides (Phase B).
+	ExtractionOverrides []ExtractionOverride
+
 	// Query engine config (Phase B query externalization).
 	QueryIntents []CompiledIntent // Tier 1: pattern → handler
 	SQLTemplates []SQLTemplate    // Tier 2: keyword → SQL
@@ -93,9 +102,11 @@ type ContentTypeRule struct {
 
 // RulesConfig is the full YAML config structure.
 type RulesConfig struct {
-	Version    string          `yaml:"version"`
-	LabelRules LabelRulesBlock `yaml:"label_rules"`
-	FileRules  FileRulesBlock  `yaml:"file_rules"`
+	Version             string               `yaml:"version"`
+	LabelRules          LabelRulesBlock      `yaml:"label_rules"`
+	FileRules           FileRulesBlock       `yaml:"file_rules"`
+	Snapshot            SnapshotBlock        `yaml:"snapshot"`
+	ExtractionOverrides []ExtractionOverride `yaml:"extraction_overrides"`
 }
 
 // LabelRulesBlock contains label derivation rules.
@@ -138,6 +149,23 @@ type URLsBlock struct {
 
 type SectionsBlock struct {
 	MaxPerFile int `yaml:"max_per_file"`
+}
+
+// SnapshotBlock holds snapshot-related configuration.
+type SnapshotBlock struct {
+	MaxDepth           int      `yaml:"max_depth"`
+	AreaMinExtensionPct int     `yaml:"area_min_extension_pct"`
+	AnchorPatterns     []string `yaml:"anchor_patterns"`
+}
+
+// ExtractionOverride specifies per-extension extraction settings.
+type ExtractionOverride struct {
+	Extensions      []string `yaml:"extensions"`
+	ExtractSymbols  *bool    `yaml:"extract_symbols,omitempty"`
+	ExtractImports  *bool    `yaml:"extract_imports,omitempty"`
+	ExtractTasks    *bool    `yaml:"extract_tasks,omitempty"`
+	ExtractSections *bool    `yaml:"extract_sections,omitempty"`
+	ExtractURLs     *bool    `yaml:"extract_urls,omitempty"`
 }
 
 // LoadRules loads the rules engine from a workspace-level swl.rules.yaml,
@@ -238,6 +266,22 @@ func (r *RulesEngine) compileFromConfig() {
 	}
 	// Topics limit (from section rules, section extraction is the proxy for topics)
 	r.MaxTopics = maxTopics
+
+	// Snapshot configuration
+	if r.cfg.Snapshot.MaxDepth > 0 {
+		r.SnapshotMaxDepth = r.cfg.Snapshot.MaxDepth
+	} else {
+		r.SnapshotMaxDepth = snapshotMaxDepth
+	}
+	if r.cfg.Snapshot.AreaMinExtensionPct > 0 {
+		r.AreaMinExtensionPct = r.cfg.Snapshot.AreaMinExtensionPct
+	} else {
+		r.AreaMinExtensionPct = 60
+	}
+	r.AnchorPatterns = r.cfg.Snapshot.AnchorPatterns
+
+	// Per-extension extraction overrides
+	r.ExtractionOverrides = r.cfg.ExtractionOverrides
 }
 
 // DeriveLabels computes semantic labels using config-driven rules, replacing the
@@ -339,13 +383,26 @@ func LoadQueryConfig(workspace, queryPath string) (*QueryConfig, error) {
 
 // CompileQueryConfig loads intents + templates from a QueryConfig struct,
 // compiling all regexes into CompiledIntent for the Tier 1 dispatcher.
+// Handler names that are not present in handlerRegistry are logged to stderr
+// and skipped so that typos in swl.query.yaml do not silently produce dead intents.
 func CompileQueryConfig(cfg *QueryConfig) []CompiledIntent {
 	intents := make([]CompiledIntent, 0, len(cfg.Intents))
 	for _, intent := range cfg.Intents {
+		if !ValidateHandler(intent.Handler) {
+			fmt.Fprintf(os.Stderr,
+				"[SWL] warning: intent %q references unknown handler %q — skipping\n",
+				intent.ID, intent.Handler,
+			)
+			continue
+		}
 		for _, pattern := range intent.Patterns {
 			re, err := regexp.Compile(pattern)
 			if err != nil {
-				continue // skip invalid patterns silently
+				fmt.Fprintf(os.Stderr,
+					"[SWL] warning: intent %q has invalid pattern %q: %v — skipping\n",
+					intent.ID, pattern, err,
+				)
+				continue
 			}
 			intents = append(intents, CompiledIntent{
 				ID:        intent.ID,
@@ -356,6 +413,23 @@ func CompileQueryConfig(cfg *QueryConfig) []CompiledIntent {
 		}
 	}
 	return intents
+}
+
+// OverrideForExt returns the ExtractionOverride for a given file extension,
+// or nil if no override matches.
+func (r *RulesEngine) OverrideForExt(ext string) *ExtractionOverride {
+	if r == nil {
+		return nil
+	}
+	ext = strings.ToLower(ext)
+	for i := range r.ExtractionOverrides {
+		for _, e := range r.ExtractionOverrides[i].Extensions {
+			if strings.ToLower(e) == ext {
+				return &r.ExtractionOverrides[i]
+			}
+		}
+	}
+	return nil
 }
 
 // InitRulesWith is deprecated — rules are accessed via Manager.rules.
@@ -415,6 +489,22 @@ func deepMergeRules(base, override *RulesConfig) {
 	}
 	if len(override.FileRules.IgnoreExtension) > 0 {
 		base.FileRules.IgnoreExtension = override.FileRules.IgnoreExtension
+	}
+
+	// Snapshot block
+	if override.Snapshot.MaxDepth > 0 {
+		base.Snapshot.MaxDepth = override.Snapshot.MaxDepth
+	}
+	if override.Snapshot.AreaMinExtensionPct > 0 {
+		base.Snapshot.AreaMinExtensionPct = override.Snapshot.AreaMinExtensionPct
+	}
+	if len(override.Snapshot.AnchorPatterns) > 0 {
+		base.Snapshot.AnchorPatterns = override.Snapshot.AnchorPatterns
+	}
+
+	// Per-extension extraction overrides (append)
+	if len(override.ExtractionOverrides) > 0 {
+		base.ExtractionOverrides = append(base.ExtractionOverrides, override.ExtractionOverrides...)
 	}
 }
 

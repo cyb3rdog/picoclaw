@@ -160,11 +160,28 @@ export function SWLGraph({ data, hiddenTypes, focusNodeId, onNodeClick }: Props)
   // merge the new nodes into allNodesRef in-place rather than replacing the map.
   // This preserves the d3 simulation's object references — replacing breaks link resolution
   // because d3-force resolves link.source/target to object references during initialization.
+  //
+  // Exception: when leaving focus/neighborhood mode (focusNodeId transitions to undefined),
+  // the neighborhood node set is completely different from the main graph set. Stale
+  // neighborhood nodes must be cleared to prevent layout instability.
+  const prevFocusRef = useRef<string | undefined>(focusNodeId)
   useEffect(() => {
     if (isFirstMount.current) {
       isFirstMount.current = false
+      prevFocusRef.current = focusNodeId
       return
     }
+
+    const wasInFocus = prevFocusRef.current !== undefined
+    const nowInFocus = focusNodeId !== undefined
+    prevFocusRef.current = focusNodeId
+
+    // Exiting focus mode: the incoming data is a completely different node set.
+    // Clear stale neighborhood nodes before merging to avoid phantom nodes.
+    if (wasInFocus && !nowInFocus) {
+      allNodesRef.current.clear()
+    }
+
     // Merge new nodes into allNodesRef in-place
     for (const n of data.nodes ?? []) {
       const existing = allNodesRef.current.get(n.id)
@@ -175,14 +192,14 @@ export function SWLGraph({ data, hiddenTypes, focusNodeId, onNodeClick }: Props)
       }
     }
     // Remove nodes that are no longer in the data
-    for (const [id, _node] of allNodesRef.current) {
+    for (const [id] of allNodesRef.current) {
       if (!data.nodes?.some((n) => n.id === id)) {
         allNodesRef.current.delete(id)
       }
     }
     allLinksRef.current = data.links ?? []
     applyFiltered()
-  }, [data, applyFiltered])
+  }, [data, focusNodeId, applyFiltered])
 
   // ── Filter changes ────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -193,11 +210,14 @@ export function SWLGraph({ data, hiddenTypes, focusNodeId, onNodeClick }: Props)
   }, [hiddenTypes, applyFiltered])
 
   // ── SSE real-time updates ────────────────────────────────────────────────────
+  const [sseReconnecting, setSseReconnecting] = useState(false)
+
   useEffect(() => {
     const es = new EventSource(swlApi.streamUrl())
     let timer: ReturnType<typeof setTimeout>
 
     es.onmessage = (e) => {
+      setSseReconnecting(false)
       try {
         const msg = JSON.parse(e.data) as { type: string; nodes: SWLNode[] }
         if (msg.type !== "delta" || !msg.nodes?.length) return
@@ -206,6 +226,10 @@ export function SWLGraph({ data, hiddenTypes, focusNodeId, onNodeClick }: Props)
       } catch {
         // ignore malformed events
       }
+    }
+
+    es.onerror = () => {
+      setSseReconnecting(true)
     }
 
     return () => {
@@ -415,9 +439,14 @@ export function SWLGraph({ data, hiddenTypes, focusNodeId, onNodeClick }: Props)
   return (
     <div
       ref={containerRef}
-      className="bg-background"
+      className="bg-background relative"
       style={{ width: "100%", height: "100%" }}
     >
+      {sseReconnecting && (
+        <div className="absolute top-2 right-2 z-10 rounded border border-border bg-background/80 px-2 py-1 text-xs text-muted-foreground backdrop-blur-sm">
+          Reconnecting…
+        </div>
+      )}
       <ForceGraph3D
         ref={graphRef}
         width={size.w}
@@ -445,7 +474,7 @@ export function SWLGraph({ data, hiddenTypes, focusNodeId, onNodeClick }: Props)
         showNavInfo={false}
         onNodeClick={handleNodeClick}
         onBackgroundClick={handleBgClick}
-        warmupTicks={40}
+        warmupTicks={8}
         cooldownTime={2500}
         d3AlphaDecay={0.03}
         d3VelocityDecay={0.3}

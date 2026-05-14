@@ -61,10 +61,44 @@ func (m *Manager) BuildSnapshot(root string) *GraphDelta {
 	return delta
 }
 
+// effectiveSnapshotMaxDepth returns the configured max depth, falling back to
+// the package constant when rules are not loaded.
+func (m *Manager) effectiveSnapshotMaxDepth() int {
+	if m.rules != nil && m.rules.SnapshotMaxDepth > 0 {
+		return m.rules.SnapshotMaxDepth
+	}
+	return snapshotMaxDepth
+}
+
+// effectiveAreaMinExtensionPct returns the configured area extension threshold
+// as a float64 ratio (0–1), falling back to 0.6 when rules are not loaded.
+func (m *Manager) effectiveAreaMinExtensionPct() float64 {
+	if m.rules != nil && m.rules.AreaMinExtensionPct > 0 {
+		return float64(m.rules.AreaMinExtensionPct) / 100.0
+	}
+	return 0.6
+}
+
+// isAnchorName returns true when the base file name (without extension, uppercased)
+// matches a configured anchor pattern.  Falls back to the hardcoded anchorNames map
+// when no rules are loaded or the rules list is empty.
+func (m *Manager) isAnchorName(baseName string) bool {
+	upper := strings.ToUpper(strings.TrimSuffix(baseName, filepath.Ext(baseName)))
+	if m.rules != nil && len(m.rules.AnchorPatterns) > 0 {
+		for _, p := range m.rules.AnchorPatterns {
+			if strings.ToUpper(p) == upper {
+				return true
+			}
+		}
+		return false
+	}
+	return anchorNames[upper]
+}
+
 // snapshotDir recursively walks path up to snapshotMaxDepth, collecting
 // anchor documents and classifying semantic areas.
 func (m *Manager) snapshotDir(absRoot, path string, depth int, delta *GraphDelta) {
-	if depth > snapshotMaxDepth {
+	if depth > m.effectiveSnapshotMaxDepth() {
 		return
 	}
 
@@ -109,7 +143,7 @@ func (m *Manager) snapshotDir(absRoot, path string, depth int, delta *GraphDelta
 			extCounts[ext]++
 		}
 
-		if !isAnchorFile(name) {
+		if !m.isAnchorFileByName(name) {
 			continue
 		}
 
@@ -117,15 +151,16 @@ func (m *Manager) snapshotDir(absRoot, path string, depth int, delta *GraphDelta
 		relFile := m.snapshotRelPath(absRoot, absFile)
 
 		content := readTruncated(absFile, snapshotMaxAnchorBytes)
-		description := extractDescription(name, content)
 
 		meta := map[string]any{"kind": "anchor"}
-		if description != "" {
-			meta["description"] = description
-		}
 		if manifestNames[name] {
 			meta["kind"] = "manifest"
 			for k, v := range extractManifestMeta(name, content) {
+				meta[k] = v
+			}
+		} else {
+			// Use enriched metadata extraction for non-manifest anchor docs.
+			for k, v := range extractAnchorMeta(content) {
 				meta[k] = v
 			}
 		}
@@ -145,9 +180,9 @@ func (m *Manager) snapshotDir(absRoot, path string, depth int, delta *GraphDelta
 	}
 
 	// Classify directory as a semantic area when it has anchor documents or a
-	// strong enough content profile (≥3 files with ≥60% sharing one extension).
+	// strong enough content profile (≥3 files with ≥AreaMinExtensionPct% sharing one extension).
 	dominantExt, dominantRatio := dominantExtension(extCounts, totalFiles)
-	hasStrongProfile := totalFiles >= 3 && dominantRatio >= 0.6
+	hasStrongProfile := totalFiles >= 3 && dominantRatio >= m.effectiveAreaMinExtensionPct()
 	if len(anchorIDs) == 0 && !hasStrongProfile {
 		return
 	}
@@ -215,6 +250,15 @@ func (m *Manager) snapshotRelPath(absRoot, path string) string {
 	return path
 }
 
+// isAnchorFileByName is the Manager method equivalent of isAnchorFile.
+// It uses m.isAnchorName (rules-driven) for anchor name matching.
+func (m *Manager) isAnchorFileByName(name string) bool {
+	if manifestNames[name] {
+		return true
+	}
+	return m.isAnchorName(name)
+}
+
 // isAnchorFile returns true when name (case-insensitive base without extension)
 // matches an anchor document name, or when name is a known manifest file.
 func isAnchorFile(name string) bool {
@@ -223,6 +267,89 @@ func isAnchorFile(name string) bool {
 	}
 	base := strings.ToUpper(strings.TrimSuffix(name, filepath.Ext(name)))
 	return anchorNames[base]
+}
+
+// extractAnchorMeta parses the first snapshotMaxAnchorBytes of an anchor doc
+// and returns enriched metadata with description, title, goals, and sections.
+func extractAnchorMeta(content string) map[string]any {
+	meta := map[string]any{}
+	lines := strings.Split(content, "\n")
+
+	var description, firstHeading string
+	var goals, sections []string
+	inPara := false
+	var paraLines []string
+
+	goalKeywords := []string{"goal", "purpose", "designed to", "aims to", "intended to", "mission", "vision"}
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			if inPara && len(paraLines) > 0 {
+				if description == "" {
+					description = strings.Join(paraLines, " ")
+				}
+				paraLines = nil
+				inPara = false
+			}
+			continue
+		}
+		// Markdown headings
+		if strings.HasPrefix(trimmed, "## ") || strings.HasPrefix(trimmed, "### ") {
+			heading := strings.TrimLeft(trimmed, "# ")
+			sections = append(sections, heading)
+			if firstHeading == "" {
+				firstHeading = heading
+			}
+			continue
+		}
+		if strings.HasPrefix(trimmed, "# ") {
+			if firstHeading == "" {
+				firstHeading = strings.TrimPrefix(trimmed, "# ")
+			}
+			continue
+		}
+		// Skip code blocks and horizontal rules
+		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "---") {
+			continue
+		}
+		inPara = true
+		paraLines = append(paraLines, trimmed)
+		// Goal-bearing sentence detection
+		lower := strings.ToLower(trimmed)
+		for _, kw := range goalKeywords {
+			if strings.Contains(lower, kw) {
+				goals = append(goals, trimmed)
+				break
+			}
+		}
+	}
+	if description == "" && len(paraLines) > 0 {
+		description = strings.Join(paraLines, " ")
+	}
+	// Truncate description at 300 chars
+	if len(description) > 300 {
+		description = description[:300]
+	}
+	if description != "" {
+		meta["description"] = description
+	}
+	if firstHeading != "" {
+		meta["title"] = firstHeading
+	}
+	if len(goals) > 0 {
+		if len(goals) > 5 {
+			goals = goals[:5]
+		}
+		meta["goals"] = goals
+	}
+	if len(sections) > 0 {
+		if len(sections) > 10 {
+			sections = sections[:10]
+		}
+		meta["sections"] = sections
+	}
+	return meta
 }
 
 // extractDescription extracts a short human-readable description from file

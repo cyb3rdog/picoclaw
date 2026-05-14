@@ -47,6 +47,10 @@ type Manager struct {
 	// Initialized once in NewManager from cfg.ExtractSymbolPatterns (or defaults).
 	compiledSymPatterns []*regexp.Regexp
 
+	// rulesLoadErr captures any error from loading workspace rules/query config.
+	// Non-empty when swl.rules.yaml or swl.query.yaml failed to load/parse.
+	rulesLoadErr string
+
 	// inferenceLog is a fixed-size ring buffer of recent extraction events.
 	// Useful for diagnosing why entities were or were not extracted.
 	infLogMu  sync.Mutex
@@ -70,6 +74,13 @@ type DecayHandlerFunc func(m *Manager, entityID, name string) error
 // If dbPath is empty, it defaults to {workspace}/.swl/swl.db.
 func NewManager(workspace string, cfg *Config) (*Manager, error) {
 	dbPath := resolveDBPath(workspace, cfg)
+
+	// Scaffold workspace config files on first init (before DB is created).
+	_, statErr := os.Stat(dbPath)
+	if os.IsNotExist(statErr) {
+		scaffoldConfigFiles(workspace)
+	}
+
 	db, err := openDB(dbPath)
 	if err != nil {
 		return nil, fmt.Errorf("swl: open database: %w", err)
@@ -90,12 +101,19 @@ func NewManager(workspace string, cfg *Config) (*Manager, error) {
 	_ = m.loadSwlignore() // non-fatal if missing
 
 	// Initialize rules engine from swl.rules.yaml (Phase B).
-	// Silently falls back to nil (package-level DeriveLabels used) if YAML load fails.
-	if rules, err := LoadRules(workspace, ""); err == nil {
+	// On failure, log a warning and record the error; fall back to nil
+	// (package-level DeriveLabels used).
+	if rules, rulesErr := LoadRules(workspace, ""); rulesErr != nil {
+		fmt.Fprintf(os.Stderr, "[SWL] warning: failed to load swl.rules.yaml: %v\n", rulesErr)
+		m.rulesLoadErr = "workspace rules: " + rulesErr.Error()
+	} else {
 		m.rules = rules
 
 		// Also load query intents from swl.query.yaml (Phase B — query externalization).
-		if qcfg, err := LoadQueryConfig(workspace, ""); err == nil {
+		if qcfg, qcfgErr := LoadQueryConfig(workspace, ""); qcfgErr != nil {
+			fmt.Fprintf(os.Stderr, "[SWL] warning: failed to load swl.query.yaml: %v\n", qcfgErr)
+			m.rulesLoadErr += "; query config: " + qcfgErr.Error()
+		} else {
 			m.rules.QueryIntents = CompileQueryConfig(qcfg)
 			m.rules.SQLTemplates = qcfg.SQLTmpls
 		}
@@ -219,9 +237,99 @@ func (m *Manager) DebugInferenceLog() string {
 	return fmt.Sprintf("[SWL] Last %d inference events:\n", len(lines)) + strings.Join(lines, "\n")
 }
 
+const scaffoldHeader = `# SWL Extraction Rules — Workspace Override
+# This file was scaffolded automatically. Modify to customize extraction for this workspace.
+# Reference: docs/swl/SWL-DESIGN.md
+# Restart the agent after editing to reload.
+
+`
+
+// scaffoldConfigFiles writes default swl.rules.yaml and swl.query.yaml into
+// {workspace}/.swl/ on first init. Files are never overwritten if they already exist.
+func scaffoldConfigFiles(workspace string) {
+	swlDir := filepath.Join(workspace, ".swl")
+	if mkErr := os.MkdirAll(swlDir, 0o755); mkErr != nil {
+		return // non-fatal: DB creation will also attempt this
+	}
+
+	rulesData, err := defaultRulesFS.ReadFile("swl.rules.default.yaml")
+	if err == nil {
+		writeScaffold(filepath.Join(swlDir, "swl.rules.yaml"), rulesData)
+	}
+
+	queryData, err := defaultQueryFS.ReadFile("swl.query.default.yaml")
+	if err == nil {
+		writeScaffold(filepath.Join(swlDir, "swl.query.yaml"), queryData)
+	}
+}
+
+// writeScaffold writes header + content to path, but only if path does not yet exist.
+func writeScaffold(path string, content []byte) {
+	if _, err := os.Stat(path); err == nil {
+		return // already exists — do not overwrite
+	}
+	data := append([]byte(scaffoldHeader), content...)
+	_ = os.WriteFile(path, data, 0o644) // non-fatal
+}
+
 func resolveDBPath(workspace string, cfg *Config) string {
 	if cfg != nil && cfg.DBPath != "" {
 		return cfg.DBPath
 	}
 	return filepath.Join(workspace, ".swl", "swl.db")
+}
+
+// resolveSubjectEntity looks up an existing graph entity matching subject and
+// returns its (id, type). Resolution order: exact entity ID → File by normalized
+// path → Symbol by name → SemanticArea by name → AnchorDocument by name.
+// If nothing matches, a minimal Note entity is created with fact_status unknown
+// so the assertion still lands in the graph and can be promoted later.
+func (m *Manager) resolveSubjectEntity(subject string) (id string, entityType EntityType) {
+	subject = strings.TrimSpace(subject)
+	if subject == "" {
+		return "", KnownTypeNote
+	}
+
+	// 1. Exact entity ID match
+	var existingType string
+	if err := m.db.QueryRow(
+		"SELECT type FROM entities WHERE id = ? AND fact_status != 'deleted' LIMIT 1",
+		subject,
+	).Scan(&existingType); err == nil {
+		return subject, existingType
+	}
+
+	// 2. File by normalized workspace-relative path
+	normalized := m.normalizePath(subject)
+	fileID := entityID(KnownTypeFile, normalized)
+	if err := m.db.QueryRow(
+		"SELECT id FROM entities WHERE id = ? AND fact_status != 'deleted'",
+		fileID,
+	).Scan(&fileID); err == nil {
+		return fileID, KnownTypeFile
+	}
+
+	// 3. Symbol, SemanticArea, AnchorDocument by name (case-insensitive prefix match)
+	for _, t := range []EntityType{KnownTypeSymbol, KnownTypeSemanticArea, KnownTypeAnchorDocument} {
+		var foundID string
+		if err := m.db.QueryRow(
+			"SELECT id FROM entities WHERE type = ? AND LOWER(name) = LOWER(?) AND fact_status != 'deleted' LIMIT 1",
+			t, subject,
+		).Scan(&foundID); err == nil {
+			return foundID, t
+		}
+	}
+
+	// 4. Fallback: create a minimal Note entity marked unknown so it exists in
+	//    the graph and can be resolved once the workspace is indexed further.
+	fallbackID := entityID(KnownTypeNote, subject)
+	_ = m.writer.upsertEntity(EntityTuple{
+		ID:               fallbackID,
+		Type:             KnownTypeNote,
+		Name:             subject,
+		Confidence:       0.5,
+		ExtractionMethod: MethodInferred,
+		KnowledgeDepth:   0,
+	})
+	return fallbackID, KnownTypeNote
 }

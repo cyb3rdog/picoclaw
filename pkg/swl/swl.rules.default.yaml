@@ -430,3 +430,31 @@ file_rules:
 
   # Ignored file extensions (in addition to defaults in ignore.go)
   ignore_extensions: []
+
+# --- Snapshot Configuration ---
+# Controls BuildSnapshot behaviour: anchor document recognition and SemanticArea classification.
+snapshot:
+  max_depth: 3
+  area_min_extension_pct: 60
+  anchor_patterns:
+    - "README"
+    - "OVERVIEW"
+    - "ARCHITECTURE"
+    - "CONTRIBUTING"
+    - "CHANGELOG"
+    - "CHANGES"
+    - "HISTORY"
+    - "HACKING"
+    - "DESIGN"
+    - "GOALS"
+    - "VISION"
+    - "ABOUT"
+
+# --- Per-extension extraction overrides ---
+# Uncomment and customize to restrict extraction for specific file types.
+# extraction_overrides:
+#   - extensions: [".md", ".txt", ".rst"]
+#     extract_symbols: false
+#     extract_imports: false
+#     extract_sections: true
+#     extract_urls: true

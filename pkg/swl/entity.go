@@ -35,22 +35,13 @@ INSERT INTO entities (
 ) VALUES (?, ?, ?, ?, ?, ?, ?, 'unknown', ?, ?, ?, 1)
 ON CONFLICT(id) DO UPDATE SET
     name = CASE WHEN excluded.name != '' THEN excluded.name ELSE name END,
-    metadata = CASE WHEN excluded.metadata != '{}' AND excluded.metadata != '' THEN excluded.metadata ELSE metadata END,
-    confidence = CASE
-        -- Incoming method has higher priority: adopt its confidence.
-        WHEN (CASE excluded.extraction_method
-                  WHEN 'observed'  THEN 4 WHEN 'stated'    THEN 3
-                  WHEN 'extracted' THEN 2 ELSE 1 END) >
-             (CASE extraction_method
-                  WHEN 'observed'  THEN 4 WHEN 'stated'    THEN 3
-                  WHEN 'extracted' THEN 2 ELSE 1 END)
-        THEN excluded.confidence
-        -- Same method: average the two observations (bounded at 1.0).
-        WHEN excluded.extraction_method = extraction_method
-        THEN MIN(1.0, (confidence + excluded.confidence) / 2.0)
-        -- Existing method has higher priority: keep the higher of the two.
-        ELSE MAX(confidence, excluded.confidence)
+    metadata = CASE
+        WHEN excluded.metadata IS NOT NULL
+             AND excluded.metadata NOT IN ('', '{}', 'null')
+        THEN excluded.metadata
+        ELSE metadata
     END,
+    confidence = MAX(confidence, excluded.confidence),
     knowledge_depth = MAX(knowledge_depth, excluded.knowledge_depth),
     extraction_method = CASE
         WHEN extraction_method = 'observed'  THEN 'observed'

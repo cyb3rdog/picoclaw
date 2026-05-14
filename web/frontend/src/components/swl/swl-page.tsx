@@ -42,7 +42,8 @@ export function SWLPage() {
     queryFn:  () => swlApi.getGraph(viewMode),
     enabled:  focusNodeId === null,
     retry:    false,
-    refetchInterval: 30_000,
+    // No timed auto-refetch: SSE stream delivers all incremental updates.
+    // Users can trigger a manual reload via the Reload button.
   })
 
   // Neighborhood query — only active when a node is focused.

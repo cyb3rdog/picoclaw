@@ -27,7 +27,7 @@ export interface SWLGraphMeta {
   totalEdges: number
   buildTime: string
   /** Which server-side selection mode produced this graph. */
-  mode: "map" | "overview" | "session" | "neighborhood"
+  mode: "map" | "overview" | "session"
 }
 
 export interface SWLGraphData {
@@ -77,19 +77,15 @@ export interface SWLOverview {
 }
 
 /** UI view modes.
- *  "map"          — general graph, top 500 quality-ranked nodes
- *  "overview"     — structural graph, no Symbol/Section, ~150 nodes
- *  "session"      — scoped to recent session activity, ~200 nodes
- *  "neighborhood" — 2-hop subgraph around a specific node (focus mode)
+ *  "map"      — general graph, top 500 quality-ranked nodes
+ *  "overview" — structural graph, no Symbol/Section, ~150 nodes
+ *  "session"  — scoped to recent session activity, ~200 nodes
  */
-export type SWLViewMode = "map" | "overview" | "session" | "neighborhood"
+export type SWLViewMode = "map" | "overview" | "session"
 
 export const swlApi = {
   async getGraph(mode: SWLViewMode = "map"): Promise<SWLGraphData> {
-    const url = mode === "neighborhood"
-      ? "/api/swl/graph"   // neighborhood is fetched via getNeighborhood
-      : `/api/swl/graph?mode=${mode}`
-    const res = await launcherFetch(url)
+    const res = await launcherFetch(`/api/swl/graph?mode=${mode}`)
     if (!res.ok) throw new Error(`SWL graph: ${res.status}`)
     return res.json()
   },
@@ -106,8 +102,8 @@ export const swlApi = {
     return res.json()
   },
 
-  async getSessions(): Promise<SWLSession[]> {
-    const res = await launcherFetch("/api/swl/sessions")
+  async getSessions(limit = 5): Promise<SWLSession[]> {
+    const res = await launcherFetch(`/api/swl/sessions?limit=${limit}`)
     if (!res.ok) throw new Error(`SWL sessions: ${res.status}`)
     return res.json()
   },

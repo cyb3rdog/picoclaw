@@ -22,6 +22,7 @@ const (
 	KnownTypeTool           EntityType = "Tool"
 	KnownTypeAnchorDocument EntityType = "AnchorDocument"
 	KnownTypeSemanticArea   EntityType = "SemanticArea"
+	KnownTypeAssertion      EntityType = "Assertion" // LLM-stated fact, linked to a real graph entity
 )
 
 // EdgeRel is an open string alias. KnownRel* constants are conventions,
@@ -53,8 +54,9 @@ const (
 	KnownRelReasoned    EdgeRel = "reasoned"
 	KnownRelIntendedFor EdgeRel = "intended_for"
 	KnownRelUses        EdgeRel = "uses"
-	KnownRelDocuments   EdgeRel = "documents" // AnchorDocument → SemanticArea it describes
-	KnownRelHasArea     EdgeRel = "has_area"  // Directory → SemanticArea it contains
+	KnownRelDocuments    EdgeRel = "documents"     // AnchorDocument → SemanticArea it describes
+	KnownRelHasArea      EdgeRel = "has_area"      // Directory → SemanticArea it contains
+	KnownRelCoOccursWith EdgeRel = "co_occurs_with" // Entities co-occurring in ≥4 sessions (autonomous loop)
 )
 
 // CascadeRels lists the ownership relations that propagate stale status from a
@@ -66,6 +68,7 @@ var CascadeRels = []EdgeRel{
 	KnownRelHasTask,
 	KnownRelHasSection,
 	KnownRelMentions,
+	KnownRelHasArea, // SemanticArea is owned by its parent Directory
 }
 
 // FactStatus governs correctness invariants — closed enum.

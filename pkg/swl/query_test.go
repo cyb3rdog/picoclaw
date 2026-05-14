@@ -361,11 +361,11 @@ func TestAssertNote_DepthAtLeast2(t *testing.T) {
 
 	m.AssertNote("foo.go", "important note about this file", 0.85, "")
 
-	// AssertNote creates a Note entity with depth MAX(current, 2)
+	// AssertNote creates an Assertion entity with depth MAX(current, 2)
 	var depth int
-	_ = m.db.QueryRow("SELECT MAX(knowledge_depth) FROM entities WHERE type = ?", KnownTypeNote).Scan(&depth)
+	_ = m.db.QueryRow("SELECT MAX(knowledge_depth) FROM entities WHERE type = ?", KnownTypeAssertion).Scan(&depth)
 	if depth < 2 {
-		t.Errorf("expected Note entity knowledge_depth ≥ 2, got %d", depth)
+		t.Errorf("expected Assertion entity knowledge_depth ≥ 2, got %d", depth)
 	}
 }
 

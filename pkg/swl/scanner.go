@@ -225,6 +225,9 @@ func (m *Manager) ScanWorkspace(root string, sessionKey ...string) (ScanStats, e
 		}
 	}
 
+	// Derive semantic area relationships from the import graph (Phase B ontology).
+	m.DeriveAreaRelations()
+
 	return stats, nil
 }
 

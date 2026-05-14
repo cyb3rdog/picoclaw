@@ -18,6 +18,7 @@ Mandatory habits:
    query_swl {"scan":true,"root":"."}
 4. Capture insights that won't appear in file content:
    query_swl {"assert":"<fact>","subject":"<topic>","confidence":0.9}
+   Assertions link to real workspace entities (File, Symbol, SemanticArea) — not phantom notes.
 
 Useful queries:
   query_swl {"question":"what imports <pkg>"}
@@ -27,7 +28,8 @@ Useful queries:
   query_swl {"stats":true}         → graph health
   query_swl {"sql":"SELECT ..."}   → raw graph query (SELECT only)
 
-The graph is only as useful as you make it: use it consistently.`
+The graph is only as useful as you make it: use it consistently.
+If query_swl returns ⚠ configuration warnings, fix the named file and trigger a rescan.`
 
 // SessionHint returns the constant hint string.
 func SessionHint() string { return sessionHint }

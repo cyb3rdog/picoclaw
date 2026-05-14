@@ -4,11 +4,69 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"reflect"
 	"regexp"
 	"strings"
 	"time"
 )
+
+// handlerRegistry maps handler names (as referenced in swl.query.yaml) to
+// type-safe method calls. All handlers conform to func(*Manager, string) string.
+// Handlers that take no hint ignore the hint parameter. Handlers that take
+// extra fixed arguments (e.g. askSymbols with symType) use a wrapping closure.
+// This replaces the previous reflect-based dispatch in dispatchHandler.
+//
+//nolint:gochecknoglobals
+var handlerRegistry = map[string]func(*Manager, string) string{
+	// Session
+	"SessionResume": func(m *Manager, hint string) string { return m.SessionResume(hint) },
+
+	// Workspace / areas
+	"askWorkspacePurpose": func(m *Manager, _ string) string { return m.askWorkspacePurpose() },
+	"askSemanticAreas":    func(m *Manager, _ string) string { return m.askSemanticAreas() },
+	"askAnchorDocuments":  func(m *Manager, _ string) string { return m.askAnchorDocuments() },
+
+	// File detail
+	"askFileDetail": func(m *Manager, hint string) string { return m.askFileDetail(hint) },
+
+	// Label search (find-by-purpose)
+	"labelSearch": func(m *Manager, hint string) string { return m.labelSearch(hint) },
+
+	// Symbols — hint contains file name; symType not specified by YAML (defaults to "")
+	"askSymbols": func(m *Manager, hint string) string { return m.askSymbols(hint, "") },
+
+	// Tasks
+	"askTasks":    func(m *Manager, hint string) string { return m.askTasks(hint) },
+	"askAllTasks": func(m *Manager, _ string) string { return m.askAllTasks() },
+
+	// Imports / dependencies
+	"askImports": func(m *Manager, hint string) string { return m.askImports(hint) },
+
+	// Files
+	"askFilesIn":     func(m *Manager, hint string) string { return m.askFilesIn(hint) },
+	"askRecentFiles": func(m *Manager, _ string) string { return m.askRecentFiles() },
+
+	// Quality / metrics
+	"askStale":       func(m *Manager, _ string) string { return m.askStale() },
+	"askProjectType": func(m *Manager, _ string) string { return m.askProjectType() },
+	"askComplexity":  func(m *Manager, _ string) string { return m.askComplexity() },
+	"askTopDeps":     func(m *Manager, _ string) string { return m.askTopDeps() },
+
+	// URLs / web
+	"askURLs": func(m *Manager, _ string) string { return m.askURLs() },
+
+	// Operational
+	"askSessions":   func(m *Manager, _ string) string { return m.askSessions() },
+	"Stats":         func(m *Manager, _ string) string { return m.Stats() },
+	"KnowledgeGaps": func(m *Manager, _ string) string { return m.KnowledgeGaps() },
+	"Schema":        func(m *Manager, _ string) string { return m.Schema() },
+}
+
+// ValidateHandler reports whether name is a registered handler.
+// Used by CompileQueryConfig to catch YAML typos at load time.
+func ValidateHandler(name string) bool {
+	_, ok := handlerRegistry[name]
+	return ok
+}
 
 // tier1Pattern maps a compiled regexp to a handler method name + hint extraction group.
 type tier1Pattern struct {
@@ -171,6 +229,15 @@ func (m *Manager) Ask(question string) string {
 		return "[SWL] Empty question."
 	}
 
+	// Prepend a warning when workspace rules/query config failed to load.
+	rulesWarning := ""
+	if m.rulesLoadErr != "" {
+		rulesWarning = fmt.Sprintf(
+			"⚠ SWL workspace rules failed to load: %s\n  Workspace file: %s/.swl/swl.rules.yaml\n  Using embedded defaults. Fix the file and rescan to apply custom rules.\n\n",
+			m.rulesLoadErr, m.workspace,
+		)
+	}
+
 	// Tier 1: try YAML intents if loaded, otherwise hardcoded patterns
 	var tier1Result string
 	if len(m.rules.QueryIntents) > 0 {
@@ -180,7 +247,7 @@ func (m *Manager) Ask(question string) string {
 		tier1Result = m.tryHardcodedPatterns(q)
 	}
 	if tier1Result != "" {
-		return tier1Result
+		return rulesWarning + tier1Result
 	}
 
 	// Tier 2: SQL templates
@@ -191,16 +258,16 @@ func (m *Manager) Ask(question string) string {
 		tier2Result = m.tryTier2(q)
 	}
 	if tier2Result != "" {
-		return tier2Result
+		return rulesWarning + tier2Result
 	}
 
 	// Tier 3: freetext
 	if result := m.tryTier3(q); result != "" {
-		return result
+		return rulesWarning + result
 	}
 
 	isNewGap := m.recordQueryGap(q)
-	return m.fallthroughResponse(q, isNewGap)
+	return rulesWarning + m.fallthroughResponse(q, isNewGap)
 }
 
 // tryYAMLIntents matches the question against compiled query intents from swl.query.yaml.
@@ -220,28 +287,17 @@ func (m *Manager) tryYAMLIntents(question string) string {
 	return ""
 }
 
-// dispatchHandler calls a Manager method by name with an optional hint string.
-// Falls back to empty string (→ Tier 2 fallback) if the method is not found
-// or returns a non-string result.
+// dispatchHandler calls a registered handler by name with the extracted hint.
+// If the name is not found in handlerRegistry, it logs a warning and returns "".
+// This replaces the previous reflect.MethodByName approach which silently
+// swallowed typos in handler names.
 func (m *Manager) dispatchHandler(handlerName, hint string) string {
-	method := reflect.ValueOf(m).MethodByName(handlerName)
-	if !method.IsValid() {
-		return "" // unknown handler → fall through
+	fn, ok := handlerRegistry[handlerName]
+	if !ok {
+		m.logInferenceEvent("dispatch", "unknown handler: "+handlerName)
+		return "" // unknown handler → fall through to Tier 2
 	}
-
-	var args []reflect.Value
-	if method.Type().NumIn() == 1 {
-		args = []reflect.Value{reflect.ValueOf(hint)}
-	}
-
-	results := method.Call(args)
-	if len(results) == 0 {
-		return ""
-	}
-	if r, ok := results[0].Interface().(string); ok {
-		return r
-	}
-	return ""
+	return fn(m, hint)
 }
 
 // tryHardcodedPatterns is the original Tier 1 pattern matching loop.
@@ -284,11 +340,58 @@ func (m *Manager) tryYAMLTier2(question string) string {
 	return m.tryTier2(question)
 }
 
-// extractTier2Args extracts positional arguments from a question for a SQL template.
-// Placeholder $1, $2 etc. in tmpl.Query indicate required args.
-// This is a stub — real implementation would need template arg extraction per query type.
+// extractTier2Args extracts positional SQL arguments from the question string.
+// If the SQL template contains no "?" placeholders, nil is returned immediately
+// (the query takes no parameters). Otherwise, the first meaningful term is
+// extracted from the question by stripping common stop words and returning the
+// first remaining token wrapped in SQL LIKE wildcards ("%term%").
+//
+// For the current built-in templates only one argument is ever needed
+// (dependency_chain: a file/package name). Additional placeholder slots beyond
+// the first are filled with the same term so the query still executes.
 func extractTier2Args(query, question string) []any {
-	return nil // templates with $1/$2 args currently use hardcoded extractors
+	if !strings.Contains(query, "?") {
+		return nil
+	}
+
+	// Count how many "?" placeholders the query has.
+	placeholderCount := strings.Count(query, "?")
+
+	// Extract the first meaningful term from the question.
+	term := firstMeaningfulTerm(question)
+	if term == "" {
+		// No term found; supply empty LIKE wildcard so the query still runs.
+		term = "%"
+	} else {
+		term = "%" + term + "%"
+	}
+
+	args := make([]any, placeholderCount)
+	for i := range args {
+		args[i] = term
+	}
+	return args
+}
+
+// firstMeaningfulTerm returns the first non-stop-word token from s, lowercased.
+// Returns "" if all tokens are stop words or s is empty.
+func firstMeaningfulTerm(s string) string {
+	stop := map[string]bool{
+		"the": true, "a": true, "an": true, "is": true, "in": true, "of": true,
+		"for": true, "to": true, "and": true, "or": true, "what": true, "how": true,
+		"where": true, "find": true, "show": true, "list": true, "get": true,
+		"that": true, "which": true, "are": true, "chain": true, "transitive": true,
+		"recursive": true, "count": true, "by": true, "type": true, "breakdown": true,
+		"orphan": true, "unreferenced": true, "entity": true, "entities": true,
+	}
+	for _, w := range strings.Fields(strings.ToLower(s)) {
+		w = strings.Trim(w, `.,;:!?'"`)
+		if w == "" || len(w) < 2 || stop[w] {
+			continue
+		}
+		return w
+	}
+	return ""
 }
 
 // --- Tier 1 handlers ---
@@ -1192,6 +1295,20 @@ func (m *Manager) KnowledgeGaps() string {
 			qgaps = append(qgaps, fmt.Sprintf("  [%dx] %s%s", g.Count, g.Question, flag))
 		}
 		sections = append(sections, "[SWL] Missed queries (repeated ≥3×):\n"+strings.Join(qgaps, "\n"))
+
+		// Include ready-to-paste YAML rule suggestions inline so the LLM can act immediately.
+		if len(analysis.RuleSuggestions) > 0 {
+			yamlBlocks := make([]string, 0, len(analysis.RuleSuggestions))
+			for i, s := range analysis.RuleSuggestions {
+				yamlBlocks = append(yamlBlocks, fmt.Sprintf(
+					"# Suggestion %d (%s) — %s\n%s", i+1, s.Kind, s.Why, s.YAML,
+				))
+			}
+			sections = append(sections,
+				"[SWL] Rule suggestions (paste into {workspace}/.swl/swl.rules.yaml):\n"+
+					strings.Join(yamlBlocks, "\n\n"),
+			)
+		}
 	}
 
 	if len(sections) == 0 {
@@ -1239,8 +1356,10 @@ Edge relations (open — any string valid): defines, imports, has_task, has_sect
   deleted, describes, committed_in, found, listed, spawned_by, context_of, reasoned, + custom`
 }
 
-// AssertNote records a free-form note about a subject entity.
-// depth is set to MAX(current_depth, 2) — never hardcoded to 3.
+// AssertNote records a fact about a subject and links it to a real graph entity.
+// The subject is resolved to an existing File, Symbol, SemanticArea, or AnchorDocument
+// entity before the Assertion entity is created — preventing orphaned phantom notes.
+// depth is set to MAX(current_depth, 2).
 func (m *Manager) AssertNote(subject, content string, confidence float64, entityType EntityType) string {
 	if subject == "" || content == "" {
 		return "[SWL] assert requires subject and content."
@@ -1248,44 +1367,95 @@ func (m *Manager) AssertNote(subject, content string, confidence float64, entity
 	if confidence <= 0 {
 		confidence = 0.85
 	}
-	if entityType == "" {
-		entityType = KnownTypeNote
+	// Always use KnownTypeAssertion regardless of caller-supplied type,
+	// unless caller explicitly chose a more specific type.
+	if entityType == "" || entityType == KnownTypeNote {
+		entityType = KnownTypeAssertion
 	}
 
-	noteID := entityID(entityType, subject+":"+content[:min(40, len(content))])
+	assertionID := entityID(entityType, subject+":"+truncate(content, 40))
 
-	// Read current depth
 	var currentDepth int
-	m.db.QueryRow("SELECT knowledge_depth FROM entities WHERE id = ?", noteID).Scan(&currentDepth) //nolint:errcheck
+	m.db.QueryRow("SELECT knowledge_depth FROM entities WHERE id = ?", assertionID).Scan(&currentDepth) //nolint:errcheck
 	depth := currentDepth
 	if depth < 2 {
 		depth = 2
 	}
 
 	_ = m.writer.upsertEntity(EntityTuple{
-		ID: noteID, Type: entityType, Name: content,
+		ID: assertionID, Type: entityType, Name: content,
 		Confidence: confidence, ExtractionMethod: MethodStated, KnowledgeDepth: depth,
 		Metadata: map[string]any{"subject": subject},
 	})
 
-	subjectID := entityID(KnownTypeNote, subject)
-	_ = m.writer.upsertEntity(EntityTuple{
-		ID: subjectID, Type: KnownTypeNote, Name: subject,
-		Confidence: 1.0, ExtractionMethod: MethodObserved, KnowledgeDepth: 1,
-	})
-	_ = m.writer.upsertEdge(EdgeTuple{FromID: noteID, Rel: KnownRelDescribes, ToID: subjectID})
+	// Resolve subject to an existing graph entity — link to the real entity
+	// rather than creating a phantom Note.
+	subjectID, resolvedType := m.resolveSubjectEntity(subject)
+	_ = m.writer.upsertEdge(EdgeTuple{FromID: assertionID, Rel: KnownRelDescribes, ToID: subjectID})
 
-	shortID := noteID
+	// Contradiction detection: if ≥2 existing Assertion entities about the same
+	// subject have different content, halve confidence and mark stale.
+	contradictionNote := m.detectAssertionContradiction(subjectID, assertionID, content)
+	if contradictionNote != "" {
+		confidence /= 2
+		_ = m.SetFactStatus(assertionID, FactStale)
+	}
+
+	shortID := assertionID
 	if len(shortID) > 8 {
 		shortID = shortID[:8]
 	}
+
+	resolveNote := ""
+	if resolvedType == KnownTypeNote {
+		resolveNote = " (subject not yet in graph — will link when first seen)"
+	}
+	if contradictionNote != "" {
+		resolveNote += " ⚠ " + contradictionNote
+	}
 	return fmt.Sprintf(
-		"[SWL] Recorded: %q on entity %q [id: %s] at confidence %.2f.",
+		"[SWL] Recorded: %q on %s %q [id: %s] at confidence %.2f.%s",
 		content,
+		resolvedType,
 		subject,
 		shortID,
 		confidence,
+		resolveNote,
 	)
+}
+
+// detectAssertionContradiction checks whether ≥2 existing Assertions for the same
+// subject entity have content different from the new assertion. If so, it records
+// a query gap noting the contradiction and returns a short warning string.
+func (m *Manager) detectAssertionContradiction(subjectID, newAssertionID, newContent string) string {
+	rows, err := m.db.Query(`
+		SELECT e.from_id, ent.name
+		FROM edges e
+		JOIN entities ent ON ent.id = e.from_id AND ent.type = ? AND ent.fact_status != 'deleted'
+		WHERE e.rel = ? AND e.to_id = ? AND e.from_id != ?
+		LIMIT 10`,
+		KnownTypeAssertion, KnownRelDescribes, subjectID, newAssertionID,
+	)
+	if err != nil {
+		return ""
+	}
+	defer rows.Close()
+
+	var contradicting int
+	for rows.Next() {
+		var id, existingContent string
+		if rows.Scan(&id, &existingContent) == nil && existingContent != newContent {
+			contradicting++
+		}
+	}
+	_ = rows.Err()
+
+	if contradicting < 2 {
+		return ""
+	}
+	note := fmt.Sprintf("contradicted by %d existing assertion(s) — confidence halved, marked stale", contradicting)
+	m.recordQueryGap(fmt.Sprintf("assertion contradiction on %s", subjectID))
+	return note
 }
 
 // SafeQuery executes a read-only SQL query with a 200-row cap.

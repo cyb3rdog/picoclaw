@@ -25,6 +25,10 @@ type Handler struct {
 	weixinFlows          map[string]*weixinFlow
 	wecomMu              sync.Mutex
 	wecomFlows           map[string]*wecomFlow
+
+	// swlDBPathMu guards swlCachedDBPath — resolved once per Handler lifetime.
+	swlDBPathMu     sync.RWMutex
+	swlCachedDBPath string
 }
 
 // NewHandler creates an instance of the API handler.

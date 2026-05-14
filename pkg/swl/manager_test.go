@@ -165,14 +165,14 @@ func TestAssertNoteDepth(t *testing.T) {
 		t.Error("AssertNote returned empty string")
 	}
 
-	// Find the note entity
+	// Find the assertion entity (AssertNote now uses KnownTypeAssertion)
 	var depth int
 	err := m.db.QueryRow(
 		"SELECT knowledge_depth FROM entities WHERE type = ? AND name LIKE ?",
-		KnownTypeNote, "%A note about something%",
+		KnownTypeAssertion, "%A note about something%",
 	).Scan(&depth)
 	if err != nil {
-		t.Fatalf("note entity not found: %v", err)
+		t.Fatalf("assertion entity not found: %v", err)
 	}
 	if depth < 2 {
 		t.Errorf("assert_note depth < 2: got %d", depth)
@@ -647,7 +647,7 @@ func TestConfidenceCalibration(t *testing.T) {
 		Confidence: 0.9, ExtractionMethod: MethodExtracted, KnowledgeDepth: 1,
 	})
 
-	// Second upsert: same method (extracted), lower confidence → should average
+	// Second upsert: same method (extracted), lower confidence → should NOT decrease (monotonicity)
 	_ = m.UpsertEntity(EntityTuple{
 		ID: id, Type: KnownTypeSymbol, Name: "Bar",
 		Confidence: 0.7, ExtractionMethod: MethodExtracted, KnowledgeDepth: 1,
@@ -655,9 +655,8 @@ func TestConfidenceCalibration(t *testing.T) {
 
 	var conf float64
 	m.db.QueryRow("SELECT confidence FROM entities WHERE id = ?", id).Scan(&conf)
-	want := (0.9 + 0.7) / 2.0 // 0.8
-	if conf < want-0.01 || conf > want+0.01 {
-		t.Errorf("same-method averaging: got confidence %.4f, want %.4f", conf, want)
+	if conf < 0.9-0.01 {
+		t.Errorf("confidence monotonicity violated: got %.4f, want ≥ 0.9", conf)
 	}
 
 	// Third upsert: higher-priority method (observed) → should replace with new confidence

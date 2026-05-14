@@ -1,7 +1,6 @@
 package api
 
 import (
-	"compress/gzip"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -20,7 +19,6 @@ import (
 func (h *Handler) registerSWLRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/swl/graph", h.handleSWLGraph)
 	mux.HandleFunc("GET /api/swl/graph/neighborhood", h.handleSWLNeighborhood)
-	mux.HandleFunc("GET /api/swl/graph/topology", h.handleSWLTopology)
 	mux.HandleFunc("GET /api/swl/stats", h.handleSWLStats)
 	mux.HandleFunc("GET /api/swl/health", h.handleSWLHealth)
 	mux.HandleFunc("GET /api/swl/sessions", h.handleSWLSessions)
@@ -28,17 +26,30 @@ func (h *Handler) registerSWLRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/swl/stream", h.handleSWLStream)
 }
 
-// swlDBPath resolves the SWL database path from config.
+// swlDBPath resolves the SWL database path from config, caching the result.
 func (h *Handler) swlDBPath() (string, error) {
+	h.swlDBPathMu.RLock()
+	cached := h.swlCachedDBPath
+	h.swlDBPathMu.RUnlock()
+	if cached != "" {
+		return cached, nil
+	}
+
 	cfg, err := config.LoadConfig(h.configPath)
 	if err != nil {
 		return "", fmt.Errorf("load config: %w", err)
 	}
+	var resolved string
 	if cfg.Tools.SWL != nil && cfg.Tools.SWL.DBPath != "" {
-		return cfg.Tools.SWL.DBPath, nil
+		resolved = cfg.Tools.SWL.DBPath
+	} else {
+		resolved = filepath.Join(cfg.WorkspacePath(), ".swl", "swl.db")
 	}
-	workspace := cfg.WorkspacePath()
-	return filepath.Join(workspace, ".swl", "swl.db"), nil
+
+	h.swlDBPathMu.Lock()
+	h.swlCachedDBPath = resolved
+	h.swlDBPathMu.Unlock()
+	return resolved, nil
 }
 
 func openSWLReadOnly(dbPath string) (*sql.DB, error) {
@@ -138,12 +149,19 @@ func (h *Handler) handleSWLGraph(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// For session mode: resolve the set of session IDs to scope by.
-	var sessionEdgeFilter string
+	var (
+		sessionEdgeFilter string
+		edgeArgs          []any
+	)
 	if mode == "session" {
 		sessionIDs := swlRecentSessionIDs(r, db, 5)
 		if len(sessionIDs) > 0 {
-			ph := "'" + strings.Join(sessionIDs, "','") + "'"
-			sessionEdgeFilter = `AND (e.source_session IN (` + ph + `) OR n1.type = 'Session' OR n2.type = 'Session')`
+			placeholders := strings.Repeat("?,", len(sessionIDs))
+			placeholders = placeholders[:len(placeholders)-1]
+			sessionEdgeFilter = `AND (e.source_session IN (` + placeholders + `) OR n1.type = 'Session' OR n2.type = 'Session')`
+			for _, id := range sessionIDs {
+				edgeArgs = append(edgeArgs, id)
+			}
 		}
 		// Fall back to map behavior if no sessions found.
 	}
@@ -159,7 +177,8 @@ func (h *Handler) handleSWLGraph(w http.ResponseWriter, r *http.Request) {
 		ORDER BY (n1.knowledge_depth + n2.knowledge_depth +
 		          MIN(n1.access_count,50) + MIN(n2.access_count,50)) DESC
 		LIMIT ?`
-	edgeRows, err := db.QueryContext(r.Context(), edgeQuery, maxEdges*3)
+	edgeArgs = append(edgeArgs, maxEdges*3)
+	edgeRows, err := db.QueryContext(r.Context(), edgeQuery, edgeArgs...)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -707,10 +726,16 @@ func (h *Handler) handleSWLSessions(w http.ResponseWriter, r *http.Request) {
 	}
 	defer db.Close()
 
+	limit := 50
+	if lStr := r.URL.Query().Get("limit"); lStr != "" {
+		if n, err2 := fmt.Sscanf(lStr, "%d", &limit); n != 1 || err2 != nil || limit < 1 || limit > 200 {
+			limit = 50
+		}
+	}
+
 	rows, err := db.QueryContext(r.Context(), `
 		SELECT id, started_at, ended_at, goal, summary
-		FROM sessions ORDER BY started_at DESC LIMIT 50
-	`)
+		FROM sessions ORDER BY started_at DESC LIMIT ?`, limit)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -724,9 +749,9 @@ func (h *Handler) handleSWLSessions(w http.ResponseWriter, r *http.Request) {
 		if rows.Scan(&s.ID, &s.StartedAt, &endedAt, &goal, &summary) != nil {
 			continue
 		}
-		s.EndedAt = endedAt.String
-		s.Goal = goal.String
-		s.Summary = summary.String
+		if endedAt.Valid { s.EndedAt = endedAt.String }
+		if goal.Valid { s.Goal = goal.String }
+		if summary.Valid { s.Summary = summary.String }
 		sessions = append(sessions, s)
 	}
 	_ = rows.Err()
@@ -801,9 +826,9 @@ func (h *Handler) handleSWLOverview(w http.ResponseWriter, r *http.Request) {
 			if rrows.Scan(&s.ID, &s.StartedAt, &endedAt, &goal, &summary) != nil {
 				continue
 			}
-			s.EndedAt = endedAt.String
-			s.Goal = goal.String
-			s.Summary = summary.String
+			if endedAt.Valid { s.EndedAt = endedAt.String }
+			if goal.Valid { s.Goal = goal.String }
+			if summary.Valid { s.Summary = summary.String }
 			out.Sessions = append(out.Sessions, s)
 		}
 		_ = rrows.Err()
@@ -880,9 +905,13 @@ func (h *Handler) handleSWLStream(w http.ResponseWriter, r *http.Request) {
 		}
 
 		var maxModAt string
-		db.QueryRowContext(r.Context(), "SELECT COALESCE(MAX(modified_at),'') FROM entities").
-			Scan(&maxModAt)
-			//nolint:errcheck
+		if err := db.QueryRowContext(r.Context(), "SELECT COALESCE(MAX(modified_at),'') FROM entities").
+			Scan(&maxModAt); err != nil {
+			// DB connection stale — reset to trigger reconnect on next iteration.
+			db.Close()
+			db = nil
+			continue
+		}
 
 		if maxModAt == "" || maxModAt == lastModAt {
 			// No change — back off up to maxInterval
@@ -903,6 +932,9 @@ func (h *Handler) handleSWLStream(w http.ResponseWriter, r *http.Request) {
 			lastModAt,
 		)
 		if err != nil {
+			// DB connection stale — reset to trigger reconnect on next iteration.
+			db.Close()
+			db = nil
 			continue
 		}
 
@@ -954,129 +986,3 @@ func swlShortName(name string) string {
 	return name
 }
 
-// handleSWLTopology returns the full graph topology (lightweight nodes/edges only).
-// This is used for initial load where we need all nodes at once for physics simulation.
-// FIX: Added pagination for large graphs to prevent memory exhaustion.
-func (h *Handler) handleSWLTopology(w http.ResponseWriter, r *http.Request) {
-	dbPath, err := h.swlDBPath()
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	db, err := openSWLReadOnly(dbPath)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
-		return
-	}
-	defer db.Close()
-
-	// FIX: Paginate results to handle large graphs (10k nodes per page max)
-	const nodesPerPage = 10000
-	const edgesPerPage = 20000
-
-	type topologyNode struct {
-		ID   string `json:"id"`
-		Type string `json:"type"`
-		Name string `json:"name"`
-	}
-	type topologyLink struct {
-		Source string `json:"source"`
-		Target string `json:"target"`
-		Rel    string `json:"rel"`
-	}
-
-	// Fetch nodes in pages
-	allNodes := make([]topologyNode, 0)
-	nodeIDs := make(map[string]bool)
-	offset := 0
-	for {
-		nodeRows, err := db.QueryContext(r.Context(), `
-			SELECT id, type, name FROM entities 
-			WHERE fact_status != 'deleted' 
-			ORDER BY id LIMIT ? OFFSET ?`, nodesPerPage, offset)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		count := 0
-		for nodeRows.Next() {
-			var n topologyNode
-			if nodeRows.Scan(&n.ID, &n.Type, &n.Name) == nil {
-				allNodes = append(allNodes, n)
-				nodeIDs[n.ID] = true
-				count++
-			}
-		}
-		_ = nodeRows.Err()
-		nodeRows.Close() //nolint:sqlclosecheck // explicitly closed per page iteration
-
-		if count < nodesPerPage {
-			break
-		}
-		offset += nodesPerPage
-
-		// Safety limit: max 50k nodes
-		if len(allNodes) >= 50000 {
-			break
-		}
-	}
-
-	// Fetch edges in pages
-	allLinks := make([]topologyLink, 0)
-	edgeOffset := 0
-	for {
-		edgeRows, err := db.QueryContext(r.Context(), `
-			SELECT from_id, rel, to_id FROM edges
-			ORDER BY from_id, rel, to_id LIMIT ? OFFSET ?`, edgesPerPage, edgeOffset)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		count := 0
-		for edgeRows.Next() {
-			var l topologyLink
-			if edgeRows.Scan(&l.Source, &l.Rel, &l.Target) == nil {
-				// Only include edges where both endpoints exist
-				if nodeIDs[l.Source] && nodeIDs[l.Target] {
-					allLinks = append(allLinks, l)
-				}
-				count++
-			}
-		}
-		_ = edgeRows.Err()
-		edgeRows.Close() //nolint:sqlclosecheck // explicitly closed per page iteration
-
-		if count < edgesPerPage {
-			break
-		}
-		edgeOffset += edgesPerPage
-
-		// Safety limit: max 100k edges
-		if len(allLinks) >= 100000 {
-			break
-		}
-	}
-
-	// Wrap in gzip
-	w.Header().Set("Content-Encoding", "gzip")
-	w.Header().Set("Content-Type", "application/json")
-	gz := gzip.NewWriter(w)
-	defer gz.Close()
-	json.NewEncoder(gz).Encode(struct {
-		Nodes []topologyNode `json:"nodes"`
-		Links []topologyLink `json:"links"`
-		Meta  struct {
-			TotalNodes int `json:"totalNodes"`
-			TotalEdges int `json:"totalEdges"`
-		} `json:"meta"`
-	}{
-		Nodes: allNodes,
-		Links: allLinks,
-		Meta: struct {
-			TotalNodes int `json:"totalNodes"`
-			TotalEdges int `json:"totalEdges"`
-		}{len(allNodes), len(allLinks)},
-	})
-}

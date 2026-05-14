@@ -15,11 +15,59 @@ import (
 func (m *Manager) MaybeDecay() { m.maybeDecay() }
 
 // maybeDecay runs decay checks with 5% probability per PostHook call.
+// Also triggers co-occurrence derivation at 1% probability.
 func (m *Manager) maybeDecay() {
-	if rand.Float64() > 0.05 {
+	r := rand.Float64()
+	if r < 0.01 {
+		m.deriveCoOccurrences()
+	}
+	if r < 0.05 {
+		m.DecayCheck("", 2)
+	}
+}
+
+// deriveCoOccurrences finds entity pairs that co-occur in ≥4 sessions and
+// upserts a co_occurs_with edge between them. Capped at 100 pairs per run.
+func (m *Manager) deriveCoOccurrences() {
+	const minSessions = 4
+	const maxPairs = 100
+
+	rows, err := m.db.Query(`
+		SELECT e1.from_id, e2.from_id, COUNT(DISTINCT e1.source_session) AS sessions
+		FROM edges e1
+		JOIN edges e2
+		  ON  e1.source_session = e2.source_session
+		  AND e1.from_id < e2.from_id
+		WHERE e1.source_session IS NOT NULL
+		  AND e1.source_session != ''
+		GROUP BY e1.from_id, e2.from_id
+		HAVING sessions >= ?
+		LIMIT ?`,
+		minSessions, maxPairs,
+	)
+	if err != nil {
 		return
 	}
-	m.DecayCheck("", 2)
+	defer rows.Close()
+
+	type pair struct{ a, b string }
+	var pairs []pair
+	for rows.Next() {
+		var a, b string
+		var count int
+		if rows.Scan(&a, &b, &count) == nil {
+			pairs = append(pairs, pair{a, b})
+		}
+	}
+	_ = rows.Err()
+
+	for _, p := range pairs {
+		_ = m.writer.upsertEdge(EdgeTuple{
+			FromID: p.a,
+			Rel:    KnownRelCoOccursWith,
+			ToID:   p.b,
+		})
+	}
 }
 
 // DecayCheck verifies the factual status of up to limit entities.
