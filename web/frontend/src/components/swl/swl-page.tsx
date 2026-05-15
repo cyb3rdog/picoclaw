@@ -90,6 +90,9 @@ export function SWLPage() {
       // Enter focus mode for the clicked node.
       setPreNavMode(focusNodeId !== null ? preNavMode : viewMode)
       setFocusNodeId(node.id)
+    } else {
+      // Background click — exit focus mode.
+      setFocusNodeId(null)
     }
   }, [focusNodeId, preNavMode, viewMode])
 

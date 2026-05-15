@@ -55,10 +55,12 @@ var handlerRegistry = map[string]func(*Manager, string) string{
 	"askURLs": func(m *Manager, _ string) string { return m.askURLs() },
 
 	// Operational
-	"askSessions":   func(m *Manager, _ string) string { return m.askSessions() },
-	"Stats":         func(m *Manager, _ string) string { return m.Stats() },
-	"KnowledgeGaps": func(m *Manager, _ string) string { return m.KnowledgeGaps() },
-	"Schema":        func(m *Manager, _ string) string { return m.Schema() },
+	"askSessions":         func(m *Manager, _ string) string { return m.askSessions() },
+	"askSessionActivity":  func(m *Manager, _ string) string { return m.askSessionActivity() },
+	"askIndexStatus":      func(m *Manager, _ string) string { return m.IndexStatus() },
+	"Stats":               func(m *Manager, _ string) string { return m.Stats() },
+	"KnowledgeGaps":       func(m *Manager, _ string) string { return m.KnowledgeGaps() },
+	"Schema":              func(m *Manager, _ string) string { return m.Schema() },
 }
 
 // ValidateHandler reports whether name is a registered handler.
@@ -581,16 +583,16 @@ func extractSearchTerms(hint string) []string {
 	return terms
 }
 
-// askWorkspacePurpose returns descriptions from AnchorDocument entities and
+// askWorkspacePurpose returns descriptions from anchor File entities and
 // any session goals, giving the LLM immediate context about the workspace.
 func (m *Manager) askWorkspacePurpose() string {
 	rows, err := m.db.Query(`
 		SELECT name, json_extract(metadata,'$.description'), json_extract(metadata,'$.module'),
 		       json_extract(metadata,'$.name'), json_extract(metadata,'$.kind')
 		FROM entities
-		WHERE type = ? AND fact_status != 'deleted'
+		WHERE type = 'File' AND json_extract(metadata,'$.kind') IN ('anchor','manifest')
+		  AND fact_status != 'deleted'
 		ORDER BY knowledge_depth DESC, access_count DESC LIMIT 10`,
-		KnownTypeAnchorDocument,
 	)
 	if err != nil {
 		return "[SWL] Query error: " + err.Error()
@@ -605,8 +607,7 @@ func (m *Manager) askWorkspacePurpose() string {
 		if rows.Scan(&name, &desc, &module, &pkgName, &kind) != nil {
 			continue
 		}
-		id := entityID(KnownTypeAnchorDocument, name)
-		ids = append(ids, id)
+		ids = append(ids, entityID(KnownTypeFile, name))
 		line := "  " + name
 		if module.Valid && module.String != "" {
 			line += " [module: " + module.String + "]"
@@ -639,14 +640,15 @@ func (m *Manager) askWorkspacePurpose() string {
 }
 
 // askSemanticAreas returns the classified semantic areas of the workspace.
+// After entity consolidation, semantic areas are Directory entities with is_semantic_area=true.
 func (m *Manager) askSemanticAreas() string {
 	rows, err := m.db.Query(`
 		SELECT name, json_extract(metadata,'$.content_type'), json_extract(metadata,'$.documented'),
 		       json_extract(metadata,'$.description')
 		FROM entities
-		WHERE type = ? AND fact_status != 'deleted'
+		WHERE type = 'Directory' AND json_extract(metadata,'$.is_semantic_area') = 1
+		  AND fact_status != 'deleted'
 		ORDER BY name LIMIT 30`,
-		KnownTypeSemanticArea,
 	)
 	if err != nil {
 		return "[SWL] Query error: " + err.Error()
@@ -661,7 +663,7 @@ func (m *Manager) askSemanticAreas() string {
 		if rows.Scan(&name, &contentType, &documented, &desc) != nil {
 			continue
 		}
-		ids = append(ids, entityID(KnownTypeSemanticArea, name))
+		ids = append(ids, entityID(KnownTypeDirectory, name))
 		line := "  " + name
 		if contentType.Valid && contentType.String != "" {
 			line += " [" + contentType.String + "]"
@@ -683,13 +685,14 @@ func (m *Manager) askSemanticAreas() string {
 }
 
 // askAnchorDocuments returns known anchor documents with their descriptions.
+// After entity consolidation, anchor docs are File entities with kind="anchor" or "manifest".
 func (m *Manager) askAnchorDocuments() string {
 	rows, err := m.db.Query(`
 		SELECT name, json_extract(metadata,'$.description'), json_extract(metadata,'$.kind')
 		FROM entities
-		WHERE type = ? AND fact_status != 'deleted'
+		WHERE type = 'File' AND json_extract(metadata,'$.kind') IN ('anchor','manifest')
+		  AND fact_status != 'deleted'
 		ORDER BY knowledge_depth DESC, name LIMIT 20`,
-		KnownTypeAnchorDocument,
 	)
 	if err != nil {
 		return "[SWL] Query error: " + err.Error()
@@ -704,7 +707,7 @@ func (m *Manager) askAnchorDocuments() string {
 		if rows.Scan(&name, &desc, &kind) != nil {
 			continue
 		}
-		ids = append(ids, entityID(KnownTypeAnchorDocument, name))
+		ids = append(ids, entityID(KnownTypeFile, name))
 		line := "  " + name
 		if kind.Valid && kind.String != "" {
 			line += " [" + kind.String + "]"
@@ -743,17 +746,7 @@ func (m *Manager) askFileDetail(hint string) string {
 		KnownTypeFile, "%"+hint+"%",
 	).Scan(&fileID, &fileName, &depth, &desc)
 	if err != nil {
-		// Also try AnchorDocument.
-		err2 := m.db.QueryRow(`
-			SELECT id, name, knowledge_depth, json_extract(metadata,'$.description')
-			FROM entities
-			WHERE type = ? AND fact_status != 'deleted' AND name LIKE ?
-			ORDER BY knowledge_depth DESC LIMIT 1`,
-			KnownTypeAnchorDocument, "%"+hint+"%",
-		).Scan(&fileID, &fileName, &depth, &desc)
-		if err2 != nil {
-			return fmt.Sprintf("[SWL] No file found matching %q.", hint)
-		}
+		return fmt.Sprintf("[SWL] No file found matching %q.", hint)
 	}
 
 	m.BumpAccessCount([]string{fileID})
@@ -812,6 +805,28 @@ func (m *Manager) askFileDetail(hint string) string {
 		}
 	}
 
+	// Notes / Assertions linked via describes edge.
+	noteRows, err := m.db.Query(`
+		SELECT n.name, n.confidence FROM entities n
+		JOIN edges e ON e.from_id = n.id AND e.rel = 'describes'
+		WHERE e.to_id = ? AND n.type IN ('Note','Assertion') AND n.fact_status != 'deleted'
+		ORDER BY n.confidence DESC LIMIT 5`, fileID)
+	if err == nil {
+		defer noteRows.Close()
+		var notes []string
+		for noteRows.Next() {
+			var name string
+			var conf float64
+			if noteRows.Scan(&name, &conf) == nil {
+				notes = append(notes, fmt.Sprintf("%s (%.2f)", truncate(name, 100), conf))
+			}
+		}
+		_ = noteRows.Err()
+		if len(notes) > 0 {
+			out += "\n  Notes: " + strings.Join(notes, "; ")
+		}
+	}
+
 	return out
 }
 
@@ -867,14 +882,34 @@ func (m *Manager) askTasks(hint string) string {
 
 func (m *Manager) askAllTasks() string {
 	rows, err := m.db.Query(
-		`SELECT name FROM entities WHERE type = ? AND fact_status != 'deleted'
-		 ORDER BY modified_at DESC LIMIT 30`, KnownTypeTask,
+		`SELECT t.name, f.name FROM entities t
+		 LEFT JOIN edges e ON e.to_id = t.id AND e.rel = 'has_task'
+		 LEFT JOIN entities f ON f.id = e.from_id AND f.type = 'File'
+		 WHERE t.type = ? AND t.fact_status != 'deleted'
+		 ORDER BY t.modified_at DESC LIMIT 30`, KnownTypeTask,
 	)
 	if err != nil {
 		return "[SWL] Query error: " + err.Error()
 	}
 	defer rows.Close()
-	return collectRows("[SWL] Open tasks", rows)
+
+	var out []string
+	for rows.Next() {
+		var task string
+		var file sql.NullString
+		if rows.Scan(&task, &file) == nil {
+			line := "  " + truncate(task, 80)
+			if file.Valid && file.String != "" {
+				line += " [" + file.String + "]"
+			}
+			out = append(out, line)
+		}
+	}
+	_ = rows.Err()
+	if len(out) == 0 {
+		return "[SWL] No open tasks found."
+	}
+	return "[SWL] Open tasks:\n" + strings.Join(out, "\n")
 }
 
 func (m *Manager) askImports(hint string) string {
@@ -1015,6 +1050,70 @@ func (m *Manager) askURLs() string {
 	return collectRows("[SWL] Known URLs", rows)
 }
 
+// askSessionActivity returns a summary of activity in the most recent session:
+// which files were touched, what operations were performed, and any Assertions recorded.
+func (m *Manager) askSessionActivity() string {
+	var sessionID string
+	err := m.db.QueryRow(
+		`SELECT id FROM sessions ORDER BY started_at DESC LIMIT 1`,
+	).Scan(&sessionID)
+	if err != nil {
+		return "[SWL] No sessions recorded yet."
+	}
+
+	actRows, err := m.db.Query(`
+		SELECT e.rel, en.name, en.type FROM edges e
+		JOIN entities en ON en.id = e.from_id
+		WHERE e.rel IN ('written_in','edited_in','appended_in','read','fetched','executed','deleted','listed')
+		  AND e.source_session = ?
+		ORDER BY e.rel, en.name LIMIT 50`, sessionID)
+	if err != nil {
+		return "[SWL] Activity query error: " + err.Error()
+	}
+	defer actRows.Close()
+
+	byRel := map[string][]string{}
+	for actRows.Next() {
+		var rel, name, typ string
+		if actRows.Scan(&rel, &name, &typ) == nil {
+			byRel[rel] = append(byRel[rel], truncate(name, 60))
+		}
+	}
+	_ = actRows.Err()
+
+	if len(byRel) == 0 {
+		return "[SWL] No activity recorded in the most recent session yet."
+	}
+
+	out := "[SWL] Last session activity:\n"
+	for _, rel := range []string{"written_in", "edited_in", "read", "fetched", "executed", "listed", "deleted"} {
+		if items, ok := byRel[rel]; ok {
+			out += fmt.Sprintf("  %-12s %s\n", rel+":", strings.Join(items, ", "))
+		}
+	}
+
+	// Also show any Assertions recorded in this session.
+	assRows, err := m.db.Query(`
+		SELECT n.name FROM entities n
+		JOIN edges e ON e.from_id = n.id AND e.source_session = ?
+		WHERE n.type IN ('Note','Assertion') AND n.fact_status != 'deleted'
+		ORDER BY n.confidence DESC LIMIT 5`, sessionID)
+	if err == nil {
+		defer assRows.Close()
+		var notes []string
+		for assRows.Next() {
+			var name string
+			if assRows.Scan(&name) == nil {
+				notes = append(notes, truncate(name, 80))
+			}
+		}
+		if len(notes) > 0 {
+			out += "  Assertions: " + strings.Join(notes, "; ")
+		}
+	}
+	return strings.TrimRight(out, "\n")
+}
+
 func (m *Manager) askSessions() string {
 	rows, err := m.db.Query(
 		`SELECT id, started_at, ended_at, goal FROM sessions ORDER BY started_at DESC LIMIT 10`,
@@ -1065,7 +1164,13 @@ var sqlTemplates = map[string]tier2Template{
 			UNION ALL
 			SELECT e.to_id, c.depth+1 FROM edges e JOIN chain c ON e.from_id = c.id WHERE c.depth < 8
 		) SELECT DISTINCT e.name, c.depth FROM chain c JOIN entities e ON e.id = c.id ORDER BY c.depth LIMIT 50`,
-		argFn: func(question string) []any { return []any{"%" + question + "%"} },
+		argFn: func(question string) []any {
+			terms := tier3Terms(question)
+			if len(terms) > 0 {
+				return []any{"%" + terms[0] + "%"}
+			}
+			return []any{"%" + question + "%"}
+		},
 	},
 	"files_by_type": {
 		keywords: []string{"count by type", "entity types", "breakdown"},
@@ -1136,7 +1241,7 @@ func (m *Manager) recordQueryGap(question string) bool {
 }
 
 // fallthroughResponse returns the message shown when all tiers miss.
-// On first miss (isNewGap=true) it includes next-step guidance.
+// On repeat miss, surfaces any generated rule suggestion inline.
 func (m *Manager) fallthroughResponse(question string, isNewGap bool) string {
 	if isNewGap {
 		return fmt.Sprintf(
@@ -1150,10 +1255,18 @@ func (m *Manager) fallthroughResponse(question string, isNewGap bool) string {
 			question,
 		)
 	}
-	return fmt.Sprintf(
-		"[SWL] Still no match for %q — workspace may not be indexed yet. Try query_swl {\"scan\":true}.",
-		question,
-	)
+
+	// On repeat miss, look up existing suggestion to surface inline.
+	gapID := contentHash("gap:" + strings.ToLower(strings.TrimSpace(question)))
+	var suggestion string
+	m.db.QueryRow("SELECT suggestion FROM query_gaps WHERE id = ?", gapID).Scan(&suggestion) //nolint:errcheck
+
+	base := fmt.Sprintf("[SWL] Still no match for %q — workspace may not be indexed yet. Try query_swl {\"scan\":true}.", question)
+	if suggestion != "" {
+		return base + "\n\n[SWL] Suggested rule (paste into {workspace}/.swl/swl.rules.yaml):\n" + suggestion +
+			"\nThen: query_swl {\"reload_config\":true}"
+	}
+	return base
 }
 
 // tier3Terms extracts significant words from a question (shared by tryTier3
@@ -1228,6 +1341,64 @@ func (m *Manager) Stats() string {
 	return "[SWL] Graph stats:\n" + strings.Join(out, "\n")
 }
 
+// IndexStatus returns a summary of indexing coverage: how many files are indexed,
+// how many are unindexed (no knowledge_depth), and which directories have gaps.
+func (m *Manager) IndexStatus() string {
+	var totalFiles, indexedFiles int
+	m.db.QueryRow(`SELECT COUNT(*) FROM entities WHERE type='File' AND fact_status!='deleted'`).Scan(&totalFiles)                              //nolint:errcheck
+	m.db.QueryRow(`SELECT COUNT(*) FROM entities WHERE type='File' AND fact_status!='deleted' AND knowledge_depth>0`).Scan(&indexedFiles)     //nolint:errcheck
+
+	var staleFiles int
+	m.db.QueryRow(`SELECT COUNT(*) FROM entities WHERE type='File' AND fact_status='stale'`).Scan(&staleFiles) //nolint:errcheck
+
+	var symbolCount, taskCount, sectionCount int
+	m.db.QueryRow(`SELECT COUNT(*) FROM entities WHERE type='Symbol' AND fact_status!='deleted'`).Scan(&symbolCount)  //nolint:errcheck
+	m.db.QueryRow(`SELECT COUNT(*) FROM entities WHERE type='Task' AND fact_status!='deleted'`).Scan(&taskCount)      //nolint:errcheck
+	m.db.QueryRow(`SELECT COUNT(*) FROM entities WHERE type='Section' AND fact_status!='deleted'`).Scan(&sectionCount) //nolint:errcheck
+
+	// Top directories by unindexed file count.
+	gapRows, err := m.db.Query(`
+		SELECT d.name, COUNT(f.id) as gap
+		FROM entities f
+		JOIN edges e ON e.from_id = f.id AND e.rel = 'in_dir'
+		JOIN entities d ON d.id = e.to_id AND d.type = 'Directory'
+		WHERE f.type = 'File' AND f.fact_status != 'deleted' AND f.knowledge_depth = 0
+		GROUP BY d.name ORDER BY gap DESC LIMIT 5`)
+	var gapLines []string
+	if err == nil {
+		defer gapRows.Close()
+		for gapRows.Next() {
+			var dir string
+			var cnt int
+			if gapRows.Scan(&dir, &cnt) == nil {
+				gapLines = append(gapLines, fmt.Sprintf("  %s (%d unindexed)", dir, cnt))
+			}
+		}
+	}
+
+	lines := []string{
+		fmt.Sprintf("[SWL] Index coverage: %d/%d files indexed (%.0f%%)", indexedFiles, totalFiles,
+			pct(indexedFiles, totalFiles)),
+		fmt.Sprintf("  Stale: %d  Symbols: %d  Tasks: %d  Sections: %d",
+			staleFiles, symbolCount, taskCount, sectionCount),
+	}
+	if len(gapLines) > 0 {
+		lines = append(lines, "  Dirs with unindexed files:")
+		lines = append(lines, gapLines...)
+		lines = append(lines, `  → run query_swl {"scan":true} to index`)
+	} else {
+		lines = append(lines, "  All known files indexed.")
+	}
+	return strings.Join(lines, "\n")
+}
+
+func pct(n, total int) float64 {
+	if total == 0 {
+		return 100
+	}
+	return float64(n) / float64(total) * 100
+}
+
 // HelpText returns a concise query syntax reference for LLMs operating under
 // compressed context that may have lost the tool description.
 func (m *Manager) HelpText() string {
@@ -1236,12 +1407,14 @@ func (m *Manager) HelpText() string {
   {"question":"what does foo.go do?"}      — natural-language (Tier 1/2/3)
   {"stats":true}                           — entity/edge counts by type
   {"gaps":true}                            — unknown/low-confidence entities
-  {"drift":true}                           — stale/outdated entities
+  {"stale":true}                           — stale/outdated entities
   {"scan":true}                            — incremental workspace index
   {"scan":true,"root":"pkg/swl"}           — scan a subdirectory
+  {"index_status":true}                    — indexing coverage (files indexed vs. missing)
   {"sql":"SELECT name FROM entities ..."}  — raw read-only SQL (200-row cap)
   {"assert":"fact","subject":"X"}          — record a verified fact
   {"suggest":true}                         — rule suggestions from recurring misses
+  {"reload_config":true}                   — reload swl.rules.yaml/swl.query.yaml in-process
   {"schema":true}                          — DB schema and entity types
   {"debug":true}                           — last 64 inference events
   {"help":true}                            — this reference
@@ -1326,7 +1499,7 @@ func (m *Manager) SuggestRules() string {
 		return "[SWL] No rule suggestions — no recurring query gaps (≥3 misses) yet."
 	}
 	out := make([]string, 0, len(analysis.RuleSuggestions)+1)
-	out = append(out, "[SWL] Rule suggestions (add to ~/.swl/swl.rules.yaml):\n")
+	out = append(out, "[SWL] Rule suggestions (add to {workspace}/.swl/swl.rules.yaml):\n")
 	for i, s := range analysis.RuleSuggestions {
 		out = append(out, fmt.Sprintf("\n--- Suggestion %d (%s) ---\n  Why: %s\n  %s",
 			i+1, s.Kind, s.Why, s.YAML))
@@ -1356,9 +1529,9 @@ Edge relations (open — any string valid): defines, imports, has_task, has_sect
   deleted, describes, committed_in, found, listed, spawned_by, context_of, reasoned, + custom`
 }
 
-// AssertNote records a fact about a subject and links it to a real graph entity.
-// The subject is resolved to an existing File, Symbol, SemanticArea, or AnchorDocument
-// entity before the Assertion entity is created — preventing orphaned phantom notes.
+// AssertNote records a fact about a subject entity and links the new Assertion node
+// to it via a describes edge. The subject is resolved to an existing File, Symbol,
+// Directory, or Note entity — preventing orphaned phantom entries.
 // depth is set to MAX(current_depth, 2).
 func (m *Manager) AssertNote(subject, content string, confidence float64, entityType EntityType) string {
 	if subject == "" || content == "" {
@@ -1367,9 +1540,7 @@ func (m *Manager) AssertNote(subject, content string, confidence float64, entity
 	if confidence <= 0 {
 		confidence = 0.85
 	}
-	// Always use KnownTypeAssertion regardless of caller-supplied type,
-	// unless caller explicitly chose a more specific type.
-	if entityType == "" || entityType == KnownTypeNote {
+	if entityType == "" {
 		entityType = KnownTypeAssertion
 	}
 
@@ -1392,6 +1563,9 @@ func (m *Manager) AssertNote(subject, content string, confidence float64, entity
 	// rather than creating a phantom Note.
 	subjectID, resolvedType := m.resolveSubjectEntity(subject)
 	_ = m.writer.upsertEdge(EdgeTuple{FromID: assertionID, Rel: KnownRelDescribes, ToID: subjectID})
+
+	// Boost the subject's confidence and check for multi-session verification.
+	m.propagateAssertionConfidence(subjectID, confidence)
 
 	// Contradiction detection: if ≥2 existing Assertion entities about the same
 	// subject have different content, halve confidence and mark stale.
@@ -1424,6 +1598,30 @@ func (m *Manager) AssertNote(subject, content string, confidence float64, entity
 	)
 }
 
+// propagateAssertionConfidence boosts the subject entity's confidence proportionally
+// to the assertion's confidence, and promotes fact_status to verified when ≥2 distinct
+// sessions have asserted about the same entity.
+func (m *Manager) propagateAssertionConfidence(subjectID string, assertionConf float64) {
+	if subjectID == "" {
+		return
+	}
+	var distinctSessions int
+	m.db.QueryRow(`SELECT COUNT(DISTINCT e.source_session) FROM edges e
+		JOIN entities n ON n.id = e.from_id AND n.type IN ('Note','Assertion')
+		WHERE e.rel = 'describes' AND e.to_id = ?
+		  AND e.source_session IS NOT NULL`, subjectID).Scan(&distinctSessions) //nolint:errcheck
+
+	boost := assertionConf * 0.05
+	m.mu.Lock()
+	m.db.Exec(`UPDATE entities SET confidence = MIN(confidence + ?, 1.0), modified_at = ? WHERE id = ?`, //nolint:errcheck
+		boost, nowSQLite(), subjectID)
+	m.mu.Unlock()
+
+	if distinctSessions >= 2 {
+		_ = m.SetFactStatus(subjectID, FactVerified)
+	}
+}
+
 // detectAssertionContradiction checks whether ≥2 existing Assertions for the same
 // subject entity have content different from the new assertion. If so, it records
 // a query gap noting the contradiction and returns a short warning string.
@@ -1431,10 +1629,10 @@ func (m *Manager) detectAssertionContradiction(subjectID, newAssertionID, newCon
 	rows, err := m.db.Query(`
 		SELECT e.from_id, ent.name
 		FROM edges e
-		JOIN entities ent ON ent.id = e.from_id AND ent.type = ? AND ent.fact_status != 'deleted'
+		JOIN entities ent ON ent.id = e.from_id AND ent.type IN ('Note','Assertion') AND ent.fact_status != 'deleted'
 		WHERE e.rel = ? AND e.to_id = ? AND e.from_id != ?
 		LIMIT 10`,
-		KnownTypeAssertion, KnownRelDescribes, subjectID, newAssertionID,
+		KnownRelDescribes, subjectID, newAssertionID,
 	)
 	if err != nil {
 		return ""

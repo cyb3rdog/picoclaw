@@ -144,9 +144,19 @@ var (
 // localhost variants, documentation placeholder domains (example.com), and
 // .local TLDs. Applied at every URL extraction site to prevent noise accumulation.
 func isNoisyURL(u string) bool {
+	return isNoisyURLWithExtra(u, nil)
+}
+
+// isNoisyURLWithExtra extends isNoisyURL with caller-supplied skip fragments (from rules config).
+func isNoisyURLWithExtra(u string, extra []string) bool {
 	lower := strings.ToLower(u)
 	for _, frag := range noisyURLHosts {
 		if strings.Contains(lower, frag) {
+			return true
+		}
+	}
+	for _, frag := range extra {
+		if frag != "" && strings.Contains(lower, strings.ToLower(frag)) {
 			return true
 		}
 	}
@@ -192,8 +202,11 @@ func (m *Manager) ExtractContent(fileID, filePath, content string) *GraphDelta {
 	// for this file's extension. A nil override means use the global config defaults.
 	override := m.rules.OverrideForExt(ext)
 
+	noiseFilter := m.effectiveNoiseSymbols()
+	skipHosts := m.effectiveSkipHosts()
+
 	if m.cfg.effectiveExtractSymbols() && (override == nil || override.ExtractSymbols == nil || *override.ExtractSymbols) {
-		extractSymbols(ctx, fileID, normFilePath, content, m.compiledSymPatterns, delta, m.MaxSymbols())
+		extractSymbols(ctx, fileID, normFilePath, content, m.compiledSymPatterns, delta, m.MaxSymbols(), noiseFilter)
 	}
 	if m.cfg.effectiveExtractImports() && (override == nil || override.ExtractImports == nil || *override.ExtractImports) {
 		extractImports(ctx, fileID, content, delta, m.MaxImports())
@@ -205,7 +218,7 @@ func (m *Manager) ExtractContent(fileID, filePath, content string) *GraphDelta {
 		extractSections(ctx, fileID, content, delta, m.MaxSections())
 	}
 	if m.cfg.effectiveExtractURLs() && (override == nil || override.ExtractURLs == nil || *override.ExtractURLs) {
-		extractURLs(ctx, fileID, content, delta, m.MaxURLs())
+		extractURLs(ctx, fileID, content, delta, m.MaxURLs(), skipHosts)
 	}
 
 	if ctx.Err() != nil {
@@ -544,7 +557,11 @@ func extractSymbols(
 	patterns []*regexp.Regexp,
 	delta *GraphDelta,
 	limit int,
+	noiseFilter map[string]bool,
 ) {
+	if noiseFilter == nil {
+		noiseFilter = noiseSymbols
+	}
 	// symIDs maps name → entity ID for the post-extraction uses pass.
 	symIDs := map[string]string{}
 	count := 0
@@ -555,7 +572,7 @@ outer:
 				break outer
 			}
 			name := strings.TrimSpace(m[1])
-			if name == "" || noiseSymbols[name] || symIDs[name] != "" {
+			if name == "" || noiseFilter[name] || symIDs[name] != "" {
 				continue
 			}
 			symID := entityID(KnownTypeSymbol, filePath+":"+name)
@@ -649,13 +666,13 @@ func extractSections(ctx context.Context, fileID, content string, delta *GraphDe
 	}
 }
 
-func extractURLs(ctx context.Context, fileID, content string, delta *GraphDelta, limit int) {
+func extractURLs(ctx context.Context, fileID, content string, delta *GraphDelta, limit int, skipHosts []string) {
 	count := 0
 	for _, u := range urlRE.FindAllString(content, -1) {
 		if isDone(ctx) || count >= limit {
 			return
 		}
-		if isNoisyURL(u) {
+		if isNoisyURLWithExtra(u, skipHosts) {
 			continue
 		}
 		urlID := entityID(KnownTypeURL, u)

@@ -39,12 +39,11 @@ CREATE TABLE IF NOT EXISTS edges (
 );
 
 CREATE TABLE IF NOT EXISTS sessions (
-    id              TEXT PRIMARY KEY,
-    started_at      TEXT NOT NULL,
-    ended_at        TEXT,
-    goal            TEXT,
-    summary         TEXT,
-    workspace_state TEXT NOT NULL DEFAULT '{}'
+    id         TEXT PRIMARY KEY,
+    started_at TEXT NOT NULL,
+    ended_at   TEXT,
+    goal       TEXT,
+    summary    TEXT
 );
 
 CREATE TABLE IF NOT EXISTS events (
@@ -75,7 +74,7 @@ CREATE TABLE IF NOT EXISTS query_gaps (
 CREATE INDEX IF NOT EXISTS idx_entities_type   ON entities(type);
 CREATE INDEX IF NOT EXISTS idx_entities_status ON entities(fact_status);
 CREATE INDEX IF NOT EXISTS idx_entities_depth  ON entities(knowledge_depth);
-CREATE INDEX IF NOT EXISTS idx_entities_hash   ON entities(content_hash);
+-- idx_entities_hash removed: content_hash is never filtered in queries
 CREATE INDEX IF NOT EXISTS idx_edges_from      ON edges(from_id);
 CREATE INDEX IF NOT EXISTS idx_edges_to        ON edges(to_id);
 CREATE INDEX IF NOT EXISTS idx_edges_rel       ON edges(rel);
@@ -113,15 +112,35 @@ func applySchema(db *sql.DB) error {
 	if _, err := db.Exec(schema); err != nil {
 		return fmt.Errorf("swl: apply schema: %w", err)
 	}
-	// Phase C: add suggestion column to query_gaps if missing (existing DBs).
 	_ = migrateQueryGaps(db)
+	_ = migrateEntityConsolidation(db)
+	_ = migrateDropLegacySchema(db)
+	return nil
+}
+
+// migrateDropLegacySchema removes obsolete schema elements from existing databases.
+func migrateDropLegacySchema(db *sql.DB) error {
+	_, _ = db.Exec(`DROP INDEX IF EXISTS idx_entities_hash`)
+	_, _ = db.Exec(`ALTER TABLE sessions DROP COLUMN IF EXISTS workspace_state`)
 	return nil
 }
 
 // migrateQueryGaps adds missing columns to query_gaps for existing databases.
 func migrateQueryGaps(db *sql.DB) error {
-	// Add suggestion column if it doesn't exist (Phase C).
 	_, _ = db.Exec(`ALTER TABLE query_gaps ADD COLUMN suggestion TEXT`)
+	return nil
+}
+
+// migrateEntityConsolidation marks deprecated AnchorDocument and SemanticArea
+// entities as deleted. These types have been consolidated into File (with
+// kind="anchor"/"manifest" metadata) and Directory (with is_semantic_area=true).
+// The next ScanWorkspace call will re-emit the correct consolidated entities.
+func migrateEntityConsolidation(db *sql.DB) error {
+	_, _ = db.Exec(
+		`UPDATE entities SET fact_status = 'deleted', modified_at = ?
+		 WHERE type IN ('AnchorDocument','SemanticArea') AND fact_status != 'deleted'`,
+		time.Now().UTC().Format(time.RFC3339Nano),
+	)
 	return nil
 }
 

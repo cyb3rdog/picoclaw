@@ -224,6 +224,9 @@ func (r *RulesEngine) compileFromConfig() {
 		r.NoiseSymbols[s] = true
 	}
 
+	// Symbol patterns (for future callsites; currently supplementary)
+	r.SymbolPatterns = r.cfg.FileRules.Symbols.Patterns
+
 	// Ignore dirs/extensions from config
 	r.IgnoreDirs = make(map[string]bool)
 	for _, d := range r.cfg.FileRules.IgnoreDirs {
@@ -415,6 +418,14 @@ func CompileQueryConfig(cfg *QueryConfig) []CompiledIntent {
 	return intents
 }
 
+// IsNoiseSymbol returns true if sym is in the configured noise symbol list.
+func (r *RulesEngine) IsNoiseSymbol(sym string) bool {
+	if r == nil {
+		return false
+	}
+	return r.NoiseSymbols[sym]
+}
+
 // OverrideForExt returns the ExtractionOverride for a given file extension,
 // or nil if no override matches.
 func (r *RulesEngine) OverrideForExt(ext string) *ExtractionOverride {
@@ -483,6 +494,18 @@ func deepMergeRules(base, override *RulesConfig) {
 	}
 	if override.FileRules.Tasks.MaxPerFile > 0 {
 		base.FileRules.Tasks.MaxPerFile = override.FileRules.Tasks.MaxPerFile
+	}
+	if len(override.FileRules.Tasks.Patterns) > 0 {
+		base.FileRules.Tasks.Patterns = override.FileRules.Tasks.Patterns
+	}
+	if override.FileRules.URLs.MaxPerFile > 0 {
+		base.FileRules.URLs.MaxPerFile = override.FileRules.URLs.MaxPerFile
+	}
+	if len(override.FileRules.URLs.SkipHosts) > 0 {
+		base.FileRules.URLs.SkipHosts = append(base.FileRules.URLs.SkipHosts, override.FileRules.URLs.SkipHosts...)
+	}
+	if override.FileRules.Sections.MaxPerFile > 0 {
+		base.FileRules.Sections.MaxPerFile = override.FileRules.Sections.MaxPerFile
 	}
 	if len(override.FileRules.IgnoreDirs) > 0 {
 		base.FileRules.IgnoreDirs = override.FileRules.IgnoreDirs

@@ -491,6 +491,20 @@ func (m *Manager) shouldIgnoreDir(name string) bool {
 	return false
 }
 
+// defaultIgnoreFileNames are exact filenames always skipped — generated/lock files
+// that are large, machine-generated, and of zero semantic value to any LLM.
+var defaultIgnoreFileNames = map[string]bool{
+	"go.sum":             true,
+	"go.work.sum":        true,
+	"pnpm-lock.yaml":     true,
+	"package-lock.json":  true,
+	"yarn.lock":          true,
+	"composer.lock":      true,
+	"Gemfile.lock":       true,
+	"Podfile.lock":       true,
+	"poetry.lock":        true,
+}
+
 // shouldIgnoreFile returns true if the file should be ignored.
 // Checks both the ignoreMatcher (if loaded) and defaultIgnoreExtensions.
 func (m *Manager) shouldIgnoreFile(name string) bool {
@@ -498,7 +512,17 @@ func (m *Manager) shouldIgnoreFile(name string) bool {
 	if defaultIgnoreExtensions[ext] {
 		return true
 	}
-	// Check full name patterns that are common
+	// Exact filename matches (generated / lock files).
+	if defaultIgnoreFileNames[name] {
+		return true
+	}
+	// Suffix patterns for generated Go files.
+	if strings.HasSuffix(name, "_generated.go") ||
+		strings.HasSuffix(name, ".pb.go") ||
+		strings.HasSuffix(name, ".gen.go") {
+		return true
+	}
+	// Common transient file suffixes.
 	baseName := strings.ToLower(name)
 	if strings.HasSuffix(baseName, ".log") ||
 		strings.HasSuffix(baseName, ".tmp") ||

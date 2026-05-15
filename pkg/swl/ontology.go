@@ -1,7 +1,8 @@
 package swl
 
-// DeriveAreaRelations derives semantic relationships between SemanticArea entities
-// from the existing entity graph. Called at the end of ScanWorkspace.
+// DeriveAreaRelations derives semantic relationships between Directory entities
+// that are classified as semantic areas (is_semantic_area=true) from the existing
+// entity graph. Called at the end of ScanWorkspace.
 //
 // Derives depends_on: if files in area A import dependencies that fall under area B
 // (≥2 cross-area import edges), upsert a depends_on edge from area A to area B.
@@ -13,21 +14,21 @@ func (m *Manager) DeriveAreaRelations() {
 
 	// Single aggregated query: find all (areaID, otherAreaID) pairs where files under
 	// one area import dependencies that match another area's path prefix.
-	// Uses a single join rather than O(A²) individual queries.
 	rows, err := m.db.Query(`
 		SELECT a1.id, a2.id, COUNT(DISTINCT e.to_id) AS imports
 		FROM entities a1
 		JOIN entities a2 ON a1.id != a2.id
-		JOIN entities f  ON f.type = ? AND f.name LIKE (a1.name || '%') AND f.fact_status != 'deleted'
+		JOIN entities f  ON f.type = 'File' AND f.name LIKE (a1.name || '%') AND f.fact_status != 'deleted'
 		JOIN edges e      ON e.from_id = f.id AND e.rel = ?
 		JOIN entities d  ON d.id = e.to_id AND d.type = ? AND d.fact_status != 'deleted'
 		                 AND d.name LIKE ('%' || TRIM(a2.name, '/') || '%')
-		WHERE a1.type = ? AND a1.fact_status != 'deleted'
-		  AND a2.type = ? AND a2.fact_status != 'deleted'
+		WHERE a1.type = 'Directory' AND json_extract(a1.metadata,'$.is_semantic_area') = 1
+		  AND a1.fact_status != 'deleted'
+		  AND a2.type = 'Directory' AND json_extract(a2.metadata,'$.is_semantic_area') = 1
+		  AND a2.fact_status != 'deleted'
 		GROUP BY a1.id, a2.id
 		HAVING imports >= 2`,
-		KnownTypeFile, KnownRelImports, KnownTypeDependency,
-		KnownTypeSemanticArea, KnownTypeSemanticArea,
+		KnownRelImports, KnownTypeDependency,
 	)
 	if err != nil {
 		return
@@ -54,11 +55,12 @@ func (m *Manager) DeriveAreaRelations() {
 	}
 }
 
-// loadAreaPaths returns a map of SemanticArea entity ID → directory path prefix.
+// loadAreaPaths returns a map of semantic area Directory entity ID → directory path prefix.
 func (m *Manager) loadAreaPaths() (map[string]string, error) {
 	rows, err := m.db.Query(
-		`SELECT id, name FROM entities WHERE type = ? AND fact_status != 'deleted'`,
-		KnownTypeSemanticArea,
+		`SELECT id, name FROM entities
+		 WHERE type = 'Directory' AND json_extract(metadata,'$.is_semantic_area') = 1
+		   AND fact_status != 'deleted'`,
 	)
 	if err != nil {
 		return nil, err

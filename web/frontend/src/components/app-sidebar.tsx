@@ -110,7 +110,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
       })
     }
 
-    // When SWL is disabled (or still loading), keep it tucked in the Agent group
+    // Agent group — SWL is not shown here; it appears in the Chat group when enabled.
     const agentItems: NavItem[] = [
       {
         title: "navigation.hub",
@@ -131,14 +131,6 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
         translateTitle: true,
       },
     ]
-    if (swlLoading || !swlEnabled) {
-      agentItems.push({
-        title: "navigation.swl",
-        url: "/swl",
-        icon: IconBrain,
-        translateTitle: true,
-      })
-    }
 
     return [
       {

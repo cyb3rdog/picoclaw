@@ -326,13 +326,13 @@ export function SWLGraph({ data, hiddenTypes, focusNodeId, onNodeClick }: Props)
   }, [])
 
   // ── THREE node objects ────────────────────────────────────────────────────────
+  // lodTier is derived from the visible node count. When it changes, buildNodeObject
+  // gets a new reference, causing ForceGraph3D to recreate all meshes with the correct
+  // segment count for the current scale. Tier boundaries: <100=0, 100-299=1, ≥300=2.
+  const lodTier = graphState.nodes.length < 100 ? 0 : graphState.nodes.length < 300 ? 1 : 2
+
   // buildNodeObject creates the mesh once per node (on first appearance).
   // Color and visual state are kept live by updateNodeMaterial (nodePositionUpdate).
-  //
-  // PERFORMANCE NOTE: For graphs with >5000 nodes, consider switching to InstancedMesh
-  // to reduce memory pressure. The current implementation creates individual meshes
-  // which works well for up to ~5000 nodes. The shared geometry below helps but
-  // InstancedMesh would be a more significant optimization.
   //
   // LOD tiers (based on total visible node count):
   //   < 100 nodes  → 14×10 sphere segs, full quality
@@ -346,12 +346,11 @@ export function SWLGraph({ data, hiddenTypes, focusNodeId, onNodeClick }: Props)
     const color    = resolveColor(n)
     const baseR    = resolveRadius(n)
     const r        = isFocus ? baseR * 1.5 : baseR
-    const nodeCount = allNodesRef.current.size
 
     let wSeg: number, hSeg: number
-    if (nodeCount < 100)       { wSeg = 14; hSeg = 10 }
-    else if (nodeCount < 300)  { wSeg = 8;  hSeg = 6  }
-    else                       { wSeg = 5;  hSeg = 4  }
+    if (lodTier === 0)      { wSeg = 14; hSeg = 10 }
+    else if (lodTier === 1) { wSeg = 8;  hSeg = 6  }
+    else                    { wSeg = 5;  hSeg = 4  }
 
     const isStaleOrDeleted = n.factStatus === "stale" || n.factStatus === "deleted"
     const mesh = new THREE.Mesh(
@@ -365,7 +364,8 @@ export function SWLGraph({ data, hiddenTypes, focusNodeId, onNodeClick }: Props)
     )
 
     return mesh
-  }, [])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lodTier])
 
   // updateNodeMaterial is called every frame for every node via nodePositionUpdate.
   // It syncs the THREE.js material to the current node data (mutated in-place by
@@ -450,6 +450,13 @@ export function SWLGraph({ data, hiddenTypes, focusNodeId, onNodeClick }: Props)
           Reconnecting…
         </div>
       )}
+      <button
+        className="absolute bottom-4 right-4 z-10 rounded border border-border bg-background/80 px-2 py-1 text-xs text-muted-foreground backdrop-blur-sm hover:text-foreground transition-colors"
+        title="Reset camera to fit graph"
+        onClick={() => graphRef.current?.zoomToFit(400)}
+      >
+        ⊞ Fit
+      </button>
       <ForceGraph3D
         ref={graphRef}
         width={size.w}

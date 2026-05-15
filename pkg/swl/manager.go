@@ -160,6 +160,50 @@ func (m *Manager) Config() *Config {
 	return m.cfg
 }
 
+// ReloadConfig re-reads swl.rules.yaml and swl.query.yaml from disk without
+// restarting the agent. The new rules take effect immediately for all subsequent
+// queries and extractions. Returns a status string suitable for LLM consumption.
+func (m *Manager) ReloadConfig() string {
+	rules, rulesErr := LoadRules(m.workspace, "")
+	if rulesErr != nil {
+		m.rulesLoadErr = "workspace rules: " + rulesErr.Error()
+		return "[SWL] ⚠ Rules reload failed: " + rulesErr.Error() +
+			"\n  Fix " + filepath.Join(m.workspace, ".swl", "swl.rules.yaml") + " and try again."
+	}
+
+	qcfg, qcfgErr := LoadQueryConfig(m.workspace, "")
+	if qcfgErr != nil {
+		m.rulesLoadErr = "query config: " + qcfgErr.Error()
+		return "[SWL] ⚠ Query config reload failed: " + qcfgErr.Error() +
+			"\n  Fix " + filepath.Join(m.workspace, ".swl", "swl.query.yaml") + " and try again."
+	}
+
+	rules.QueryIntents = CompileQueryConfig(qcfg)
+	rules.SQLTemplates = qcfg.SQLTmpls
+	m.mu.Lock()
+	m.rules = rules
+	m.rulesLoadErr = ""
+	m.mu.Unlock()
+	return "[SWL] Config reloaded. New rules and query intents are active."
+}
+
+// effectiveNoiseSymbols returns the noise symbol filter for extraction.
+// When YAML rules define noise symbols, they replace the hardcoded defaults.
+func (m *Manager) effectiveNoiseSymbols() map[string]bool {
+	if m.rules != nil && len(m.rules.NoiseSymbols) > 0 {
+		return m.rules.NoiseSymbols
+	}
+	return nil // callers fall back to package-level noiseSymbols
+}
+
+// effectiveSkipHosts returns the list of URL host fragments to suppress.
+func (m *Manager) effectiveSkipHosts() []string {
+	if m.rules != nil {
+		return m.rules.SkipHosts
+	}
+	return nil
+}
+
 // RegisterDecayHandler registers a per-type decay handler.
 // Custom handlers take precedence over built-ins if registered after NewManager.
 func (m *Manager) RegisterDecayHandler(entityType EntityType, fn DecayHandlerFunc) {
@@ -240,7 +284,7 @@ func (m *Manager) DebugInferenceLog() string {
 const scaffoldHeader = `# SWL Extraction Rules — Workspace Override
 # This file was scaffolded automatically. Modify to customize extraction for this workspace.
 # Reference: docs/swl/SWL-DESIGN.md
-# Restart the agent after editing to reload.
+# After editing, reload without restarting: query_swl {"reload_config":true}
 
 `
 
@@ -261,6 +305,35 @@ func scaffoldConfigFiles(workspace string) {
 	if err == nil {
 		writeScaffold(filepath.Join(swlDir, "swl.query.yaml"), queryData)
 	}
+
+	// Scaffold .swlignore if absent, listing common generated/noise paths.
+	writeSwlignoreScaffold(filepath.Join(workspace, ".swlignore"))
+}
+
+const swlignoreScaffold = `# .swlignore — paths and patterns excluded from SWL indexing.
+# Lines starting with # are comments. Patterns use gitignore syntax.
+# This file was scaffolded automatically. Edit to add workspace-specific exclusions.
+
+# Generated and vendored
+go.sum
+go.work.sum
+pnpm-lock.yaml
+package-lock.json
+yarn.lock
+*.pb.go
+*_generated.go
+*.gen.go
+dist/
+build/
+target/
+vendor/
+`
+
+func writeSwlignoreScaffold(path string) {
+	if _, err := os.Stat(path); err == nil {
+		return // already exists
+	}
+	_ = os.WriteFile(path, []byte(swlignoreScaffold), 0o644)
 }
 
 // writeScaffold writes header + content to path, but only if path does not yet exist.
@@ -309,8 +382,8 @@ func (m *Manager) resolveSubjectEntity(subject string) (id string, entityType En
 		return fileID, KnownTypeFile
 	}
 
-	// 3. Symbol, SemanticArea, AnchorDocument by name (case-insensitive prefix match)
-	for _, t := range []EntityType{KnownTypeSymbol, KnownTypeSemanticArea, KnownTypeAnchorDocument} {
+	// 3. Symbol, Directory, SemanticArea, AnchorDocument by name
+	for _, t := range []EntityType{KnownTypeSymbol, KnownTypeDirectory, KnownTypeSemanticArea, KnownTypeAnchorDocument} {
 		var foundID string
 		if err := m.db.QueryRow(
 			"SELECT id FROM entities WHERE type = ? AND LOWER(name) = LOWER(?) AND fact_status != 'deleted' LIMIT 1",

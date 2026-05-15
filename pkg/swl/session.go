@@ -27,7 +27,7 @@ func (m *Manager) EnsureSession(sessionKey string) string {
 
 	m.mu.Lock()
 	_, _ = m.db.Exec(
-		`INSERT OR IGNORE INTO sessions (id, started_at, workspace_state) VALUES (?, ?, '{}')`,
+		`INSERT OR IGNORE INTO sessions (id, started_at) VALUES (?, ?)`,
 		id, nowSQLite(),
 	)
 	m.mu.Unlock()
@@ -187,41 +187,79 @@ func (m *Manager) SessionResume(sessionKey string) string {
 			"The graph will grow automatically as you read, write, and execute tools."
 	}
 
-	// Cold-start threshold: fewer than 10 non-session entities means the graph
-	// is essentially fresh. Give a short bootstrap hint.
-	var nonSessionCount int
+	// Cold-start threshold: fewer than 5 File entities means the graph is not
+	// yet useful — give a bootstrap hint.
+	var fileCount int
 	for _, s := range stats {
-		if s.entityType != KnownTypeSession {
-			nonSessionCount += s.count
+		if s.entityType == KnownTypeFile {
+			fileCount = s.count
+			break
 		}
 	}
-	if nonSessionCount < 10 {
-		return "[SWL] Knowledge graph is nearly empty (" + fmt.Sprintf("%d", nonSessionCount) + " entities).\n" +
+	if fileCount < 5 {
+		return "[SWL] Knowledge graph is nearly empty (" + fmt.Sprintf("%d files", fileCount) + " indexed).\n" +
 			"Run query_swl {\"scan\":true} to index the workspace, then proceed normally.\n" +
 			"Entities accumulate automatically from tool calls."
 	}
-
-	var staleCount int
-	m.db.QueryRow( //nolint:errcheck
-		"SELECT COUNT(*) FROM entities WHERE fact_status = 'stale'",
-	).Scan(&staleCount)
 
 	out := "[SWL] Session resumed.\nKnowledge graph:"
 	for _, s := range stats {
 		out += fmt.Sprintf("\n  %-14s %d", s.entityType, s.count)
 	}
-	if staleCount > 0 {
-		out += fmt.Sprintf("\n  ⚠ %d stale entities (files may have changed)", staleCount)
+
+	// Stale files by name (not just count).
+	staleRows, err := m.db.Query(
+		`SELECT name FROM entities WHERE fact_status = 'stale' AND type = 'File'
+		 ORDER BY modified_at DESC LIMIT 5`,
+	)
+	if err == nil {
+		defer staleRows.Close()
+		var staleNames []string
+		for staleRows.Next() {
+			var name string
+			if staleRows.Scan(&name) == nil {
+				staleNames = append(staleNames, name)
+			}
+		}
+		_ = staleRows.Err()
+		if len(staleNames) > 0 {
+			out += fmt.Sprintf("\n  ⚠ Stale files: %s", strings.Join(staleNames, ", "))
+		}
 	}
 
-	// Workspace purpose — AnchorDocument descriptions and manifest module names.
+	// Recent active Notes/Assertions (knowledge the LLM recorded).
+	noteRows, err := m.db.Query(
+		`SELECT name, confidence FROM entities
+		 WHERE type IN ('Note','Assertion') AND fact_status != 'deleted'
+		 ORDER BY modified_at DESC LIMIT 5`,
+	)
+	if err == nil {
+		defer noteRows.Close()
+		var notes []string
+		for noteRows.Next() {
+			var name string
+			var conf float64
+			if noteRows.Scan(&name, &conf) == nil {
+				notes = append(notes, fmt.Sprintf("%s (%.2f)", truncate(name, 80), conf))
+			}
+		}
+		_ = noteRows.Err()
+		if len(notes) > 0 {
+			out += "\n  Active notes:\n"
+			for _, n := range notes {
+				out += "    " + n + "\n"
+			}
+		}
+	}
+
+	// Workspace purpose — anchor File descriptions and manifest module names.
 	anchorRows, err := m.db.Query(`
 		SELECT name, json_extract(metadata,'$.description'), json_extract(metadata,'$.module'),
 		       json_extract(metadata,'$.kind')
 		FROM entities
-		WHERE type = ? AND fact_status != 'deleted'
+		WHERE type = 'File' AND json_extract(metadata,'$.kind') IN ('anchor','manifest')
+		  AND fact_status != 'deleted'
 		ORDER BY knowledge_depth DESC, access_count DESC LIMIT 5`,
-		KnownTypeAnchorDocument,
 	)
 	if err == nil {
 		defer anchorRows.Close()
@@ -247,13 +285,13 @@ func (m *Manager) SessionResume(sessionKey string) string {
 		}
 	}
 
-	// Semantic areas — directory-level content profile.
+	// Semantic areas — Directory entities with is_semantic_area=true.
 	areaRows, err := m.db.Query(`
 		SELECT name, json_extract(metadata,'$.content_type')
 		FROM entities
-		WHERE type = ? AND fact_status != 'deleted'
+		WHERE type = 'Directory' AND json_extract(metadata,'$.is_semantic_area') = 1
+		  AND fact_status != 'deleted'
 		ORDER BY name LIMIT 10`,
-		KnownTypeSemanticArea,
 	)
 	if err == nil {
 		defer areaRows.Close()

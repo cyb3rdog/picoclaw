@@ -1104,6 +1104,17 @@ interface SWLSectionProps {
   onFieldChange: UpdateCoreField
 }
 
+function tristateToBool(val: boolean | null): "inherit" | "enabled" | "disabled" {
+  if (val === null) return "inherit"
+  return val ? "enabled" : "disabled"
+}
+
+function boolToTristate(val: string): boolean | null {
+  if (val === "enabled") return true
+  if (val === "disabled") return false
+  return null
+}
+
 export function SWLSection({ form, onFieldChange }: SWLSectionProps) {
   const { t } = useTranslation()
 
@@ -1119,6 +1130,102 @@ export function SWLSection({ form, onFieldChange }: SWLSectionProps) {
         checked={form.swlEnabled}
         onCheckedChange={(checked) => onFieldChange("swlEnabled", checked)}
       />
+
+      <SwitchCardField
+        label={t("pages.config.swl_inject_session_hint", "Inject Session Hint")}
+        hint={t(
+          "pages.config.swl_inject_session_hint_desc",
+          "Prepend SWL usage guidance to agent system prompt each turn.",
+        )}
+        layout="setting-row"
+        checked={form.swlInjectSessionHint ?? true}
+        onCheckedChange={(checked) =>
+          onFieldChange("swlInjectSessionHint", checked)
+        }
+      />
+
+      <SwitchCardField
+        label={t("pages.config.swl_extract_llm", "Extract LLM Responses")}
+        hint={t(
+          "pages.config.swl_extract_llm_desc",
+          "Passively capture entities from LLM responses (Tier 2 extraction).",
+        )}
+        layout="setting-row"
+        checked={form.swlExtractLLMContent ?? true}
+        onCheckedChange={(checked) =>
+          onFieldChange("swlExtractLLMContent", checked)
+        }
+      />
+
+      <Field label={t("pages.config.swl_reasoning_cap", "Reasoning Confidence Cap")}>
+        <Input
+          type="number"
+          min={0.5}
+          max={1.0}
+          step={0.05}
+          placeholder="0.75 (default)"
+          value={form.swlReasoningCap}
+          onChange={(e) => onFieldChange("swlReasoningCap", e.target.value)}
+        />
+      </Field>
+
+      <Field label={t("pages.config.swl_max_file_size", "Max File Size for Extraction")}>
+        <Select
+          value={form.swlMaxFileSize || "default"}
+          onValueChange={(v) =>
+            onFieldChange("swlMaxFileSize", v === "default" ? "" : v)
+          }
+        >
+          <SelectTrigger>
+            <SelectValue placeholder={t("pages.config.swl_max_file_size_default", "Default (512 KB)")} />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="default">{t("pages.config.swl_max_file_size_default", "Default (512 KB)")}</SelectItem>
+            <SelectItem value="65536">64 KB</SelectItem>
+            <SelectItem value="262144">256 KB</SelectItem>
+            <SelectItem value="524288">512 KB</SelectItem>
+            <SelectItem value="1048576">1 MB</SelectItem>
+            <SelectItem value="2097152">2 MB</SelectItem>
+          </SelectContent>
+        </Select>
+      </Field>
+
+      <div className="border-t pt-4 mt-2">
+        <p className="text-sm font-medium mb-3">
+          {t("pages.config.swl_extraction_overrides", "Extraction Overrides")}
+        </p>
+        <p className="text-xs text-muted-foreground mb-3">
+          {t(
+            "pages.config.swl_extraction_overrides_desc",
+            "Override which content types are extracted (inherit = use workspace defaults).",
+          )}
+        </p>
+        {(
+          [
+            ["swlExtractSymbols", "Symbols", "Extract function/class/type definitions"],
+            ["swlExtractImports", "Imports", "Extract import/dependency references"],
+            ["swlExtractTasks", "Tasks", "Extract TODO/FIXME/HACK comments"],
+            ["swlExtractSections", "Sections", "Extract document headings as sections"],
+            ["swlExtractURLs", "URLs", "Extract hyperlinks and endpoint references"],
+          ] as const
+        ).map(([field, label, hint]) => (
+          <Field key={field} label={label} hint={hint}>
+            <Select
+              value={tristateToBool(form[field])}
+              onValueChange={(v) => onFieldChange(field, boolToTristate(v))}
+            >
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="inherit">Inherit</SelectItem>
+                <SelectItem value="enabled">Enabled</SelectItem>
+                <SelectItem value="disabled">Disabled</SelectItem>
+              </SelectContent>
+            </Select>
+          </Field>
+        ))}
+      </div>
     </ConfigSectionCard>
   )
 }

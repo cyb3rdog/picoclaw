@@ -29,13 +29,14 @@ Input formats (pick one):
   {"resume":true}                          — bring me up to speed on this workspace
   {"question":"functions in main.go"}      — natural-language query (Tier 1/2/3)
   {"gaps":true}                            — entities with low confidence or unknown status
-  {"suggest":true}                          — rule suggestions from recurring query misses (Phase C)
-  {"drift":true}                           — stale/outdated entities
+  {"suggest":true}                         — rule suggestions from recurring query misses
   {"assert":"note text","subject":"x"}     — record a free-form fact
   {"stats":true}                           — entity/edge counts by type
   {"schema":true}                          — DB schema and known types
   {"sql":"SELECT ..."}                     — raw read-only SQL (200-row cap)
   {"scan":true,"root":"/path"}             — incremental workspace index scan
+  {"index_status":true}                    — show indexing coverage and gaps
+  {"reload_config":true}                   — reload swl.rules.yaml/swl.query.yaml without restart
   {"debug":true}                           — last 64 inference events (ring buffer)
   {"help":true}                            — full query syntax reference
 
@@ -56,7 +57,7 @@ func (t *QuerySWLTool) Parameters() map[string]any {
 				"type":        "boolean",
 				"description": "If true, return rule suggestions from query gaps",
 			},
-			"drift":      map[string]any{"type": "boolean", "description": "If true, return stale entities"},
+			"stale":      map[string]any{"type": "boolean", "description": "If true, return stale/outdated entities"},
 			"assert":     map[string]any{"type": "string", "description": "Free-form note to record"},
 			"subject":    map[string]any{"type": "string", "description": "Subject entity for assert"},
 			"confidence": map[string]any{"type": "number", "description": "Confidence for assert (default 0.85)"},
@@ -79,6 +80,14 @@ func (t *QuerySWLTool) Parameters() map[string]any {
 				"type":        "boolean",
 				"description": "If true, return full query syntax reference",
 			},
+			"index_status": map[string]any{
+				"type":        "boolean",
+				"description": "If true, return indexing coverage — which files are indexed and what is missing",
+			},
+			"reload_config": map[string]any{
+				"type":        "boolean",
+				"description": "If true, reload swl.rules.yaml and swl.query.yaml from disk without restarting",
+			},
 		},
 	}
 }
@@ -90,6 +99,16 @@ func (t *QuerySWLTool) Execute(ctx context.Context, args map[string]any) *toolsh
 	// help
 	if v, _ := args["help"].(bool); v {
 		return toolshared.SilentResult(m.HelpText())
+	}
+
+	// reload_config — hot-reload rules without restarting
+	if v, _ := args["reload_config"].(bool); v {
+		return toolshared.SilentResult(m.ReloadConfig())
+	}
+
+	// index_status
+	if v, _ := args["index_status"].(bool); v {
+		return toolshared.SilentResult(m.IndexStatus())
 	}
 
 	// resume
@@ -107,8 +126,8 @@ func (t *QuerySWLTool) Execute(ctx context.Context, args map[string]any) *toolsh
 		return toolshared.SilentResult(m.SuggestRules())
 	}
 
-	// drift
-	if v, _ := args["drift"].(bool); v {
+	// stale (was: drift — same output, simplified to one name)
+	if v, _ := args["stale"].(bool); v {
 		return toolshared.SilentResult(m.DriftReport())
 	}
 

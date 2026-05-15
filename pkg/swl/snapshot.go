@@ -36,13 +36,14 @@ const snapshotMaxAnchorBytes = 8192
 
 // BuildSnapshot produces a bounded workspace semantic snapshot by walking up
 // to snapshotMaxDepth levels of the workspace.  It emits:
-//   - AnchorDocument entities for README-class and manifest files (with
-//     extracted description stored in metadata["description"])
-//   - SemanticArea entities for directories that contain anchor documents
-//     or have a recognizable content profile
+//   - File entities (kind="anchor" or kind="manifest") for README-class and
+//     manifest files, enriching the existing File entity with extracted
+//     description stored in metadata["description"]
+//   - Directory entities (is_semantic_area=true) for directories that contain
+//     anchor documents or have a recognizable content profile
 //
-// This replaces the per-file ExtractContent call that was previously run
-// inside ScanWorkspace, eliminating the scan-time entity bloat.
+// Entity types are File and Directory — not the deprecated AnchorDocument and
+// SemanticArea types — so snapshot entities merge cleanly with scanner entities.
 func (m *Manager) BuildSnapshot(root string) *GraphDelta {
 	// Resolve root to absolute before any path operations.
 	// Consistent with ScanWorkspace's normalization so that snapshot
@@ -165,10 +166,12 @@ func (m *Manager) snapshotDir(absRoot, path string, depth int, delta *GraphDelta
 			}
 		}
 
-		anchorID := entityID(KnownTypeAnchorDocument, relFile)
+		// Emit as File entity (enriching the existing scanner File entity with
+		// anchor metadata). KnownTypeAnchorDocument is deprecated.
+		anchorID := entityID(KnownTypeFile, relFile)
 		anchorIDs = append(anchorIDs, anchorID)
 		delta.Entities = append(delta.Entities, EntityTuple{
-			ID: anchorID, Type: KnownTypeAnchorDocument, Name: relFile,
+			ID: anchorID, Type: KnownTypeFile, Name: relFile,
 			Metadata:         meta,
 			Confidence:       1.0,
 			ExtractionMethod: MethodExtracted,
@@ -199,15 +202,18 @@ func (m *Manager) snapshotDir(absRoot, path string, depth int, delta *GraphDelta
 	if len(anchorIDs) > 0 {
 		var desc string
 		m.db.QueryRow( //nolint:errcheck
-			`SELECT json_extract(metadata,'$.description') FROM entities WHERE id = ? AND type = ?`,
-			anchorIDs[0], KnownTypeAnchorDocument,
+			`SELECT json_extract(metadata,'$.description') FROM entities WHERE id = ? AND type = 'File'`,
+			anchorIDs[0],
 		).Scan(&desc)
 		if desc != "" {
 			meta["description"] = desc
 		}
 	}
 
-	areaID := entityID(KnownTypeSemanticArea, relPath)
+	// Emit as Directory entity enriched with is_semantic_area=true.
+	// KnownTypeSemanticArea is deprecated — Directory is the canonical type.
+	meta["is_semantic_area"] = true
+	areaID := entityID(KnownTypeDirectory, relPath)
 	// Derive semantic labels for the area from its path (Phase A.2).
 	areaLabels := m.DeriveLabels(KnownTypeDirectory, relPath)
 	areaMeta := meta
@@ -217,7 +223,7 @@ func (m *Manager) snapshotDir(absRoot, path string, depth int, delta *GraphDelta
 		}
 	}
 	delta.Entities = append(delta.Entities, EntityTuple{
-		ID: areaID, Type: KnownTypeSemanticArea, Name: relPath,
+		ID: areaID, Type: KnownTypeDirectory, Name: relPath,
 		Metadata:         areaMeta,
 		Confidence:       0.9,
 		ExtractionMethod: MethodExtracted,

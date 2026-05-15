@@ -26,6 +26,15 @@ export interface CoreConfigForm {
   devicesEnabled: boolean
   monitorUSB: boolean
   swlEnabled: boolean
+  swlInjectSessionHint: boolean | null
+  swlExtractSymbols: boolean | null
+  swlExtractImports: boolean | null
+  swlExtractTasks: boolean | null
+  swlExtractSections: boolean | null
+  swlExtractURLs: boolean | null
+  swlExtractLLMContent: boolean | null
+  swlReasoningCap: string
+  swlMaxFileSize: string
   mcpEnabled: boolean
   mcpDiscoveryEnabled: boolean
   mcpDiscoveryTTL: string
@@ -123,6 +132,15 @@ export const EMPTY_FORM: CoreConfigForm = {
   devicesEnabled: false,
   monitorUSB: true,
   swlEnabled: false,
+  swlInjectSessionHint: null,
+  swlExtractSymbols: null,
+  swlExtractImports: null,
+  swlExtractTasks: null,
+  swlExtractSections: null,
+  swlExtractURLs: null,
+  swlExtractLLMContent: null,
+  swlReasoningCap: "",
+  swlMaxFileSize: "",
   mcpEnabled: false,
   mcpDiscoveryEnabled: false,
   mcpDiscoveryTTL: "5",
@@ -334,6 +352,21 @@ export function buildFormFromConfig(config: unknown): CoreConfigForm {
       swl.enabled === undefined
         ? EMPTY_FORM.swlEnabled
         : asBool(swl.enabled),
+    swlInjectSessionHint: asOptionalBool(swl.inject_session_hint),
+    swlExtractSymbols: asOptionalBool(swl.extract_symbols),
+    swlExtractImports: asOptionalBool(swl.extract_imports),
+    swlExtractTasks: asOptionalBool(swl.extract_tasks),
+    swlExtractSections: asOptionalBool(swl.extract_sections),
+    swlExtractURLs: asOptionalBool(swl.extract_urls),
+    swlExtractLLMContent: asOptionalBool(swl.extract_llm_content),
+    swlReasoningCap: asNumberString(
+      swl.reasoning_confidence_cap,
+      EMPTY_FORM.swlReasoningCap,
+    ),
+    swlMaxFileSize: asNumberString(
+      swl.max_file_size_bytes,
+      EMPTY_FORM.swlMaxFileSize,
+    ),
     mcpEnabled:
       mcp.enabled === undefined ? EMPTY_FORM.mcpEnabled : asBool(mcp.enabled),
     mcpDiscoveryEnabled:

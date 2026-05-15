@@ -535,6 +535,33 @@ export function ConfigPage() {
             exec: execConfigPatch,
             swl: {
               enabled: form.swlEnabled,
+              ...(form.swlInjectSessionHint !== null && {
+                inject_session_hint: form.swlInjectSessionHint,
+              }),
+              ...(form.swlExtractSymbols !== null && {
+                extract_symbols: form.swlExtractSymbols,
+              }),
+              ...(form.swlExtractImports !== null && {
+                extract_imports: form.swlExtractImports,
+              }),
+              ...(form.swlExtractTasks !== null && {
+                extract_tasks: form.swlExtractTasks,
+              }),
+              ...(form.swlExtractSections !== null && {
+                extract_sections: form.swlExtractSections,
+              }),
+              ...(form.swlExtractURLs !== null && {
+                extract_urls: form.swlExtractURLs,
+              }),
+              ...(form.swlExtractLLMContent !== null && {
+                extract_llm_content: form.swlExtractLLMContent,
+              }),
+              ...(form.swlReasoningCap !== "" && {
+                reasoning_confidence_cap: parseFloat(form.swlReasoningCap),
+              }),
+              ...(form.swlMaxFileSize !== "" && {
+                max_file_size_bytes: parseInt(form.swlMaxFileSize, 10),
+              }),
             },
             mcp: {
               enabled: form.mcpEnabled,
