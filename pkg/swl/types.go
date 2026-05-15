@@ -54,8 +54,8 @@ const (
 	KnownRelReasoned    EdgeRel = "reasoned"
 	KnownRelIntendedFor EdgeRel = "intended_for"
 	KnownRelUses        EdgeRel = "uses"
-	KnownRelDocuments    EdgeRel = "documents"     // AnchorDocument → SemanticArea it describes
-	KnownRelHasArea      EdgeRel = "has_area"      // Directory → SemanticArea it contains
+	KnownRelDocuments    EdgeRel = "documents"   // File(kind=anchor) → Directory it is in; marks the file as the anchor for that directory
+	KnownRelHasArea      EdgeRel = "has_area"    // Directory → child Directory with is_semantic_area=true in metadata
 	KnownRelCoOccursWith EdgeRel = "co_occurs_with" // Entities co-occurring in ≥4 sessions (autonomous loop)
 )
 

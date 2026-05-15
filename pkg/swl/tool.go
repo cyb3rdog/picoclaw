@@ -145,8 +145,7 @@ func (t *QuerySWLTool) Execute(ctx context.Context, args map[string]any) *toolsh
 	if note, _ := args["assert"].(string); note != "" {
 		subject, _ := args["subject"].(string)
 		confidence, _ := args["confidence"].(float64)
-		entityType, _ := args["type"].(string)
-		return toolshared.SilentResult(m.AssertNote(subject, note, confidence, entityType))
+		return toolshared.SilentResult(m.AssertNote(subject, note, confidence, sessionKey))
 	}
 
 	// sql

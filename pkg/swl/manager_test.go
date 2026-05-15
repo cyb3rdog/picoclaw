@@ -159,23 +159,29 @@ func TestAppendFileNullsContentHash(t *testing.T) {
 func TestAssertNoteDepth(t *testing.T) {
 	m := newTestManager(t)
 
-	// Fresh entity — depth should become 2
-	result := m.AssertNote("some_subject", "A note about something", 0, "")
+	// Seed a File entity so subject resolution succeeds.
+	fileID := entityID(KnownTypeFile, "some_subject.go")
+	_ = m.UpsertEntity(EntityTuple{
+		ID: fileID, Type: KnownTypeFile, Name: "some_subject.go",
+		Confidence: 1.0, ExtractionMethod: MethodObserved, KnowledgeDepth: 1,
+	})
+
+	result := m.AssertNote("some_subject.go", "A note about something", 0, "")
 	if result == "" {
 		t.Error("AssertNote returned empty string")
 	}
-
-	// Find the assertion entity (AssertNote now uses KnownTypeAssertion)
-	var depth int
-	err := m.db.QueryRow(
-		"SELECT knowledge_depth FROM entities WHERE type = ? AND name LIKE ?",
-		KnownTypeAssertion, "%A note about something%",
-	).Scan(&depth)
-	if err != nil {
-		t.Fatalf("assertion entity not found: %v", err)
+	if strings.Contains(result, "not found") {
+		t.Errorf("AssertNote failed to resolve subject: %s", result)
 	}
-	if depth < 2 {
-		t.Errorf("assert_note depth < 2: got %d", depth)
+
+	// Assertion is now stored in metadata.assertions of the file entity.
+	var metaStr string
+	err := m.db.QueryRow("SELECT metadata FROM entities WHERE id = ?", fileID).Scan(&metaStr)
+	if err != nil {
+		t.Fatalf("file entity not found: %v", err)
+	}
+	if !strings.Contains(metaStr, "A note about something") {
+		t.Errorf("assertion text not in metadata: %s", metaStr)
 	}
 }
 

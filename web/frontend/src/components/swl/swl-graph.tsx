@@ -123,18 +123,18 @@ export function SWLGraph({ data, hiddenTypes, focusNodeId, onNodeClick }: Props)
   //   - setGraphState triggers graphData change → library reheats d3 to alpha=1
   //   - warmupTicks run synchronously → main thread blocked for no visual benefit
   //   - (the custom MeshBasicMaterial is not updated by the library's onUpdateObj)
-  // For new nodes: adds to allNodesRef then triggers a filtered rebuild (which
-  // does call setGraphState, adding the new node to the simulation).
+  // For new nodes or links: adds to allNodesRef/allLinksRef then triggers a
+  // filtered rebuild (which does call setGraphState).
   //
-  // In neighborhood mode (focusNodeRef set): skip new-node expansion to avoid
-  // ballooning the focus graph with unrelated SSE arrivals.
+  // In neighborhood mode (focusNodeRef set): skip new-node/link expansion to
+  // avoid ballooning the focus graph with unrelated SSE arrivals.
   const applySSEUpdate = useCallback(
-    (updates: SWLNode[]) => {
+    (msg: { nodes?: SWLNode[]; links?: SWLLink[] }) => {
       const hidden = hiddenTypesRef.current
       const isFocused = focusNodeRef.current !== undefined
       let hasNew = false
 
-      for (const n of updates) {
+      for (const n of msg.nodes ?? []) {
         const existing = allNodesRef.current.get(n.id)
         if (existing) {
           Object.assign(existing, n) // keeps simulation's x/y/z; nodePositionUpdate handles visuals
@@ -144,10 +144,29 @@ export function SWLGraph({ data, hiddenTypes, focusNodeId, onNodeClick }: Props)
         }
       }
 
+      if (!isFocused && msg.links?.length) {
+        // Deduplicate by source|rel|target key — edges are immutable once created.
+        const existingKeys = new Set(
+          allLinksRef.current.map((l) => {
+            const src = typeof l.source === "object" ? (l.source as any).id : l.source
+            const tgt = typeof l.target === "object" ? (l.target as any).id : l.target
+            return `${src}|${l.rel}|${tgt}`
+          }),
+        )
+        for (const link of msg.links) {
+          const key = `${link.source}|${link.rel}|${link.target}`
+          if (!existingKeys.has(key)) {
+            allLinksRef.current.push(link)
+            existingKeys.add(key)
+            hasNew = true
+          }
+        }
+      }
+
       if (hasNew) {
         applyFiltered()
       }
-      // property-only updates: no setGraphState — nodePositionUpdate picks them up next frame
+      // property-only node updates: no setGraphState — nodePositionUpdate picks them up next frame
     },
     [applyFiltered],
   )
@@ -222,10 +241,11 @@ export function SWLGraph({ data, hiddenTypes, focusNodeId, onNodeClick }: Props)
     es.onmessage = (e) => {
       setSseState(false)
       try {
-        const msg = JSON.parse(e.data) as { type: string; nodes: SWLNode[] }
-        if (msg.type !== "delta" || !msg.nodes?.length) return
+        const msg = JSON.parse(e.data) as { type: string; nodes?: SWLNode[]; links?: SWLLink[] }
+        if (msg.type !== "delta") return
+        if (!msg.nodes?.length && !msg.links?.length) return
         clearTimeout(timer)
-        timer = setTimeout(() => applySSEUpdate(msg.nodes), 400)
+        timer = setTimeout(() => applySSEUpdate({ nodes: msg.nodes, links: msg.links }), 400)
       } catch {
         // ignore malformed events
       }

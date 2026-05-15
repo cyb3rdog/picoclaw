@@ -872,13 +872,14 @@ func (h *Handler) handleSWLStream(w http.ResponseWriter, r *http.Request) {
 		flusher.Flush()
 	}
 
-	// Initialize watermark at connect time so we only stream changes from now on.
+	// Initialize watermarks at connect time so we only stream changes from now on.
 	// This prevents re-flooding data that the initial REST call already delivered.
-	var lastModAt string
+	var lastModAt, lastEdgeAt string
 	if db != nil {
-		db.QueryRowContext(r.Context(), "SELECT COALESCE(MAX(modified_at),'') FROM entities").
+		db.QueryRowContext(r.Context(), "SELECT COALESCE(MAX(modified_at),'') FROM entities"). //nolint:errcheck
 			Scan(&lastModAt)
-		//nolint:errcheck
+		db.QueryRowContext(r.Context(), "SELECT COALESCE(MAX(confirmed_at),'') FROM edges"). //nolint:errcheck
+			Scan(&lastEdgeAt)
 	}
 
 	const (
@@ -898,9 +899,10 @@ func (h *Handler) handleSWLStream(w http.ResponseWriter, r *http.Request) {
 		if db == nil {
 			if db2, _ := openSWLReadOnly(dbPath); db2 != nil {
 				db = db2
-				db.QueryRowContext(r.Context(), "SELECT COALESCE(MAX(modified_at),'') FROM entities").
+				db.QueryRowContext(r.Context(), "SELECT COALESCE(MAX(modified_at),'') FROM entities"). //nolint:errcheck
 					Scan(&lastModAt)
-				//nolint:errcheck
+				db.QueryRowContext(r.Context(), "SELECT COALESCE(MAX(confirmed_at),'') FROM edges"). //nolint:errcheck
+					Scan(&lastEdgeAt)
 			}
 			continue
 		}
@@ -913,8 +915,13 @@ func (h *Handler) handleSWLStream(w http.ResponseWriter, r *http.Request) {
 			db = nil
 			continue
 		}
+		var maxEdgeAt string
+		db.QueryRowContext(r.Context(), "SELECT COALESCE(MAX(confirmed_at),'') FROM edges"). //nolint:errcheck
+			Scan(&maxEdgeAt)
 
-		if maxModAt == "" || maxModAt == lastModAt {
+		noEntityChange := maxModAt == "" || maxModAt == lastModAt
+		noEdgeChange := maxEdgeAt == "" || maxEdgeAt == lastEdgeAt
+		if noEntityChange && noEdgeChange {
 			// No change — back off up to maxInterval
 			if interval < maxInterval {
 				interval *= 2
@@ -964,17 +971,47 @@ func (h *Handler) handleSWLStream(w http.ResponseWriter, r *http.Request) {
 			lastModAt = lastProcessedModAt
 		}
 
-		if len(updates) == 0 {
+		// Poll new edges — cursor-based on confirmed_at.
+		var newEdges []swlLink
+		var lastProcessedEdgeAt string
+		edgeRows, err := db.QueryContext(r.Context(), `
+			SELECT from_id, rel, to_id, COALESCE(source_session,''), confirmed_at
+			FROM edges WHERE confirmed_at > ? ORDER BY confirmed_at ASC LIMIT 200`,
+			lastEdgeAt,
+		)
+		if err == nil {
+			for edgeRows.Next() {
+				var l swlLink
+				var edgeConfAt string
+				if edgeRows.Scan(&l.Source, &l.Rel, &l.Target, &l.SessionID, &edgeConfAt) == nil {
+					newEdges = append(newEdges, l)
+					if edgeConfAt != "" {
+						lastProcessedEdgeAt = edgeConfAt
+					}
+				}
+			}
+			_ = edgeRows.Err()
+			edgeRows.Close() //nolint:sqlclosecheck
+			if len(newEdges) > 0 && lastProcessedEdgeAt != "" {
+				lastEdgeAt = lastProcessedEdgeAt
+			}
+		}
+
+		if len(updates) == 0 && len(newEdges) == 0 {
 			continue
 		}
 
-		// Activity detected — reset to minimum interval
+		// Activity detected — reset to minimum interval.
 		interval = minInterval
 
-		payload, _ := json.Marshal(map[string]any{
-			"type":  "delta",
-			"nodes": updates,
-		})
+		delta := map[string]any{"type": "delta"}
+		if len(updates) > 0 {
+			delta["nodes"] = updates
+		}
+		if len(newEdges) > 0 {
+			delta["links"] = newEdges
+		}
+		payload, _ := json.Marshal(delta)
 		fmt.Fprintf(w, "data: %s\n\n", payload)
 		flusher.Flush()
 	}

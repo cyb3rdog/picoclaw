@@ -3,6 +3,7 @@ package swl
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
@@ -805,25 +806,24 @@ func (m *Manager) askFileDetail(hint string) string {
 		}
 	}
 
-	// Notes / Assertions linked via describes edge.
-	noteRows, err := m.db.Query(`
-		SELECT n.name, n.confidence FROM entities n
-		JOIN edges e ON e.from_id = n.id AND e.rel = 'describes'
-		WHERE e.to_id = ? AND n.type IN ('Note','Assertion') AND n.fact_status != 'deleted'
-		ORDER BY n.confidence DESC LIMIT 5`, fileID)
-	if err == nil {
-		defer noteRows.Close()
-		var notes []string
-		for noteRows.Next() {
-			var name string
-			var conf float64
-			if noteRows.Scan(&name, &conf) == nil {
-				notes = append(notes, fmt.Sprintf("%s (%.2f)", truncate(name, 100), conf))
+	// Assertions recorded directly in entity metadata.
+	var metaStr string
+	_ = m.db.QueryRow("SELECT metadata FROM entities WHERE id = ?", fileID).Scan(&metaStr)
+	if metaStr != "" && metaStr != "{}" {
+		var meta map[string]any
+		if json.Unmarshal([]byte(metaStr), &meta) == nil {
+			if raw, ok := meta["assertions"]; ok {
+				if b, err2 := json.Marshal(raw); err2 == nil {
+					var entries []assertionEntry
+					if json.Unmarshal(b, &entries) == nil && len(entries) > 0 {
+						var notes []string
+						for _, e := range entries {
+							notes = append(notes, fmt.Sprintf("%s (%.2f)", truncate(e.Text, 100), e.Conf))
+						}
+						out += "\n  Notes: " + strings.Join(notes, "; ")
+					}
+				}
 			}
-		}
-		_ = noteRows.Err()
-		if len(notes) > 0 {
-			out += "\n  Notes: " + strings.Join(notes, "; ")
 		}
 	}
 
@@ -1092,25 +1092,69 @@ func (m *Manager) askSessionActivity() string {
 		}
 	}
 
-	// Also show any Assertions recorded in this session.
-	assRows, err := m.db.Query(`
-		SELECT n.name FROM entities n
-		JOIN edges e ON e.from_id = n.id AND e.source_session = ?
-		WHERE n.type IN ('Note','Assertion') AND n.fact_status != 'deleted'
-		ORDER BY n.confidence DESC LIMIT 5`, sessionID)
+	// Intent(s) the session was pursuing — via Session --intended_for--> Intent edges.
+	intentRows, err := m.db.Query(`
+		SELECT en.name FROM edges e
+		JOIN entities en ON en.id = e.to_id AND en.type = 'Intent'
+		WHERE e.from_id = ? AND e.rel = 'intended_for'
+		ORDER BY en.modified_at DESC LIMIT 3`, sessionID)
 	if err == nil {
-		defer assRows.Close()
-		var notes []string
-		for assRows.Next() {
+		defer intentRows.Close()
+		var intents []string
+		for intentRows.Next() {
 			var name string
-			if assRows.Scan(&name) == nil {
-				notes = append(notes, truncate(name, 80))
+			if intentRows.Scan(&name) == nil {
+				intents = append(intents, truncate(name, 80))
 			}
 		}
-		if len(notes) > 0 {
-			out += "  Assertions: " + strings.Join(notes, "; ")
+		_ = intentRows.Err()
+		if len(intents) > 0 {
+			out += "\n  Pursuing: " + strings.Join(intents, "; ")
 		}
 	}
+
+	// SubAgents spawned in this session — via SubAgent --spawned_by--> Session edges.
+	subRows, err := m.db.Query(`
+		SELECT en.name FROM edges e
+		JOIN entities en ON en.id = e.from_id AND en.type = 'SubAgent'
+		WHERE e.to_id = ? AND e.rel = 'spawned_by'
+		ORDER BY en.modified_at DESC LIMIT 5`, sessionID)
+	if err == nil {
+		defer subRows.Close()
+		var subs []string
+		for subRows.Next() {
+			var name string
+			if subRows.Scan(&name) == nil {
+				subs = append(subs, truncate(name, 60))
+			}
+		}
+		_ = subRows.Err()
+		if len(subs) > 0 {
+			out += "\n  SubAgents: " + strings.Join(subs, ", ")
+		}
+	}
+
+	// Entities with recorded insights (assertions in metadata).
+	insightRows, err := m.db.Query(`
+		SELECT name FROM entities
+		WHERE json_extract(metadata,'$.assertions') IS NOT NULL
+		  AND fact_status != 'deleted'
+		ORDER BY modified_at DESC LIMIT 5`)
+	if err == nil {
+		defer insightRows.Close()
+		var insights []string
+		for insightRows.Next() {
+			var name string
+			if insightRows.Scan(&name) == nil {
+				insights = append(insights, truncate(name, 60))
+			}
+		}
+		_ = insightRows.Err()
+		if len(insights) > 0 {
+			out += "\n  Insights on: " + strings.Join(insights, ", ")
+		}
+	}
+
 	return strings.TrimRight(out, "\n")
 }
 
@@ -1529,131 +1573,153 @@ Edge relations (open — any string valid): defines, imports, has_task, has_sect
   deleted, describes, committed_in, found, listed, spawned_by, context_of, reasoned, + custom`
 }
 
-// AssertNote records a fact about a subject entity and links the new Assertion node
-// to it via a describes edge. The subject is resolved to an existing File, Symbol,
-// Directory, or Note entity — preventing orphaned phantom entries.
-// depth is set to MAX(current_depth, 2).
-func (m *Manager) AssertNote(subject, content string, confidence float64, entityType EntityType) string {
+// assertionEntry is one fact recorded against a workspace entity.
+type assertionEntry struct {
+	Text string  `json:"text"`
+	Conf float64 `json:"conf"`
+	Sid  string  `json:"sid"` // SWL session UUID
+	At   string  `json:"at"`  // RFC3339 timestamp
+}
+
+// appendAssertionToMeta appends or updates a fact in the entity's metadata.assertions
+// array. It is the sole write path for LLM-stated facts.
+//
+//   - Deduplication: same session (Sid) → overwrite existing entry, do not duplicate.
+//   - Contradiction: different session with different text → returns true; caller
+//     halves the confidence.
+//   - Cap: the array is capped at 10 entries; lowest-confidence entry is evicted.
+//   - Side effects: boosts entity confidence by conf*0.05; if ≥2 distinct sessions
+//     have asserted about this entity, promotes fact_status to verified.
+func (m *Manager) appendAssertionToMeta(subjectID, text, sessionID string, conf float64) (contradicted bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	var metaStr string
+	_ = m.db.QueryRow("SELECT metadata FROM entities WHERE id = ?", subjectID).Scan(&metaStr)
+
+	var meta map[string]any
+	if metaStr != "" {
+		_ = json.Unmarshal([]byte(metaStr), &meta)
+	}
+	if meta == nil {
+		meta = map[string]any{}
+	}
+
+	var existing []assertionEntry
+	if raw, ok := meta["assertions"]; ok {
+		if b, err := json.Marshal(raw); err == nil {
+			_ = json.Unmarshal(b, &existing)
+		}
+	}
+
+	// Contradiction: different session, different text.
+	for _, e := range existing {
+		if e.Sid != sessionID && e.Text != text {
+			contradicted = true
+			conf /= 2
+			break
+		}
+	}
+
+	now := nowSQLite()
+
+	// Deduplication: same session → update existing entry.
+	found := false
+	for i, e := range existing {
+		if e.Sid == sessionID {
+			existing[i] = assertionEntry{Text: text, Conf: conf, Sid: sessionID, At: now}
+			found = true
+			break
+		}
+	}
+	if !found {
+		// Prepend so newest is first.
+		existing = append([]assertionEntry{{Text: text, Conf: conf, Sid: sessionID, At: now}}, existing...)
+	}
+
+	// Cap at 10: evict lowest-confidence entry.
+	const maxAssertions = 10
+	if len(existing) > maxAssertions {
+		minIdx, minConf := 0, existing[0].Conf
+		for i, e := range existing {
+			if e.Conf < minConf {
+				minConf = e.Conf
+				minIdx = i
+			}
+		}
+		existing = append(existing[:minIdx], existing[minIdx+1:]...)
+	}
+
+	meta["assertions"] = existing
+	b, _ := json.Marshal(meta)
+
+	// Count distinct sessions to decide on verification.
+	sessionsSeen := map[string]bool{}
+	for _, e := range existing {
+		if e.Sid != "" {
+			sessionsSeen[e.Sid] = true
+		}
+	}
+
+	boost := conf * 0.05
+	_, _ = m.db.Exec(
+		`UPDATE entities SET metadata = ?, modified_at = ?, confidence = MIN(confidence + ?, 1.0) WHERE id = ?`,
+		string(b), now, boost, subjectID,
+	)
+	if len(sessionsSeen) >= 2 {
+		_, _ = m.db.Exec(
+			"UPDATE entities SET fact_status = ? WHERE id = ? AND fact_status != 'deleted'",
+			FactVerified, subjectID,
+		)
+	}
+	return contradicted
+}
+
+// AssertNote records a free-form fact about a workspace entity directly in that
+// entity's metadata.assertions array. Unlike the old Assertion-entity approach,
+// no separate graph node or edge is created — the subject entity itself carries
+// the knowledge, and its modified_at timestamp advances so the SSE stream delivers
+// the enriched entity to all connected clients immediately.
+//
+// subject is resolved via resolveSubjectEntity (exact ID → exact path → fuzzy
+// file name → exact symbol/directory name). If no entity is found, an error
+// is returned — no phantom nodes are created.
+//
+// sessionKey is the caller's picoclaw session key (may be empty for programmatic
+// callers); it is mapped to a SWL session UUID for cross-session tracking.
+func (m *Manager) AssertNote(subject, content string, confidence float64, sessionKey string) string {
 	if subject == "" || content == "" {
 		return "[SWL] assert requires subject and content."
 	}
 	if confidence <= 0 {
 		confidence = 0.85
 	}
-	if entityType == "" {
-		entityType = KnownTypeAssertion
-	}
 
-	assertionID := entityID(entityType, subject+":"+truncate(content, 40))
-
-	var currentDepth int
-	m.db.QueryRow("SELECT knowledge_depth FROM entities WHERE id = ?", assertionID).Scan(&currentDepth) //nolint:errcheck
-	depth := currentDepth
-	if depth < 2 {
-		depth = 2
-	}
-
-	_ = m.writer.upsertEntity(EntityTuple{
-		ID: assertionID, Type: entityType, Name: content,
-		Confidence: confidence, ExtractionMethod: MethodStated, KnowledgeDepth: depth,
-		Metadata: map[string]any{"subject": subject},
-	})
-
-	// Resolve subject to an existing graph entity — link to the real entity
-	// rather than creating a phantom Note.
 	subjectID, resolvedType := m.resolveSubjectEntity(subject)
-	_ = m.writer.upsertEdge(EdgeTuple{FromID: assertionID, Rel: KnownRelDescribes, ToID: subjectID})
-
-	// Boost the subject's confidence and check for multi-session verification.
-	m.propagateAssertionConfidence(subjectID, confidence)
-
-	// Contradiction detection: if ≥2 existing Assertion entities about the same
-	// subject have different content, halve confidence and mark stale.
-	contradictionNote := m.detectAssertionContradiction(subjectID, assertionID, content)
-	if contradictionNote != "" {
-		confidence /= 2
-		_ = m.SetFactStatus(assertionID, FactStale)
+	if subjectID == "" {
+		return fmt.Sprintf(
+			`[SWL] Subject %q not found in graph.`+"\n"+
+				`  Use: query_swl {"question":"%s"} to find the exact entity name, then retry.`,
+			subject, subject,
+		)
 	}
 
-	shortID := assertionID
+	sessionID := m.EnsureSession(sessionKey)
+	contradicted := m.appendAssertionToMeta(subjectID, content, sessionID, confidence)
+
+	shortID := subjectID
 	if len(shortID) > 8 {
 		shortID = shortID[:8]
 	}
 
-	resolveNote := ""
-	if resolvedType == KnownTypeNote {
-		resolveNote = " (subject not yet in graph — will link when first seen)"
-	}
-	if contradictionNote != "" {
-		resolveNote += " ⚠ " + contradictionNote
+	note := ""
+	if contradicted {
+		note = " ⚠ Contradicts existing assertion — confidence halved."
 	}
 	return fmt.Sprintf(
-		"[SWL] Recorded: %q on %s %q [id: %s] at confidence %.2f.%s",
-		content,
-		resolvedType,
-		subject,
-		shortID,
-		confidence,
-		resolveNote,
+		"[SWL] Recorded on %s %q [id:%s] at confidence %.2f.%s",
+		resolvedType, subject, shortID, confidence, note,
 	)
-}
-
-// propagateAssertionConfidence boosts the subject entity's confidence proportionally
-// to the assertion's confidence, and promotes fact_status to verified when ≥2 distinct
-// sessions have asserted about the same entity.
-func (m *Manager) propagateAssertionConfidence(subjectID string, assertionConf float64) {
-	if subjectID == "" {
-		return
-	}
-	var distinctSessions int
-	m.db.QueryRow(`SELECT COUNT(DISTINCT e.source_session) FROM edges e
-		JOIN entities n ON n.id = e.from_id AND n.type IN ('Note','Assertion')
-		WHERE e.rel = 'describes' AND e.to_id = ?
-		  AND e.source_session IS NOT NULL`, subjectID).Scan(&distinctSessions) //nolint:errcheck
-
-	boost := assertionConf * 0.05
-	m.mu.Lock()
-	m.db.Exec(`UPDATE entities SET confidence = MIN(confidence + ?, 1.0), modified_at = ? WHERE id = ?`, //nolint:errcheck
-		boost, nowSQLite(), subjectID)
-	m.mu.Unlock()
-
-	if distinctSessions >= 2 {
-		_ = m.SetFactStatus(subjectID, FactVerified)
-	}
-}
-
-// detectAssertionContradiction checks whether ≥2 existing Assertions for the same
-// subject entity have content different from the new assertion. If so, it records
-// a query gap noting the contradiction and returns a short warning string.
-func (m *Manager) detectAssertionContradiction(subjectID, newAssertionID, newContent string) string {
-	rows, err := m.db.Query(`
-		SELECT e.from_id, ent.name
-		FROM edges e
-		JOIN entities ent ON ent.id = e.from_id AND ent.type IN ('Note','Assertion') AND ent.fact_status != 'deleted'
-		WHERE e.rel = ? AND e.to_id = ? AND e.from_id != ?
-		LIMIT 10`,
-		KnownRelDescribes, subjectID, newAssertionID,
-	)
-	if err != nil {
-		return ""
-	}
-	defer rows.Close()
-
-	var contradicting int
-	for rows.Next() {
-		var id, existingContent string
-		if rows.Scan(&id, &existingContent) == nil && existingContent != newContent {
-			contradicting++
-		}
-	}
-	_ = rows.Err()
-
-	if contradicting < 2 {
-		return ""
-	}
-	note := fmt.Sprintf("contradicted by %d existing assertion(s) — confidence halved, marked stale", contradicting)
-	m.recordQueryGap(fmt.Sprintf("assertion contradiction on %s", subjectID))
-	return note
 }
 
 // SafeQuery executes a read-only SQL query with a 200-row cap.

@@ -352,15 +352,19 @@ func resolveDBPath(workspace string, cfg *Config) string {
 	return filepath.Join(workspace, ".swl", "swl.db")
 }
 
-// resolveSubjectEntity looks up an existing graph entity matching subject and
-// returns its (id, type). Resolution order: exact entity ID → File by normalized
-// path → Symbol by name → SemanticArea by name → AnchorDocument by name.
-// If nothing matches, a minimal Note entity is created with fact_status unknown
-// so the assertion still lands in the graph and can be promoted later.
+// resolveSubjectEntity looks up an existing graph entity matching subject.
+// Resolution order:
+//  1. Exact entity ID match
+//  2. File by exact normalized workspace-relative path
+//  3. File by fuzzy name match (LIKE — picks highest knowledge_depth)
+//  4. Symbol or Directory by exact name (case-insensitive)
+//
+// Returns ("", "") when no match is found — the caller is responsible for
+// error handling. No fallback entity is created.
 func (m *Manager) resolveSubjectEntity(subject string) (id string, entityType EntityType) {
 	subject = strings.TrimSpace(subject)
 	if subject == "" {
-		return "", KnownTypeNote
+		return "", ""
 	}
 
 	// 1. Exact entity ID match
@@ -372,19 +376,28 @@ func (m *Manager) resolveSubjectEntity(subject string) (id string, entityType En
 		return subject, existingType
 	}
 
-	// 2. File by normalized workspace-relative path
+	// 2. File by exact normalized workspace-relative path
 	normalized := m.normalizePath(subject)
 	fileID := entityID(KnownTypeFile, normalized)
+	var foundID string
 	if err := m.db.QueryRow(
 		"SELECT id FROM entities WHERE id = ? AND fact_status != 'deleted'",
 		fileID,
-	).Scan(&fileID); err == nil {
-		return fileID, KnownTypeFile
+	).Scan(&foundID); err == nil {
+		return foundID, KnownTypeFile
 	}
 
-	// 3. Symbol, Directory, SemanticArea, AnchorDocument by name
-	for _, t := range []EntityType{KnownTypeSymbol, KnownTypeDirectory, KnownTypeSemanticArea, KnownTypeAnchorDocument} {
-		var foundID string
+	// 3. File by fuzzy name match
+	if err := m.db.QueryRow(
+		`SELECT id FROM entities WHERE type = ? AND LOWER(name) LIKE LOWER(?) AND fact_status != 'deleted'
+		 ORDER BY knowledge_depth DESC LIMIT 1`,
+		KnownTypeFile, "%"+subject+"%",
+	).Scan(&foundID); err == nil {
+		return foundID, KnownTypeFile
+	}
+
+	// 4. Symbol or Directory by exact name
+	for _, t := range []EntityType{KnownTypeSymbol, KnownTypeDirectory} {
 		if err := m.db.QueryRow(
 			"SELECT id FROM entities WHERE type = ? AND LOWER(name) = LOWER(?) AND fact_status != 'deleted' LIMIT 1",
 			t, subject,
@@ -393,16 +406,5 @@ func (m *Manager) resolveSubjectEntity(subject string) (id string, entityType En
 		}
 	}
 
-	// 4. Fallback: create a minimal Note entity marked unknown so it exists in
-	//    the graph and can be resolved once the workspace is indexed further.
-	fallbackID := entityID(KnownTypeNote, subject)
-	_ = m.writer.upsertEntity(EntityTuple{
-		ID:               fallbackID,
-		Type:             KnownTypeNote,
-		Name:             subject,
-		Confidence:       0.5,
-		ExtractionMethod: MethodInferred,
-		KnowledgeDepth:   0,
-	})
-	return fallbackID, KnownTypeNote
+	return "", ""
 }

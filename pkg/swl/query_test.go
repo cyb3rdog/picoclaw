@@ -342,16 +342,26 @@ func TestAssertNote_CreatesNoteEntity(t *testing.T) {
 	m, cleanup := newQueryTestManager(t)
 	defer cleanup()
 
+	// Seed a file entity so resolution succeeds.
+	fileID := entityID(KnownTypeFile, "pkg/swl/manager.go")
+	_ = m.UpsertEntity(EntityTuple{
+		ID: fileID, Type: KnownTypeFile, Name: "pkg/swl/manager.go",
+		Confidence: 1.0, ExtractionMethod: MethodObserved, KnowledgeDepth: 1,
+	})
+
 	result := m.AssertNote("pkg/swl/manager.go", "This file is the entry point for SWL", 0.9, "")
 	if strings.Contains(result, "error") || strings.Contains(result, "Error") {
 		t.Errorf("AssertNote returned error: %s", result)
 	}
+	if strings.Contains(result, "not found") {
+		t.Errorf("AssertNote failed to resolve subject: %s", result)
+	}
 
-	// Verify note exists in DB
-	var count int
-	_ = m.db.QueryRow("SELECT COUNT(*) FROM entities WHERE type = ?", KnownTypeNote).Scan(&count)
-	if count == 0 {
-		t.Error("expected Note entity in DB after AssertNote")
+	// Assertion is now stored in metadata.assertions of the file entity, not as a Note entity.
+	var metaStr string
+	_ = m.db.QueryRow("SELECT metadata FROM entities WHERE id = ?", fileID).Scan(&metaStr)
+	if !strings.Contains(metaStr, "This file is the entry point for SWL") {
+		t.Errorf("assertion not in file metadata: %s", metaStr)
 	}
 }
 
@@ -359,13 +369,23 @@ func TestAssertNote_DepthAtLeast2(t *testing.T) {
 	m, cleanup := newQueryTestManager(t)
 	defer cleanup()
 
-	m.AssertNote("foo.go", "important note about this file", 0.85, "")
+	// Seed a file entity so resolution succeeds.
+	fileID := entityID(KnownTypeFile, "foo.go")
+	_ = m.UpsertEntity(EntityTuple{
+		ID: fileID, Type: KnownTypeFile, Name: "foo.go",
+		Confidence: 1.0, ExtractionMethod: MethodObserved, KnowledgeDepth: 2,
+	})
 
-	// AssertNote creates an Assertion entity with depth MAX(current, 2)
-	var depth int
-	_ = m.db.QueryRow("SELECT MAX(knowledge_depth) FROM entities WHERE type = ?", KnownTypeAssertion).Scan(&depth)
-	if depth < 2 {
-		t.Errorf("expected Assertion entity knowledge_depth ≥ 2, got %d", depth)
+	result := m.AssertNote("foo.go", "important note about this file", 0.85, "")
+	if strings.Contains(result, "not found") {
+		t.Fatalf("AssertNote failed to resolve subject: %s", result)
+	}
+
+	// Assertion is stored in metadata.assertions on the file entity.
+	var metaStr string
+	_ = m.db.QueryRow("SELECT metadata FROM entities WHERE id = ?", fileID).Scan(&metaStr)
+	if !strings.Contains(metaStr, "important note about this file") {
+		t.Errorf("assertion not in file metadata: %s", metaStr)
 	}
 }
 
@@ -465,6 +485,13 @@ func TestHelpText_ContainsSyntaxReference(t *testing.T) {
 func TestAssertNote_EchosIDAndConfidence(t *testing.T) {
 	m, cleanup := newQueryTestManager(t)
 	defer cleanup()
+
+	// Seed a file entity so resolution succeeds.
+	fileID := entityID(KnownTypeFile, "pkg/swl/foo.go")
+	_ = m.UpsertEntity(EntityTuple{
+		ID: fileID, Type: KnownTypeFile, Name: "pkg/swl/foo.go",
+		Confidence: 1.0, ExtractionMethod: MethodObserved, KnowledgeDepth: 1,
+	})
 
 	result := m.AssertNote("pkg/swl/foo.go", "This is a test note", 0.9, "")
 	if !strings.Contains(result, "Recorded") {

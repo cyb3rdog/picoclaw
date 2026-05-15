@@ -324,6 +324,18 @@ func (m *Manager) SessionResume(sessionKey string) string {
 		out += "\nPrevious goal: " + goal.String
 	}
 
+	// Current session intent (most recent Intent entity linked to this session).
+	var lastIntent string
+	_ = m.db.QueryRow(`
+		SELECT en.name FROM edges e
+		JOIN entities en ON en.id = e.to_id AND en.type = 'Intent'
+		WHERE e.from_id = ? AND e.rel = 'intended_for'
+		ORDER BY en.modified_at DESC LIMIT 1`, sessionID,
+	).Scan(&lastIntent)
+	if lastIntent != "" {
+		out += "\nCurrent intent: " + truncate(lastIntent, 100)
+	}
+
 	return out
 }
 
