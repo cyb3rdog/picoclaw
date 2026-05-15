@@ -1,39 +1,56 @@
 package swl
 
-import (
-	"database/sql"
-	"strings"
-)
-
 // DeriveAreaRelations derives semantic relationships between SemanticArea entities
 // from the existing entity graph. Called at the end of ScanWorkspace.
 //
-// Currently derives:
-//   - depends_on: if files in area A import packages from area B (≥2 cross-area imports)
+// Derives depends_on: if files in area A import dependencies that fall under area B
+// (≥2 cross-area import edges), upsert a depends_on edge from area A to area B.
 func (m *Manager) DeriveAreaRelations() {
-	// Find all SemanticAreas and their parent directory paths
 	areas, err := m.loadAreaPaths()
 	if err != nil || len(areas) < 2 {
 		return
 	}
 
-	// For each area pair, count cross-area import edges:
-	// File in area A imports Dependency whose name starts with area B's path prefix
-	const minCrossImports = 2
-	for areaID, areaPath := range areas {
-		for otherID, otherPath := range areas {
-			if areaID == otherID || otherPath == "" {
-				continue
-			}
-			count := m.countCrossImports(areaPath, otherPath)
-			if count >= minCrossImports {
-				_ = m.writer.upsertEdge(EdgeTuple{
-					FromID: areaID,
-					Rel:    KnownRelDependsOn,
-					ToID:   otherID,
-				})
-			}
+	// Single aggregated query: find all (areaID, otherAreaID) pairs where files under
+	// one area import dependencies that match another area's path prefix.
+	// Uses a single join rather than O(A²) individual queries.
+	rows, err := m.db.Query(`
+		SELECT a1.id, a2.id, COUNT(DISTINCT e.to_id) AS imports
+		FROM entities a1
+		JOIN entities a2 ON a1.id != a2.id
+		JOIN entities f  ON f.type = ? AND f.name LIKE (a1.name || '%') AND f.fact_status != 'deleted'
+		JOIN edges e      ON e.from_id = f.id AND e.rel = ?
+		JOIN entities d  ON d.id = e.to_id AND d.type = ? AND d.fact_status != 'deleted'
+		                 AND d.name LIKE ('%' || TRIM(a2.name, '/') || '%')
+		WHERE a1.type = ? AND a1.fact_status != 'deleted'
+		  AND a2.type = ? AND a2.fact_status != 'deleted'
+		GROUP BY a1.id, a2.id
+		HAVING imports >= 2`,
+		KnownTypeFile, KnownRelImports, KnownTypeDependency,
+		KnownTypeSemanticArea, KnownTypeSemanticArea,
+	)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+
+	type pair struct{ from, to string }
+	var pairs []pair
+	for rows.Next() {
+		var from, to string
+		var count int
+		if rows.Scan(&from, &to, &count) == nil {
+			pairs = append(pairs, pair{from, to})
 		}
+	}
+	_ = rows.Err()
+
+	for _, p := range pairs {
+		_ = m.writer.upsertEdge(EdgeTuple{
+			FromID: p.from,
+			Rel:    KnownRelDependsOn,
+			ToID:   p.to,
+		})
 	}
 }
 
@@ -56,36 +73,4 @@ func (m *Manager) loadAreaPaths() (map[string]string, error) {
 		}
 	}
 	return areas, rows.Err()
-}
-
-// countCrossImports counts import edges from files under areaPath to dependencies
-// whose name starts with a prefix derivable from otherAreaPath.
-func (m *Manager) countCrossImports(areaPath, otherAreaPath string) int {
-	// Files in areaPath: entities of type File with name starting with areaPath
-	// Their imports: edges with rel=imports pointing to Dependency entities
-	// whose name contains otherAreaPath as a substring
-	if areaPath == "" || otherAreaPath == "" {
-		return 0
-	}
-	// Normalize: treat otherAreaPath as a path fragment to search for
-	searchFrag := strings.Trim(otherAreaPath, "/")
-	if searchFrag == "" {
-		return 0
-	}
-
-	var count int
-	err := m.db.QueryRow(`
-        SELECT COUNT(DISTINCT e.to_id)
-        FROM edges e
-        JOIN entities f ON f.id = e.from_id AND f.type = ? AND f.name LIKE ? AND f.fact_status != 'deleted'
-        JOIN entities d ON d.id = e.to_id   AND d.type = ? AND d.name LIKE ? AND d.fact_status != 'deleted'
-        WHERE e.rel = ?`,
-		KnownTypeFile, areaPath+"%",
-		KnownTypeDependency, "%"+searchFrag+"%",
-		KnownRelImports,
-	).Scan(&count)
-	if err != nil && err != sql.ErrNoRows {
-		return 0
-	}
-	return count
 }

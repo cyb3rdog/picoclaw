@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -728,8 +729,8 @@ func (h *Handler) handleSWLSessions(w http.ResponseWriter, r *http.Request) {
 
 	limit := 50
 	if lStr := r.URL.Query().Get("limit"); lStr != "" {
-		if n, err2 := fmt.Sscanf(lStr, "%d", &limit); n != 1 || err2 != nil || limit < 1 || limit > 200 {
-			limit = 50
+		if n, err2 := strconv.Atoi(lStr); err2 == nil && n >= 1 && n <= 200 {
+			limit = n
 		}
 	}
 
@@ -749,9 +750,9 @@ func (h *Handler) handleSWLSessions(w http.ResponseWriter, r *http.Request) {
 		if rows.Scan(&s.ID, &s.StartedAt, &endedAt, &goal, &summary) != nil {
 			continue
 		}
-		if endedAt.Valid { s.EndedAt = endedAt.String }
-		if goal.Valid { s.Goal = goal.String }
-		if summary.Valid { s.Summary = summary.String }
+		s.EndedAt  = nullStr(endedAt)
+		s.Goal     = nullStr(goal)
+		s.Summary  = nullStr(summary)
 		sessions = append(sessions, s)
 	}
 	_ = rows.Err()
@@ -977,6 +978,13 @@ func (h *Handler) handleSWLStream(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "data: %s\n\n", payload)
 		flusher.Flush()
 	}
+}
+
+func nullStr(ns sql.NullString) string {
+	if ns.Valid {
+		return ns.String
+	}
+	return ""
 }
 
 func swlShortName(name string) string {

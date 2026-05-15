@@ -15,13 +15,12 @@ import (
 func (m *Manager) MaybeDecay() { m.maybeDecay() }
 
 // maybeDecay runs decay checks with 5% probability per PostHook call.
-// Also triggers co-occurrence derivation at 1% probability.
+// Co-occurrence derivation runs at an independent 1% probability.
 func (m *Manager) maybeDecay() {
-	r := rand.Float64()
-	if r < 0.01 {
+	if rand.Float64() < 0.01 {
 		m.deriveCoOccurrences()
 	}
-	if r < 0.05 {
+	if rand.Float64() < 0.05 {
 		m.DecayCheck("", 2)
 	}
 }

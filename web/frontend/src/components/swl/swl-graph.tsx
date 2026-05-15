@@ -89,9 +89,6 @@ export function SWLGraph({ data, hiddenTypes, focusNodeId, onNodeClick }: Props)
   const hiddenTypesRef = useRef<Set<string>>(hiddenTypes ?? new Set())
   const focusNodeRef   = useRef<string | undefined>(focusNodeId)
 
-  // sharedGeometry was used for InstancedMesh experiment - now unused, kept for reference
-  // const sharedGeometry = useMemo(() => new THREE.SphereGeometry(1, 8, 6), [])
-
   // graphState is the React prop fed to ForceGraph3D. Only updated via setGraphState.
   const [graphState, setGraphState] = useState<{ nodes: any[]; links: any[] }>(() => ({
     nodes: data.nodes ?? [],
@@ -182,6 +179,7 @@ export function SWLGraph({ data, hiddenTypes, focusNodeId, onNodeClick }: Props)
       allNodesRef.current.clear()
     }
 
+    const incomingIds = new Set((data.nodes ?? []).map((n) => n.id))
     // Merge new nodes into allNodesRef in-place
     for (const n of data.nodes ?? []) {
       const existing = allNodesRef.current.get(n.id)
@@ -191,11 +189,9 @@ export function SWLGraph({ data, hiddenTypes, focusNodeId, onNodeClick }: Props)
         allNodesRef.current.set(n.id, { ...n })
       }
     }
-    // Remove nodes that are no longer in the data
+    // Remove nodes no longer in data — O(n) via pre-built Set
     for (const [id] of allNodesRef.current) {
-      if (!data.nodes?.some((n) => n.id === id)) {
-        allNodesRef.current.delete(id)
-      }
+      if (!incomingIds.has(id)) allNodesRef.current.delete(id)
     }
     allLinksRef.current = data.links ?? []
     applyFiltered()
@@ -211,13 +207,20 @@ export function SWLGraph({ data, hiddenTypes, focusNodeId, onNodeClick }: Props)
 
   // ── SSE real-time updates ────────────────────────────────────────────────────
   const [sseReconnecting, setSseReconnecting] = useState(false)
+  const sseReconnectingRef = useRef(false)
+
+  const setSseState = (v: boolean) => {
+    if (sseReconnectingRef.current === v) return
+    sseReconnectingRef.current = v
+    setSseReconnecting(v)
+  }
 
   useEffect(() => {
     const es = new EventSource(swlApi.streamUrl())
     let timer: ReturnType<typeof setTimeout>
 
     es.onmessage = (e) => {
-      setSseReconnecting(false)
+      setSseState(false)
       try {
         const msg = JSON.parse(e.data) as { type: string; nodes: SWLNode[] }
         if (msg.type !== "delta" || !msg.nodes?.length) return
@@ -229,7 +232,7 @@ export function SWLGraph({ data, hiddenTypes, focusNodeId, onNodeClick }: Props)
     }
 
     es.onerror = () => {
-      setSseReconnecting(true)
+      setSseState(true)
     }
 
     return () => {

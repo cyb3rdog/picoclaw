@@ -271,51 +271,47 @@ func isAnchorFile(name string) bool {
 
 // extractAnchorMeta parses the first snapshotMaxAnchorBytes of an anchor doc
 // and returns enriched metadata with description, title, goals, and sections.
+// Uses headingRE (from extractor.go) for consistent heading detection.
 func extractAnchorMeta(content string) map[string]any {
 	meta := map[string]any{}
-	lines := strings.Split(content, "\n")
 
-	var description, firstHeading string
-	var goals, sections []string
-	inPara := false
-	var paraLines []string
+	// Extract all headings in one pass using the shared regex.
+	var firstHeading string
+	var sections []string
+	for _, m := range headingRE.FindAllStringSubmatch(content, -1) {
+		level, text := m[1], strings.TrimSpace(m[2])
+		if level == "#" {
+			if firstHeading == "" {
+				firstHeading = text
+			}
+		} else {
+			sections = append(sections, text)
+			if firstHeading == "" {
+				firstHeading = text
+			}
+		}
+	}
 
+	// Extract first paragraph (non-heading, non-code prose).
 	goalKeywords := []string{"goal", "purpose", "designed to", "aims to", "intended to", "mission", "vision"}
-
-	for _, line := range lines {
+	var description string
+	var goals, paraLines []string
+	inPara := false
+	for _, line := range strings.Split(content, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" {
-			if inPara && len(paraLines) > 0 {
-				if description == "" {
-					description = strings.Join(paraLines, " ")
-				}
-				paraLines = nil
-				inPara = false
+			if inPara && description == "" && len(paraLines) > 0 {
+				description = strings.Join(paraLines, " ")
 			}
+			inPara = false
+			paraLines = nil
 			continue
 		}
-		// Markdown headings
-		if strings.HasPrefix(trimmed, "## ") || strings.HasPrefix(trimmed, "### ") {
-			heading := strings.TrimLeft(trimmed, "# ")
-			sections = append(sections, heading)
-			if firstHeading == "" {
-				firstHeading = heading
-			}
-			continue
-		}
-		if strings.HasPrefix(trimmed, "# ") {
-			if firstHeading == "" {
-				firstHeading = strings.TrimPrefix(trimmed, "# ")
-			}
-			continue
-		}
-		// Skip code blocks and horizontal rules
-		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "---") {
+		if strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "---") {
 			continue
 		}
 		inPara = true
 		paraLines = append(paraLines, trimmed)
-		// Goal-bearing sentence detection
 		lower := strings.ToLower(trimmed)
 		for _, kw := range goalKeywords {
 			if strings.Contains(lower, kw) {
@@ -327,26 +323,26 @@ func extractAnchorMeta(content string) map[string]any {
 	if description == "" && len(paraLines) > 0 {
 		description = strings.Join(paraLines, " ")
 	}
-	// Truncate description at 300 chars
 	if len(description) > 300 {
 		description = description[:300]
 	}
+
 	if description != "" {
 		meta["description"] = description
 	}
 	if firstHeading != "" {
 		meta["title"] = firstHeading
 	}
+	if len(goals) > 5 {
+		goals = goals[:5]
+	}
 	if len(goals) > 0 {
-		if len(goals) > 5 {
-			goals = goals[:5]
-		}
 		meta["goals"] = goals
 	}
+	if len(sections) > 10 {
+		sections = sections[:10]
+	}
 	if len(sections) > 0 {
-		if len(sections) > 10 {
-			sections = sections[:10]
-		}
 		meta["sections"] = sections
 	}
 	return meta

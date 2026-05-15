@@ -79,6 +79,7 @@ CREATE INDEX IF NOT EXISTS idx_entities_hash   ON entities(content_hash);
 CREATE INDEX IF NOT EXISTS idx_edges_from      ON edges(from_id);
 CREATE INDEX IF NOT EXISTS idx_edges_to        ON edges(to_id);
 CREATE INDEX IF NOT EXISTS idx_edges_rel       ON edges(rel);
+CREATE INDEX IF NOT EXISTS idx_edges_session   ON edges(source_session);
 CREATE INDEX IF NOT EXISTS idx_events_session  ON events(session_id);
 CREATE INDEX IF NOT EXISTS idx_events_ts       ON events(ts);
 CREATE INDEX IF NOT EXISTS idx_query_gaps_count ON query_gaps(count);
