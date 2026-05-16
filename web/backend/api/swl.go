@@ -24,6 +24,7 @@ func (h *Handler) registerSWLRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/swl/health", h.handleSWLHealth)
 	mux.HandleFunc("GET /api/swl/sessions", h.handleSWLSessions)
 	mux.HandleFunc("GET /api/swl/overview", h.handleSWLOverview)
+	mux.HandleFunc("GET /api/swl/model-reliability", h.handleSWLModelReliability)
 	mux.HandleFunc("GET /api/swl/stream", h.handleSWLStream)
 }
 
@@ -702,6 +703,108 @@ func (h *Handler) handleSWLHealth(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(computeHealth(r.Context(), db, dbPath)) //nolint:errcheck
+}
+
+// --- Model reliability endpoint ---
+
+type swlModelStat struct {
+	ModelID       string  `json:"model_id"`
+	TotalAsserts  int     `json:"total_assertions"`
+	Confirmed     int     `json:"confirmed_assertions"` // from entities confirmed by ≥2 sessions
+	AvgConfidence float64 `json:"avg_confidence"`
+}
+
+func (h *Handler) handleSWLModelReliability(w http.ResponseWriter, r *http.Request) {
+	dbPath, err := h.swlDBPath()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	db, err := openSWLReadOnly(dbPath)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode([]swlModelStat{}) //nolint:errcheck
+		return
+	}
+	defer db.Close()
+
+	rows, err := db.QueryContext(r.Context(),
+		`SELECT metadata FROM entities WHERE metadata LIKE '%"assertions"%' AND fact_status != 'deleted'`,
+	)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	type entry struct {
+		Text    string  `json:"text"`
+		Conf    float64 `json:"conf"`
+		Sid     string  `json:"sid"`
+		ModelID string  `json:"model_id"`
+	}
+	type stat struct {
+		total     int
+		confirmed int
+		confSum   float64
+	}
+	stats := map[string]*stat{}
+
+	for rows.Next() {
+		var metaStr string
+		if rows.Scan(&metaStr) != nil {
+			continue
+		}
+		var meta map[string]json.RawMessage
+		if json.Unmarshal([]byte(metaStr), &meta) != nil {
+			continue
+		}
+		raw, ok := meta["assertions"]
+		if !ok {
+			continue
+		}
+		var entries []entry
+		if json.Unmarshal(raw, &entries) != nil {
+			continue
+		}
+		sessionsSeen := map[string]bool{}
+		for _, e := range entries {
+			sessionsSeen[e.Sid] = true
+		}
+		confirmed := len(sessionsSeen) >= 2
+		for _, e := range entries {
+			mid := e.ModelID
+			if mid == "" {
+				mid = "unknown"
+			}
+			if stats[mid] == nil {
+				stats[mid] = &stat{}
+			}
+			stats[mid].total++
+			stats[mid].confSum += e.Conf
+			if confirmed {
+				stats[mid].confirmed++
+			}
+		}
+	}
+	_ = rows.Err()
+
+	out := make([]swlModelStat, 0, len(stats))
+	for mid, s := range stats {
+		avg := 0.0
+		if s.total > 0 {
+			avg = s.confSum / float64(s.total)
+		}
+		out = append(out, swlModelStat{
+			ModelID:       mid,
+			TotalAsserts:  s.total,
+			Confirmed:     s.confirmed,
+			AvgConfidence: avg,
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(out) //nolint:errcheck
 }
 
 // --- Sessions endpoint ---

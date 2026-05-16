@@ -1,6 +1,6 @@
 # SWL — Semantic Workspace Layer: Design Document
 
-> Status: **v1.3** | Date: 2026-05-11
+> Status: **v1.4** | Date: 2026-05-16
 > Replaces and consolidates all prior SWL design notes.
 > Aligned with implementation as of `claude/merge-swl-fixes-assessment-Y67DP`.
 
@@ -196,9 +196,27 @@ Runs on the same probabilistic cadence as `maybeDecay()`. No human or LLM interv
 |---------|--------|
 | Entity touched by ≥3 distinct agents with same label | Label confidence → `verified` |
 | Assertion contradicted by ≥2 subsequent agents | Confidence halved; `fact_status: stale`; surfaced in `query_swl {gaps:true}` |
-| Entities co-occurring in ≥4 sessions | Auto `co_occurs_with` edge recorded |
+| Entities co-occurring in ≥4 sessions | Auto `co_occurs_with` edge recorded (`decay.go`) |
 | Rule fired ≥200× with useful_ratio < 0.05 | Rule removed from active set |
-| Query returning 0 results, repeated ≥3× | Appears in `query_swl {gaps:true}` with suggestion |
+| Query returning 0 results, repeated ≥3× | Appears in `query_swl {gaps:true}` with inline YAML suggestion |
+| Decay check runs | `ORDER BY confidence ASC, access_count ASC, last_checked ASC` — lowest-confidence, least-accessed entities checked first |
+
+### 7.4 Ontological derivation (scan-time, Tier 1)
+
+After `ScanWorkspace`, two derivation passes run:
+
+- **`DeriveAreaRelations()`** (`ontology.go`) — derives `depends_on` edges between SemanticArea (Directory) entities where files in area A import ≥2 dependencies that fall under area B's path prefix. Gives LLMs "what does pkg/auth depend on?" without any file reads.
+- **`DeriveSymbolUsage()`** (`ontology.go`) — derives `File --uses--> Symbol` edges from the import graph. If File A imports a dependency whose path ends with the directory of File B, and File B defines exported Symbol S, → `File A uses Symbol S`. Precision filters: exported symbols only (uppercase first letter); multi-segment package paths only (e.g. `pkg/auth`, not `auth`). Capped at 500 pairs per scan. These edges are inferred (no session ID); extractor-observed edges from actual file reads take precedence via upsert.
+
+### 7.5 Per-model reliability profiling (ADDENDUM 1)
+
+Each `assertionEntry` in `metadata.assertions[]` carries a `model_id` field populated
+from `sessionModels` (set by `AfterLLM` via `SetSessionModel`). Each event row in the
+`events` table carries `model_id` similarly.
+
+`askModelReliability()` aggregates per-model assertion stats: total assertions,
+confirmed count (≥2 distinct sessions), average confidence. Queryable via
+`query_swl {"question":"model reliability"}` and `GET /api/swl/model-reliability`.
 
 ---
 
@@ -208,32 +226,37 @@ Runs on the same probabilistic cadence as `maybeDecay()`. No human or LLM interv
 
 ```
 pkg/swl/
-├── manager.go       Core: NewManager, StartSession, Shutdown, ref-counted registry
-├── db.go            SQLite schema, WAL, single-writer connection, DB operations
-├── entity.go        Entity CRUD, upsert, decay, access_count (reads not writes)
+├── manager.go       Core: NewManager, SetSessionModel, scaffoldConfigFiles, ref-counted registry
+├── db.go            SQLite schema, WAL, single-writer connection, DB operations + migrations
+├── entity.go        Entity CRUD, upsert invariants, decay, access_count (reads not writes)
 ├── edge.go          Edge CRUD, relation types, graph traversal
-├── inference.go     3-layer inference pipeline, toolMap, RegisterToolHandler
-├── extractor.go     Regex extractors: symbols, imports, tasks, sections, URLs
+├── inference.go     3-layer inference pipeline, toolMap, RegisterToolHandler, recordToolEvent
+├── extractor.go     Regex extractors: symbols, imports, tasks, sections, URLs, LLM response
 ├── scanner.go       Workspace walk, mtime-based incremental scan, ignore patterns
 ├── snapshot.go      BuildSnapshot: workspace semantic snapshot (Tier 0 bounded)
-├── session.go       Session management, cold-start detection, hint injection
+├── ontology.go      DeriveAreaRelations, DeriveSymbolUsage (Tier 1 derivation post-scan)
+├── session.go       Session management, cold-start detection, hint injection, SessionResume
 ├── registry.go      Global map[dbPath → managerEntry] with ref-counting
-├── decay.go         Probabilistic decay, re-verification, custom handlers
-├── query.go         3-tier query engine: patterns → SQL templates → freetext
-├── tool.go          query_swl tool registration, PreHook blocking
-├── hint.go          Session hint constant (60-token prompt)
+├── decay.go         Evidence-based decay (confidence ASC), co_occurs_with loop, re-verification
+├── gap_analysis.go  AnalyzeGaps, SuggestRules, inline YAML rule suggestions
+├── query.go         3-tier query engine + askModelReliability + appendAssertionToMeta
+├── tool.go          query_swl tool registration, PreHook blocking, rulesLoadErr surfacing
+├── hint.go          Session hint constant injected into system prompt
 ├── config.go        SWL configuration, effective value helpers
+├── rules.go         RulesEngine, QueryConfig, CompileQueryConfig, workspace override merge
+├── labels.go        LabelResult, DeriveLabels, path/name/extension pattern matching
+├── ignore.go        .swlignore parser, gitignore-compatible pattern matching
 ├── types.go         All public types, constants (KnownType*, KnownRel*, Method*)
-└── util.go          Path normalization, JSON helpers
+└── util.go          Path normalization, JSON helpers, truncate
 ```
 
-**20 source files total.**
+**22 source files total.**
 
 ### 8.2 Agent integration (`pkg/agent/swl_hook.go`)
 
 `SWLHook` implements three interfaces:
 - **RuntimeEventObserver** — `OnRuntimeEvent`: TurnStart → Intent entity + session goal; SubTurnSpawn → SubAgent entity
-- **LLMInterceptor** — `AfterLLM`: fires `ExtractLLMResponse` async; reasoning content capped at `EffectiveReasoningConfidenceCap()`
+- **LLMInterceptor** — `AfterLLM`: calls `SetSessionModel(sessionID, resp.Model)` for per-model tracking; fires `ExtractLLMResponse` async (extracts Tasks, URLs, file paths + wires `context_of` edges); reasoning content capped at `EffectiveReasoningConfidenceCap()`
 - **ToolInterceptor** — `AfterTool`: fires `PostHook` async; `BeforeTool`: calls `PreHook` for blocking
 
 Mounted per-agent via `mountAgentSWLHooks()` with priority 10. One SWLHook instance per agent, sharing the Manager via the agent registry.
@@ -281,7 +304,7 @@ Path normalization: all entity IDs derived from workspace-relative normalized pa
 | GET /graph | session | 5,000 | 10,000 | 150 |
 | GET /graph/neighborhood | — | 120 | 400 | 30 |
 
-Plus: GET /stats, GET /health, GET /sessions, GET /overview (combined), GET /stream (SSE), GET /topology (gzip paginated).
+Plus: GET /stats, GET /health, GET /sessions, GET /overview (combined), GET /model-reliability (per-model assertion stats), GET /stream (SSE delta stream — delivers both node updates and new edges).
 
 **Neighborhood model**: depth-1 all incident edges → depth-2 cross-links only between hop-1 neighbors (no expansion). Focus mode without graph explosion.
 
@@ -300,7 +323,8 @@ Plus: GET /stats, GET /health, GET /sessions, GET /overview (combined), GET /str
 - LOD tiers: <100 nodes → 14×10 sphere segs, 100-300 → 8×6, >300 → 5×4
 - Focus node: 1.5x radius, badge, neighborhood mode suppresses unrelated SSE arrivals
 - Auto-orbit, pauses 20s on interaction, zoom-to-fit after 800ms
-- 30s auto-refetch, 400ms debounced SSE batch
+- No auto-refetch: SSE stream is the sole update mechanism after initial load; manual Reload button available
+- 400ms debounced SSE batch; SSE delivers both node updates (`nodes[]`) and new edges (`links[]`)
 
 **Color palette** (type → hex):
 File=blue, Symbol=green, Task=amber, URL=cyan, Session=purple, Note=orange, Intent=lilac, SubAgent=teal, Dependency=lime, Command=gold.
@@ -390,9 +414,9 @@ Activate autonomous feedback loop. Self-improvement with use across sessions and
 
 ---
 
-## 11. Known Gaps
+## 11. Known Gaps & Design Boundaries
 
-_As of 2026-05-12, all previously identified gaps (B1, B3, LLM-1 through LLM-5) have been resolved._
+### Resolved (as of 2026-05-16)
 
 | ID | Gap | Resolution |
 |----|-----|-----------|
@@ -403,8 +427,23 @@ _As of 2026-05-12, all previously identified gaps (B1, B3, LLM-1 through LLM-5) 
 | LLM-3 | No staleness signal at use | `PreHook` checks `fact_status`; prepends stale notice to tool result in `AfterTool` |
 | LLM-4 | Gap recording silent | First-miss response includes "(Query recorded — repeated misses generate candidate rules automatically.)" |
 | LLM-5 | Assert no confirmation echo | `AssertNote()` returns `"Recorded: '<fact>' on entity '<name>' [id: <short-id>] at confidence <n>"` |
+| D-1 | Assertion orphaning | Assertions moved to `metadata.assertions[]`; no phantom nodes |
+| D-2 | Intent/SubAgent write-only | Wired in `askSessionActivity` and `SessionResume` |
+| D-3 | SSE edges missing | Two-watermark approach; `links[]` in SSE delta payload |
+| N-1 | LLM extraction orphans | `context_of` edges from extracted entities to session |
+| N-2 | Decay ordering probabilistic | `ORDER BY confidence ASC, access_count ASC, last_checked ASC` |
+| N-3 | ADDENDUM 1 unimplemented | `model_id` in assertions + events; `askModelReliability`; `/api/swl/model-reliability` |
 
-No open implementation gaps at this revision.
+### Intentionally deferred
+
+See [ROADMAP.md](./ROADMAP.md) for the full list with rationale:
+- Semantic similarity edges (`similar_to`) — noise without type context
+- Path queries (`shortestPath`) — SQLite CTE limitations; needs application-level BFS
+- M8 autonomous rule auto-apply — needs dry-run design first
+- Per-extension extraction overrides — infrastructure ready; YAML schema not extended
+- Anchor document structured extraction — no consumer yet
+- WorkspaceProfile entity — requires Tier 3 LLM indexing (opt-in)
+- Edge weights as DB column — correct approach is config-driven at query time
 
 ---
 

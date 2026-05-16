@@ -71,11 +71,15 @@ func (m *Manager) recordToolEvent(sessionID, toolName string, args map[string]an
 		return
 	}
 	argsHash := contentHash(fmt.Sprintf("%v", args))
+	var modelID string
+	if v, ok := m.sessionModels.Load(sessionID); ok {
+		modelID, _ = v.(string)
+	}
 	m.writer.mu.Lock()
 	m.db.Exec( //nolint:errcheck
-		`INSERT OR IGNORE INTO events (id, session_id, tool, phase, args_hash, ts)
-		 VALUES (?, ?, ?, 'post', ?, ?)`,
-		newUUID(), sessionID, toolName, argsHash, nowSQLite(),
+		`INSERT OR IGNORE INTO events (id, session_id, tool, phase, args_hash, model_id, ts)
+		 VALUES (?, ?, ?, 'post', ?, ?, ?)`,
+		newUUID(), sessionID, toolName, argsHash, modelID, nowSQLite(),
 	)
 	m.writer.mu.Unlock()
 }

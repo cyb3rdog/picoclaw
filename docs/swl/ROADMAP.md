@@ -1,128 +1,147 @@
-# SWL Roadmap — Intentional Gaps & Future Work
+# SWL Roadmap — Deferred Features
 
-This document records features that are partially implemented, deferred, or
-intentionally incomplete. Items here are **not bugs** — they are known gaps
-with deliberate rationale.
+This document records features that are intentionally incomplete or deferred.
+Items here are **not bugs** — they are known gaps with deliberate rationale.
 
----
-
-## Schema Tables Not Yet Used
-
-### `constraints` table
-
-Defined in `db.go`. Intended to hold named SQL consistency checks that the
-autonomous loop can evaluate. No writer or reader has been wired; the table
-is empty in all deployments.
-
-**Rationale for deferral**: The gap-analysis feedback loop (`query_gaps`) covers
-the most critical case (missing intents). Constraint checking adds value only when
-entities are numerous enough to have measurable quality variance.
-
-### `events` table
-
-Defined in `db.go`. Intended to store per-tool-call events (tool name, phase,
-args hash) for replay and audit. Currently populated nowhere.
-
-**Rationale for deferral**: The session and edges tables already record
-which entities were touched per session. Full event replay is useful for
-debugging extraction pipelines, not yet needed.
+Items completed since initial deferral are moved to the "Resolved" section at the bottom.
 
 ---
 
-## Entity Types Without Full Implementation
+## Deferred: Semantic Similarity Edges (`similar_to`)
 
-### `KnownTypeIntent` (`"Intent"`)
+`DeriveSimilarSymbols()` — not built. Design proposed Levenshtein distance ≤3
+on symbol names to derive `similar_to` edges.
 
-Created by `swl_hook.go` at TurnStart via `upsertEntity`. The `intended_for`
-edge is also written. However, Intent entities are never queried back — no
-handler in `query.go` retrieves them, and they do not appear in graph views.
-
-**Next step**: Add `askIntentHistory()` handler; surface in `SessionResume`.
-
-### `KnownTypeSubAgent` (`"SubAgent"`)
-
-Created by `swl_hook.go` at SubTurnSpawn. The `spawned_by` edge is written.
-SubAgent entities appear in graphs but have no dedicated query handler.
-
-**Next step**: Add `askSubAgentActivity()` handler to surface agent spawning
-patterns.
+**Why deferred**: Name-distance similarity without type context produces systematic
+noise. `handleRequest` and `handleResponse`, `parseJSON` and `parseYAML`, `newClient`
+and `newServer` — all match by name but may be completely unrelated. Without qualifier
+resolution (requires a type checker, not regex), occurrence-based cross-file matching
+creates a high-noise, low-signal edge class. Reopen if a type-context approach becomes
+available (e.g., AST-based matching using tree-sitter).
 
 ---
 
-## Edge Relations Without Full Implementation
+## Deferred: Path Queries (`shortestPath`)
 
-### `KnownRelContextOf` (`"context_of"`)
+No `shortestPath()` implementation. Design proposed recursive CTE in SQLite.
 
-Defined in `types.go`. Not written anywhere in the current codebase.
-
-**Intended use**: A Session entity is `context_of` a workspace — connecting
-the temporal graph to the structural graph. Currently sessions relate to
-entities only via `source_session` on edge rows.
-
-### `KnownRelReasoned` (`"reasoned"`)
-
-Defined in `types.go`. Not written anywhere in the current codebase.
-
-**Intended use**: When an LLM produces a reasoning step that leads to an entity
-modification, a `reasoned` edge from the Intent to the affected entity documents
-the causal chain. Requires Tier 2 extraction upgrade.
-
-### `KnownRelCoOccursWith` (`"co_occurs_with"`)
-
-Defined in `types.go`. The constant was added per the design spec (§7.3).
-The edge generation loop — "entities co-occurring in ≥4 sessions → auto
-`co_occurs_with` edge" — is not yet wired in `decay.go` or `feedback.go`.
-
-**Next step**: Add a periodic SQL query in `maybeDecay()` (or a new
-`runFeedbackLoop()`) that groups edges by `source_session` pair-frequency
-and upserts `co_occurs_with` edges for qualifying pairs.
+**Why deferred**: SQLite recursive CTEs with depth ≥10 generate millions of intermediate
+rows on graphs with 1000+ nodes. The cost-based termination proposed in design documents
+(`WHERE p.cost < 20`) is not valid SQLite syntax inside a recursive CTE's WHERE clause.
+A correct implementation requires application-level BFS with a hard node frontier limit
+(≤500 nodes, depth cap ≤8). Design and implement before building.
 
 ---
 
-## Per-Model Quality Profiling (Plan Phase 8)
+## Deferred: M8 — Autonomous Rule Auto-Apply
 
-Depends on assertion linking (now complete). Implementation requires:
+Gap analysis (`gap_analysis.go`) generates candidate YAML rule suggestions and surfaces
+them inline in `query_swl {"gaps":true}`. The suggestions are ready-to-paste YAML.
+However, no automatic write path exists from suggestion → `swl.rules.yaml`.
 
-1. Add `source_agent TEXT`, `source_model TEXT` columns to `edges` via
-   additive migration.
-2. Propagate model ID from `pkg/agent/swl_hook.go` → `PostHook`.
-3. Add `askModelReliability()` handler aggregating per-model assertion
-   confirmation rates.
-4. Expose `GET /api/swl/model-reliability` endpoint.
-5. Add minimal model reliability display to `swl-stats.tsx`.
-6. Weight assertion confidence by source model's historical reliability
-   in the upsert pipeline.
+**Why deferred**: Auto-applying YAML rules without dry-run oversight risks breaking
+workspace-specific extraction configuration. The correct sequence is:
+1. Build a `dry_run` mode that logs what a suggestion *would* change
+2. Gate auto-apply on a config opt-in (`auto_apply_rule_suggestions: true`)
+3. Only apply suggestions above a confidence threshold (e.g. ≥5 query misses, ≥0.8 suggestion confidence)
 
----
-
-## Workspace-Level Ontology Profile Entity
-
-A `WorkspaceProfile` entity capturing overall project type (Go service,
-firmware, documentation, etc.) would give LLMs an at-a-glance project
-classification without manual tagging.
-
-**Rationale for deferral**: Requires Tier 3 LLM indexing (opt-in) and is out
-of scope for constrained hardware targets.
+Until dry-run mode is designed, auto-apply is too risky.
 
 ---
 
-## Structured Anchor Document Content Extraction
+## Deferred: Per-Extension Extraction Overrides
 
-Currently `snapshot.go` stores the first non-heading paragraph of the first
-8KB as the anchor "description". Structured extraction (goals, stated
-dependencies, section map) would make anchor content queryable.
+Global extraction toggles exist (`extract_symbols`, `extract_imports`, etc.) but no
+per-extension overrides. A documentation workspace cannot disable symbol extraction
+only for `.md` files.
 
-**Next step**: Parse anchor content into `anchorExtract{Description, Goals,
-Sections, KeyTerms}` and store as structured JSON in entity metadata.
+**Why deferred**: Medium priority. Requires extending `RulesEngine` with an
+`ExtractionOverride` struct, adding `extraction_overrides` to `swl.rules.yaml`
+schema, and a lookup in `ExtractContent()` per file extension. The infrastructure
+is in place; the YAML schema needs extending.
+
+**Design sketch**:
+```yaml
+extraction_overrides:
+  - extensions: [".md", ".txt", ".rst"]
+    extract_symbols: false
+    extract_imports: false
+    extract_sections: true
+    extract_urls: true
+```
 
 ---
 
-## Per-Extension Extraction Overrides (Plan Phase 2.6)
+## Deferred: Anchor Document Structured Content Extraction
 
-Config has global extraction toggles. Per-extension overrides (e.g., disable
-symbol extraction for `.md` files) require:
+`snapshot.go` stores the first non-heading paragraph as the anchor "description".
+Structured extraction (goals, stated dependencies, section headings) would make
+anchor content queryable.
 
-1. `extraction_overrides` field in `swl.rules.yaml` / `RulesEngine`.
-2. Extension lookup in `ExtractContent()` before dispatching extractors.
+**Why deferred**: Requires a new `anchorExtract{Description, Goals, Sections, KeyTerms}`
+struct and parser in `snapshot.go`. No query handler currently consumes structured
+anchor metadata — build the consumer before the producer.
 
-This is a direct gap in the "adaptable and configurable" requirement.
+---
+
+## Deferred: WorkspaceProfile Entity
+
+A `WorkspaceProfile` entity capturing overall project type (Go service, firmware,
+documentation, etc.) would give LLMs at-a-glance project classification.
+
+**Why deferred**: Requires Tier 3 LLM indexing (opt-in) to be meaningful. Out of
+scope for constrained hardware targets (RPi 0 2W).
+
+---
+
+## Deferred: ToolMap Configurable via YAML
+
+`inference.go`'s `toolMap` handles 8 standard picoclaw-native tools with complex
+post-apply logic (content hashing, symbol/import extraction, depth bumping, edge
+creation). Reducing this to a simple YAML schema loses the specialized post-apply
+intelligence.
+
+**Why deferred**: The Layer 0 `RegisterToolHandler()` escape hatch already handles
+custom tools. Making the standard 8 configurable requires either a rich DSL (complex)
+or accepting that YAML-registered tools get no post-apply intelligence (degraded).
+Wait until a use case appears that cannot be served by Layer 0.
+
+---
+
+## Deferred: Edge Weights as DB Schema Column
+
+Design documents proposed `ALTER TABLE edges ADD COLUMN weight REAL DEFAULT 1.0`.
+
+**Why deferred**: A schema column freezes weights at edge creation time. Changing
+`swl.rules.yaml` edge weights would not affect existing edges that can persist for
+months. The correct approach is config-driven weights applied at query time via a
+CASE expression, requiring no schema change. Implement as a query-time CASE when
+a consumer that needs weight-ordered traversal is built.
+
+---
+
+## Deferred: `constraints` Table
+
+Defined in `db.go`. Intended for named SQL consistency checks in the autonomous loop.
+Table exists but no writer or reader has been wired.
+
+**Why deferred**: The `query_gaps` feedback loop covers the most critical case
+(missing intents). Constraint checking adds value only when entities are numerous
+enough to have measurable quality variance. Revisit at >1000 entity deployments.
+
+---
+
+## Resolved (previously deferred, now done)
+
+| Item | When resolved | What was done |
+|------|--------------|---------------|
+| `events` table empty | N+1 (2026-05-16) | `recordToolEvent` writes model_id + argsHash; `ExtractLLMResponse` writes `context_of` edges |
+| `KnownRelContextOf` not written | N+1 (2026-05-16) | Written by `ExtractLLMResponse` for all extracted entities (Tasks, URLs, Files) |
+| `KnownRelCoOccursWith` loop not wired | N+1 (2026-05-16) | `decay.go` runs co-occurrence query; upserts edges for entity pairs in ≥4 sessions |
+| Intent/SubAgent write-only | D (2026-05-16) | `askSessionActivity` and `SessionResume` now read Intent and SubAgent via edge traversal |
+| Assertion orphaning (phantom nodes) | D (2026-05-16) | Assertions moved to `metadata.assertions[]` on subject entity; no separate entity or edge |
+| Per-model reliability profiling | N+1 (2026-05-16) | `assertionEntry.ModelID`, `sessionModels` map, `askModelReliability()`, `GET /api/swl/model-reliability` |
+| DeriveAreaRelations | N+1 (2026-05-16) | `ontology.go` derives `depends_on` edges between SemanticAreas from import graph |
+| DeriveSymbolUsage | N+1 (2026-05-16) | `ontology.go` derives `uses` edges (exported symbols, multi-segment paths only) from import graph |
+| SSE edge delivery | D (2026-05-16) | Two-watermark approach; `links[]` in SSE delta payload; frontend deduplicates by composite key |
+| Decay ordering probabilistic | N+1 (2026-05-16) | `ORDER BY confidence ASC, access_count ASC, last_checked ASC` — evidence-based, not random |

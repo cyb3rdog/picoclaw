@@ -10,7 +10,15 @@ import (
 // import path ends with the directory of File B, and File B defines Symbol S, then
 // File A likely uses Symbol S. Capped at 500 pairs per call.
 //
-// This gives LLMs real answers to "which files use ParseToken?" using already-extracted data.
+// Precision filters applied to reduce noise:
+//   - Only exported symbols (uppercase first letter) — unexported symbols cannot
+//     cross package boundaries, so import-graph matching cannot apply to them.
+//   - Only package directories with ≥2 path segments (e.g. "pkg/auth" not "auth")
+//     — single-segment names are too ambiguous to match reliably.
+//
+// These edges are inferred (no session ID). When the extractor runs on the importing
+// file and finds actual symbol occurrences, it writes a higher-confidence observed edge
+// via the same (from_id, rel, to_id) primary key, which the upsert promotes.
 func (m *Manager) DeriveSymbolUsage() {
 	// 1. Load all import edges: file_id → []dependency_name
 	impRows, err := m.db.Query(`
@@ -39,9 +47,10 @@ func (m *Manager) DeriveSymbolUsage() {
 		return
 	}
 
-	// 2. Load all defines edges: symbol_id → file_path (of the defining file)
+	// 2. Load all defines edges: symbol_id → (file_path, symbol_name) for exported symbols only.
+	// Unexported symbols cannot cross package boundaries, so import matching cannot apply.
 	defRows, err := m.db.Query(`
-		SELECT s.id, f.name
+		SELECT s.id, s.name, f.name
 		FROM edges e
 		JOIN entities f ON f.id = e.from_id AND f.type = 'File' AND f.fact_status != 'deleted'
 		JOIN entities s ON s.id = e.to_id AND s.type = 'Symbol' AND s.fact_status != 'deleted'
@@ -51,38 +60,50 @@ func (m *Manager) DeriveSymbolUsage() {
 	}
 	defer defRows.Close()
 
-	// symPackageDir: symbol_id → package directory (normalized, no trailing slash)
-	symPackageDir := map[string]string{}
+	type symEntry struct {
+		id     string
+		pkgDir string
+	}
+	var syms []symEntry
 	for defRows.Next() {
-		var symID, filePath string
-		if defRows.Scan(&symID, &filePath) == nil {
-			dir := filepath.ToSlash(filepath.Dir(filePath))
-			dir = strings.TrimPrefix(dir, "./")
-			symPackageDir[symID] = dir
+		var symID, symName, filePath string
+		if defRows.Scan(&symID, &symName, &filePath) != nil || symName == "" {
+			continue
 		}
+		// Skip unexported symbols — they cannot be used across packages.
+		if symName[0] < 'A' || symName[0] > 'Z' {
+			continue
+		}
+		dir := filepath.ToSlash(filepath.Dir(filePath))
+		dir = strings.TrimPrefix(dir, "./")
+		// Skip single-segment package dirs (too ambiguous for import path matching).
+		if !strings.Contains(dir, "/") {
+			continue
+		}
+		syms = append(syms, symEntry{id: symID, pkgDir: dir})
 	}
 	_ = defRows.Err()
 	defRows.Close()
 
-	if len(symPackageDir) == 0 {
+	if len(syms) == 0 {
 		return
 	}
 
 	// 3. Match: dep ends with symPackageDir → upsert File --uses--> Symbol
 	count := 0
 	for fileID, deps := range fileImports {
-		for symID, pkgDir := range symPackageDir {
+		for _, sym := range syms {
 			if count >= 500 {
 				break
 			}
 			for _, dep := range deps {
 				dep = filepath.ToSlash(dep)
 				// Match: import path "github.com/foo/pkg/auth" ends with "pkg/auth"
-				if strings.HasSuffix(dep, "/"+pkgDir) || dep == pkgDir {
+				if strings.HasSuffix(dep, "/"+sym.pkgDir) || dep == sym.pkgDir {
 					_ = m.writer.upsertEdge(EdgeTuple{
 						FromID: fileID,
 						Rel:    KnownRelUses,
-						ToID:   symID,
+						ToID:   sym.id,
 					})
 					count++
 					break

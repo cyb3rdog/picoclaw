@@ -341,7 +341,8 @@ AnchorDocument, SemanticArea
 defines, imports, has_task, has_section, mentions, depends_on, tagged,
 in_dir, written_in, edited_in, appended_in, read, fetched, executed,
 deleted, describes, committed_in, found, listed, spawned_by,
-context_of, reasoned, intended_for, uses, documents, has_area
+context_of, reasoned, intended_for, uses, documents, has_area,
+co_occurs_with  // auto-derived: entities co-occurring in ≥4 sessions
 
 // FactStatus
 unknown, verified, stale, deleted
@@ -367,6 +368,7 @@ func (m *Manager) UpsertEntity(e EntityTuple) error
 func (m *Manager) UpsertEdge(e EdgeTuple) error
 func (m *Manager) ApplyDelta(delta *GraphDelta, sessionID string) error
 func (m *Manager) SetFactStatus(entityID string, status FactStatus) error
+func (m *Manager) SetSessionModel(sessionID, modelID string)           // per-model reliability tracking
 func (m *Manager) ScanWorkspace(root string, sessionKey ...string) (ScanStats, error)
 func (m *Manager) Ask(question string) string
 func (m *Manager) BumpAccessCount(ids []string)
@@ -459,7 +461,21 @@ query_gaps:  id, question, attempt_count, last_attempt_at, suggestion
 | A.2 | Path pattern → semantic label derivation (Tier 1 inference) | Done |
 | A.3 | labelSearch, 30+ Tier 1 intent patterns, label-weighted scoring | Done |
 | B | Externalize extraction + query logic to YAML rules files | Done |
-| C | Autonomous feedback loop, gap → candidate rule generation | Done |
+| C | Autonomous feedback loop, gap → candidate rule generation, inline suggestions | Done |
+| D | SSE edge delivery, assertion-in-metadata, Intent/SubAgent wiring | Done |
+| N+1 | Graph provenance (context_of), evidence-based decay, DeriveAreaRelations, DeriveSymbolUsage, per-model reliability (ADDENDUM 1) | Done |
+
+### Agent hook lifecycle
+
+```
+TurnStart     → create Intent entity, edge to session; update sessions.goal
+SubTurnSpawn  → create SubAgent entity, spawned_by edge
+AfterLLM      → SetSessionModel(sessionID, resp.Model); ExtractLLMResponse async
+                (extracts Tasks/URLs/Files + wires context_of edges to session)
+BeforeTool    → PreHook (may block; query_swl gating, stale file notice)
+AfterTool     → PostHook async (file content extraction, symbol/import/task capture,
+                recordToolEvent with model_id)
+```
 
 ### Known non-bug behaviors
 
@@ -467,17 +483,19 @@ query_gaps:  id, question, attempt_count, last_attempt_at, suggestion
 - Symbols have 0 verified until a read_file/write_file tool is used on that file
 - Not all files have symbols: only files touched via tool hooks are extracted
 - Stale operational files (cron, sessions, state): expected workspace churn
+- `DeriveSymbolUsage` creates package-level uses edges — imprecise but structurally sound; extractor-observed edges from actual reads take precedence via upsert
 
 ### Web API endpoints (`web/backend/api/swl.go`)
 
 ```
-GET  /graph          Graph data (modes: map, overview, session)
-GET  /neighborhood   Neighborhood of a node
-GET  /stats          Aggregate statistics
-GET  /health         SWL health check
-GET  /sessions       Session list
-GET  /overview       Workspace overview snapshot
-SSE  /stream         Live graph event stream
+GET  /graph               Graph data (modes: map, overview, session)
+GET  /graph/neighborhood  Neighborhood of a node
+GET  /stats               Aggregate statistics
+GET  /health              SWL health check
+GET  /sessions            Session list
+GET  /overview            Workspace overview snapshot
+GET  /model-reliability   Per-model assertion reliability (ADDENDUM 1)
+SSE  /stream              Live graph event stream (nodes + edges)
 ```
 
 ---
