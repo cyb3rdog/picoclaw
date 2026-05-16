@@ -228,6 +228,10 @@ func (m *Manager) ScanWorkspace(root string, sessionKey ...string) (ScanStats, e
 	// Derive semantic area relationships and cross-file symbol usage from the import graph.
 	m.DeriveAreaRelations()
 	m.DeriveSymbolUsage()
+	m.DeriveSimilarSymbols()
+
+	// Apply gap-derived rule suggestions if auto_apply_suggestions is enabled.
+	m.ApplyPendingSuggestions()
 
 	return stats, nil
 }

@@ -1,6 +1,7 @@
 package swl
 
 import (
+	"fmt"
 	"path/filepath"
 	"strings"
 )
@@ -169,6 +170,161 @@ func (m *Manager) DeriveAreaRelations() {
 			ToID:   p.to,
 		})
 	}
+}
+
+// DeriveSimilarSymbols derives similar_to edges between Symbol entities that share a
+// structural relationship: defined in the same file AND sharing a name prefix ≥4 chars.
+// This captures same-family symbols like HandleGet/HandlePost, AuthService/AuthHandler,
+// ParseJSON/ParseYAML — without Levenshtein noise or cross-file false positives.
+// Capped at 50 pairs per file, 300 total per call.
+func (m *Manager) DeriveSimilarSymbols() {
+	rows, err := m.db.Query(`
+		SELECT f.id AS file_id, s.id, s.name
+		FROM edges e
+		JOIN entities f ON f.id = e.from_id AND f.type = 'File' AND f.fact_status != 'deleted'
+		JOIN entities s ON s.id = e.to_id AND s.type = 'Symbol' AND s.fact_status != 'deleted'
+		WHERE e.rel = ?
+		ORDER BY f.id, s.name`, KnownRelDefines)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+
+	type symInfo struct{ id, name string }
+	fileSyms := map[string][]symInfo{}
+	for rows.Next() {
+		var fid, sid, sname string
+		if rows.Scan(&fid, &sid, &sname) == nil && sname != "" {
+			fileSyms[fid] = append(fileSyms[fid], symInfo{sid, sname})
+		}
+	}
+	_ = rows.Err()
+	rows.Close()
+
+	total := 0
+	for _, syms := range fileSyms {
+		if len(syms) < 2 {
+			continue
+		}
+		count := 0
+		// syms is sorted alphabetically (ORDER BY s.name); adjacent pairs are most likely
+		// to share a prefix. We still check all pairs but skip when per-file cap is reached.
+		for i := 0; i < len(syms) && count < 50 && total < 300; i++ {
+			for j := i + 1; j < len(syms) && count < 50 && total < 300; j++ {
+				if pfx := symbolCommonPrefix(syms[i].name, syms[j].name); len(pfx) >= 4 {
+					_ = m.writer.upsertEdge(EdgeTuple{
+						FromID: syms[i].id,
+						Rel:    KnownRelSimilarTo,
+						ToID:   syms[j].id,
+					})
+					count++
+					total++
+				}
+			}
+		}
+	}
+}
+
+// symbolCommonPrefix returns the longest common prefix of a and b.
+func symbolCommonPrefix(a, b string) string {
+	n := len(a)
+	if len(b) < n {
+		n = len(b)
+	}
+	for i := 0; i < n; i++ {
+		if a[i] != b[i] {
+			return a[:i]
+		}
+	}
+	return a[:n]
+}
+
+// FindPath performs a breadth-first search from fromID to toID over the edges table,
+// returning the path as a slice of entity IDs. Returns nil if no path is found within
+// maxDepth hops. The frontier is capped at 500 nodes per level to bound memory.
+// Edges are traversed in both directions (from→to and to→from) so the graph is treated
+// as undirected for path discovery purposes.
+func (m *Manager) FindPath(fromID, toID string, maxDepth int) []string {
+	if fromID == toID {
+		return []string{fromID}
+	}
+	if maxDepth <= 0 {
+		maxDepth = 8
+	}
+
+	// parent[node] = the node we arrived from in the BFS tree; "" marks the root.
+	parent := map[string]string{fromID: ""}
+	frontier := []string{fromID}
+
+	for depth := 0; depth < maxDepth && len(frontier) > 0; depth++ {
+		if len(frontier) > 500 {
+			frontier = frontier[:500]
+		}
+
+		placeholders := strings.Repeat("?,", len(frontier))
+		placeholders = placeholders[:len(placeholders)-1] // trim trailing comma
+		args := make([]any, len(frontier)*2)
+		for i, id := range frontier {
+			args[i] = id
+			args[len(frontier)+i] = id
+		}
+
+		query := fmt.Sprintf(
+			`SELECT from_id, to_id FROM edges WHERE from_id IN (%s) OR to_id IN (%s)`,
+			placeholders, placeholders,
+		)
+		rows, err := m.db.Query(query, args...)
+		if err != nil {
+			return nil
+		}
+
+		type edge struct{ from, to string }
+		var found []edge
+		for rows.Next() {
+			var f, t string
+			if rows.Scan(&f, &t) == nil {
+				found = append(found, edge{f, t})
+			}
+		}
+		_ = rows.Err()
+		rows.Close()
+
+		var next []string
+		for _, e := range found {
+			// Try both directions as neighbors.
+			for _, neighbor := range [2]string{e.to, e.from} {
+				if _, visited := parent[neighbor]; visited {
+					continue
+				}
+				// Record the node we came from (approximation for bidirectional traversal).
+				via := e.from
+				if neighbor == e.from {
+					via = e.to
+				}
+				parent[neighbor] = via
+				if neighbor == toID {
+					return reconstructBFSPath(parent, fromID, toID)
+				}
+				next = append(next, neighbor)
+			}
+		}
+		frontier = next
+	}
+	return nil
+}
+
+// reconstructBFSPath traces parent pointers back from dst to the BFS root.
+func reconstructBFSPath(parent map[string]string, fromID, dst string) []string {
+	var path []string
+	for node := dst; ; {
+		path = append([]string{node}, path...)
+		p := parent[node]
+		if p == "" || node == fromID {
+			break
+		}
+		node = p
+	}
+	return path
 }
 
 // loadAreaPaths returns a map of semantic area Directory entity ID → directory path prefix.

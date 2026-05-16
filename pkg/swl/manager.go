@@ -120,6 +120,7 @@ func NewManager(workspace string, cfg *Config) (*Manager, error) {
 		} else {
 			m.rules.QueryIntents = CompileQueryConfig(qcfg)
 			m.rules.SQLTemplates = qcfg.SQLTmpls
+			m.rules.LabelSearchWeights = qcfg.LabelSearch.Weights
 		}
 	}
 
@@ -184,6 +185,7 @@ func (m *Manager) ReloadConfig() string {
 
 	rules.QueryIntents = CompileQueryConfig(qcfg)
 	rules.SQLTemplates = qcfg.SQLTmpls
+	rules.LabelSearchWeights = qcfg.LabelSearch.Weights
 	m.mu.Lock()
 	m.rules = rules
 	m.rulesLoadErr = ""

@@ -458,3 +458,9 @@ snapshot:
 #     extract_imports: false
 #     extract_sections: true
 #     extract_urls: true
+
+# --- Autonomous rule auto-apply ---
+# When true, suggestions with >= 5 query misses are automatically written to
+# {workspace}/.swl/swl.rules.auto.yaml (loaded as a third merge layer).
+# Review .swl/swl.rules.auto.yaml and promote useful rules to swl.rules.yaml.
+auto_apply_suggestions: false

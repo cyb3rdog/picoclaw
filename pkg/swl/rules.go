@@ -27,11 +27,29 @@ type QueryIntent struct {
 	HintGroup int      `yaml:"hint_group"` // capture group index (0 = no hint)
 }
 
+// LabelSearchWeights controls scoring weights for the labelSearch handler.
+// Loaded from swl.query.default.yaml; workspace-overridable.
+type LabelSearchWeights struct {
+	Role        int `yaml:"role"`
+	Domain      int `yaml:"domain"`
+	Kind        int `yaml:"kind"`
+	ContentType int `yaml:"content_type"`
+	Name        int `yaml:"name"`
+	Path        int `yaml:"path"`
+}
+
+// LabelSearchCfg holds label_search section from swl.query.default.yaml.
+type LabelSearchCfg struct {
+	Weights    LabelSearchWeights `yaml:"weights"`
+	MaxResults int                `yaml:"max_results"`
+}
+
 // QueryConfig holds the parsed swl.query.default.yaml intent list + Tier 2 SQL templates.
 type QueryConfig struct {
-	Version  string        `yaml:"version"`
-	Intents  []QueryIntent `yaml:"intents"`
-	SQLTmpls []SQLTemplate `yaml:"tier2_templates"`
+	Version     string          `yaml:"version"`
+	Intents     []QueryIntent   `yaml:"intents"`
+	SQLTmpls    []SQLTemplate   `yaml:"tier2_templates"`
+	LabelSearch LabelSearchCfg  `yaml:"label_search"`
 }
 
 // SQLTemplate is a Tier 2 named query bound by keyword.
@@ -75,6 +93,12 @@ type RulesEngine struct {
 	// Query engine config (Phase B query externalization).
 	QueryIntents []CompiledIntent // Tier 1: pattern → handler
 	SQLTemplates []SQLTemplate    // Tier 2: keyword → SQL
+
+	// LabelSearch scoring weights (from swl.query.default.yaml, workspace-overridable).
+	LabelSearchWeights LabelSearchWeights
+
+	// AutoApplySuggestions enables writing gap-derived rules to swl.rules.auto.yaml.
+	AutoApplySuggestions bool
 }
 
 // PathPrefixRule maps a path prefix to semantic labels.
@@ -102,11 +126,12 @@ type ContentTypeRule struct {
 
 // RulesConfig is the full YAML config structure.
 type RulesConfig struct {
-	Version             string               `yaml:"version"`
-	LabelRules          LabelRulesBlock      `yaml:"label_rules"`
-	FileRules           FileRulesBlock       `yaml:"file_rules"`
-	Snapshot            SnapshotBlock        `yaml:"snapshot"`
-	ExtractionOverrides []ExtractionOverride `yaml:"extraction_overrides"`
+	Version              string               `yaml:"version"`
+	LabelRules           LabelRulesBlock      `yaml:"label_rules"`
+	FileRules            FileRulesBlock       `yaml:"file_rules"`
+	Snapshot             SnapshotBlock        `yaml:"snapshot"`
+	ExtractionOverrides  []ExtractionOverride `yaml:"extraction_overrides"`
+	AutoApplySuggestions bool                 `yaml:"auto_apply_suggestions"`
 }
 
 // LabelRulesBlock contains label derivation rules.
@@ -199,6 +224,18 @@ func LoadRules(workspace, rulesPath string) (*RulesEngine, error) {
 		deepMergeRules(&r.cfg, &overrideCfg)
 	}
 
+	// Load auto-generated rules from .swl/swl.rules.auto.yaml (third merge layer).
+	// This file is written by ApplyPendingSuggestions when auto_apply_suggestions is true.
+	// Malformed auto file is silently skipped (it was machine-generated; if corrupt, delete it).
+	autoPath := filepath.Join(workspace, ".swl", "swl.rules.auto.yaml")
+	autoData, _ := loadOptionalFile(autoPath)
+	if len(autoData) > 0 {
+		var autoCfg RulesConfig
+		if yaml.Unmarshal(autoData, &autoCfg) == nil {
+			deepMergeRules(&r.cfg, &autoCfg)
+		}
+	}
+
 	// Compile runtime structures from config
 	r.compileFromConfig()
 
@@ -285,6 +322,9 @@ func (r *RulesEngine) compileFromConfig() {
 
 	// Per-extension extraction overrides
 	r.ExtractionOverrides = r.cfg.ExtractionOverrides
+
+	// Autonomous gap analysis auto-apply
+	r.AutoApplySuggestions = r.cfg.AutoApplySuggestions
 }
 
 // DeriveLabels computes semantic labels using config-driven rules, replacing the

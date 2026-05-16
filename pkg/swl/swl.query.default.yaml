@@ -158,6 +158,16 @@ intents:
     handler: askURLs
     hint_group: 0
 
+  # ===== Shortest Path =====
+  - id: shortest_path
+    description: "Find shortest path between two entities in the knowledge graph"
+    patterns:
+      - "(?i)(?:shortest\\s+)?path\\s+from\\s+(.+?)\\s+to\\s+(.+)"
+      - "(?i)(?:shortest\\s+)?path\\s+between\\s+(.+?)\\s+and\\s+(.+)"
+      - "(?i)how\\s+(?:is|are)\\s+(.+?)\\s+(?:connected|related)\\s+to\\s+(.+)"
+    handler: askShortestPath
+    hint_group: 1
+
   # ===== Sessions =====
   - id: sessions
     description: "Recent sessions and their goals"

@@ -1,7 +1,11 @@
 package swl
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
 // GapAnalysis holds the result of gap analysis, including rule suggestions.
@@ -393,4 +397,74 @@ func sliceContains(slice []string, s string) bool {
 		}
 	}
 	return false
+}
+
+// ApplyPendingSuggestions writes high-confidence gap-derived rules to
+// {workspace}/.swl/swl.rules.auto.yaml when auto_apply_suggestions is enabled.
+// Only path_prefix and name_pattern suggestions with ≥5 misses are applied.
+// The auto file is loaded as a third merge layer by LoadRules.
+// Existing entries are preserved; duplicates are skipped.
+func (m *Manager) ApplyPendingSuggestions() {
+	if m.rules == nil || !m.rules.AutoApplySuggestions {
+		return
+	}
+
+	analysis := m.AnalyzeGaps(5)
+	if len(analysis.RuleSuggestions) == 0 {
+		return
+	}
+
+	autoPath := filepath.Join(m.workspace, ".swl", "swl.rules.auto.yaml")
+
+	// Load existing auto rules to detect duplicates.
+	var existing RulesConfig
+	if data, err := os.ReadFile(autoPath); err == nil && len(data) > 0 {
+		_ = yaml.Unmarshal(data, &existing)
+	}
+
+	existingPrefixes := make(map[string]bool)
+	for _, r := range existing.LabelRules.PathPrefixes {
+		existingPrefixes[r.Prefix] = true
+	}
+	existingPatterns := make(map[string]bool)
+	for _, r := range existing.LabelRules.NamePatterns {
+		existingPatterns[r.Pattern] = true
+	}
+
+	changed := false
+	for _, s := range analysis.RuleSuggestions {
+		switch s.Kind {
+		case "path_prefix":
+			if s.Prefix != "" && !existingPrefixes[s.Prefix] {
+				existing.LabelRules.PathPrefixes = append(existing.LabelRules.PathPrefixes, PathPrefixRule{
+					Prefix: s.Prefix, Role: s.Role, Domain: s.Domain,
+				})
+				existingPrefixes[s.Prefix] = true
+				changed = true
+			}
+		case "name_pattern":
+			if s.Pattern != "" && !existingPatterns[s.Pattern] {
+				existing.LabelRules.NamePatterns = append(existing.LabelRules.NamePatterns, NamePatternRule{
+					Pattern: s.Pattern, Role: s.Role, Domain: s.Domain, Kind: s.KindLbl,
+				})
+				existingPatterns[s.Pattern] = true
+				changed = true
+			}
+		}
+	}
+
+	if !changed {
+		return
+	}
+
+	out, err := yaml.Marshal(&existing)
+	if err != nil {
+		return
+	}
+	header := "# SWL Auto-Generated Rules — managed by gap analysis (auto_apply_suggestions: true)\n" +
+		"# Review and promote desired rules to swl.rules.yaml. Delete this file to reset.\n\n"
+	if mkErr := os.MkdirAll(filepath.Dir(autoPath), 0o755); mkErr != nil {
+		return
+	}
+	_ = os.WriteFile(autoPath, append([]byte(header), out...), 0o644)
 }

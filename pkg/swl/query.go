@@ -60,6 +60,7 @@ var handlerRegistry = map[string]func(*Manager, string) string{
 	"askSessionActivity":   func(m *Manager, _ string) string { return m.askSessionActivity() },
 	"askIndexStatus":       func(m *Manager, _ string) string { return m.IndexStatus() },
 	"askModelReliability":  func(m *Manager, _ string) string { return m.askModelReliability() },
+	"askShortestPath":      func(m *Manager, hint string) string { return m.askShortestPath(hint) },
 	"Stats":                func(m *Manager, _ string) string { return m.Stats() },
 	"KnowledgeGaps":        func(m *Manager, _ string) string { return m.KnowledgeGaps() },
 	"Schema":               func(m *Manager, _ string) string { return m.Schema() },
@@ -224,6 +225,14 @@ func init() {
 		{regexp.MustCompile(`(?i)stats?`), func(m *Manager, hint string) string { return m.Stats() }},
 		{regexp.MustCompile(`(?i)gaps?`), func(m *Manager, hint string) string { return m.KnowledgeGaps() }},
 		{regexp.MustCompile(`(?i)schema`), func(m *Manager, hint string) string { return m.Schema() }},
+
+		// Shortest path between entities
+		{
+			regexp.MustCompile(
+				`(?i)(?:shortest\s+)?path\s+(?:from\s+(.+?)\s+to\s+(.+)|between\s+(.+?)\s+and\s+(.+))`,
+			),
+			func(m *Manager, hint string) string { return m.askShortestPath(hint) },
+		},
 	}
 }
 
@@ -421,32 +430,44 @@ func (m *Manager) labelSearch(hint string) string {
 	}
 
 	// Build a SQL query that searches role, domain, kind, content_type, and visibility
-	// fields in entity metadata. We use a weighted scoring approach:
-	//   exact label match on role (weight 10) > domain (weight 5) > kind (weight 3) > content_type (weight 2)
-	//   + name substring match (weight 1)
-	//   + directory path match (weight 1)
-	// Files with higher total scores ranked first.
+	// fields in entity metadata. Scoring weights are loaded from swl.query.default.yaml
+	// (label_search.weights) with hardcoded fallbacks.
+	w := m.rules.LabelSearchWeights
+	wRole, wDomain, wKind, wCT, wName, wPath := w.Role, w.Domain, w.Kind, w.ContentType, w.Name, w.Path
+	if wRole == 0 {
+		wRole = 10
+	}
+	if wDomain == 0 {
+		wDomain = 5
+	}
+	if wKind == 0 {
+		wKind = 3
+	}
+	if wCT == 0 {
+		wCT = 2
+	}
+	if wName == 0 {
+		wName = 1
+	}
+	if wPath == 0 {
+		wPath = 1
+	}
+
 	scoreExpr := "0"
 	args := []any{}
 	for _, term := range terms {
 		termLower := strings.ToLower(term)
-		// Role match: exact or substring (highest weight)
-		scoreExpr += " + CASE WHEN json_extract(metadata,'$.role') LIKE ? THEN 10 ELSE 0 END"
+		scoreExpr += fmt.Sprintf(" + CASE WHEN json_extract(metadata,'$.role') LIKE ? THEN %d ELSE 0 END", wRole)
 		args = append(args, "%"+termLower+"%")
-		// Domain match
-		scoreExpr += " + CASE WHEN json_extract(metadata,'$.domain') LIKE ? THEN 5 ELSE 0 END"
+		scoreExpr += fmt.Sprintf(" + CASE WHEN json_extract(metadata,'$.domain') LIKE ? THEN %d ELSE 0 END", wDomain)
 		args = append(args, "%"+termLower+"%")
-		// Kind match
-		scoreExpr += " + CASE WHEN json_extract(metadata,'$.kind') LIKE ? THEN 3 ELSE 0 END"
+		scoreExpr += fmt.Sprintf(" + CASE WHEN json_extract(metadata,'$.kind') LIKE ? THEN %d ELSE 0 END", wKind)
 		args = append(args, "%"+termLower+"%")
-		// Content type match
-		scoreExpr += " + CASE WHEN json_extract(metadata,'$.content_type') LIKE ? THEN 2 ELSE 0 END"
+		scoreExpr += fmt.Sprintf(" + CASE WHEN json_extract(metadata,'$.content_type') LIKE ? THEN %d ELSE 0 END", wCT)
 		args = append(args, "%"+termLower+"%")
-		// Name substring match
-		scoreExpr += " + CASE WHEN LOWER(name) LIKE ? THEN 1 ELSE 0 END"
+		scoreExpr += fmt.Sprintf(" + CASE WHEN LOWER(name) LIKE ? THEN %d ELSE 0 END", wName)
 		args = append(args, "%"+termLower+"%")
-		// Directory path match (for directory queries)
-		scoreExpr += " + CASE WHEN LOWER(name) LIKE ? THEN 1 ELSE 0 END"
+		scoreExpr += fmt.Sprintf(" + CASE WHEN LOWER(name) LIKE ? THEN %d ELSE 0 END", wPath)
 		args = append(args, "%/"+termLower+"/%")
 	}
 
@@ -1272,6 +1293,104 @@ func (m *Manager) askModelReliability() string {
 			truncate(mid, 40), s.total, s.confirmed, rate))
 	}
 	return strings.Join(lines, "\n")
+}
+
+// askShortestPath finds the shortest path between two entities in the knowledge graph.
+// It parses the hint for "from X to Y" or "between X and Y" patterns, resolves entity
+// names to IDs, and returns the path via application-level BFS (capped at depth 8,
+// frontier 500 nodes).
+func (m *Manager) askShortestPath(hint string) string {
+	hint = strings.TrimSpace(hint)
+	var fromName, toName string
+
+	// Parse "from X to Y"
+	if re := regexp.MustCompile(`(?i)from\s+(.+?)\s+to\s+(.+)`); re.MatchString(hint) {
+		sub := re.FindStringSubmatch(hint)
+		fromName, toName = strings.TrimSpace(sub[1]), strings.TrimSpace(sub[2])
+	} else if re := regexp.MustCompile(`(?i)between\s+(.+?)\s+and\s+(.+)`); re.MatchString(hint) {
+		sub := re.FindStringSubmatch(hint)
+		fromName, toName = strings.TrimSpace(sub[1]), strings.TrimSpace(sub[2])
+	} else {
+		// Last resort: take first two words
+		parts := strings.Fields(hint)
+		if len(parts) >= 2 {
+			fromName, toName = parts[0], parts[len(parts)-1]
+		}
+	}
+	if fromName == "" || toName == "" {
+		return "[SWL] path: specify 'from <entity> to <entity>' or 'between <entity> and <entity>'."
+	}
+
+	fromID := m.resolveEntityName(fromName)
+	toID := m.resolveEntityName(toName)
+	if fromID == "" {
+		return fmt.Sprintf("[SWL] path: entity %q not found in graph.", fromName)
+	}
+	if toID == "" {
+		return fmt.Sprintf("[SWL] path: entity %q not found in graph.", toName)
+	}
+	if fromID == toID {
+		return fmt.Sprintf("[SWL] path: %q and %q resolve to the same entity.", fromName, toName)
+	}
+
+	path := m.FindPath(fromID, toID, 8)
+	if len(path) == 0 {
+		return fmt.Sprintf("[SWL] No path found between %q and %q within depth 8.", fromName, toName)
+	}
+
+	// Look up entity names for all IDs in the path.
+	placeholders := strings.Repeat("?,", len(path))
+	placeholders = placeholders[:len(placeholders)-1]
+	args := make([]any, len(path))
+	for i, id := range path {
+		args[i] = id
+	}
+	rows, err := m.db.Query(
+		fmt.Sprintf(`SELECT id, type, name FROM entities WHERE id IN (%s)`, placeholders), args...)
+	if err != nil {
+		return "[SWL] path: error resolving names: " + err.Error()
+	}
+	defer rows.Close()
+	nameMap := make(map[string][2]string) // id → [type, name]
+	for rows.Next() {
+		var id, etype, name string
+		if rows.Scan(&id, &etype, &name) == nil {
+			nameMap[id] = [2]string{etype, name}
+		}
+	}
+	_ = rows.Err()
+
+	var steps []string
+	for i, id := range path {
+		info := nameMap[id]
+		label := info[1]
+		if info[0] != "" {
+			label = fmt.Sprintf("[%s] %s", info[0], info[1])
+		}
+		steps = append(steps, fmt.Sprintf("  %d. %s", i+1, label))
+	}
+	return fmt.Sprintf("[SWL] Path from %q to %q (%d hops):\n%s",
+		fromName, toName, len(path)-1, strings.Join(steps, "\n"))
+}
+
+// resolveEntityName finds an entity ID by exact name match, then by LIKE match.
+// Returns "" if no entity matches.
+func (m *Manager) resolveEntityName(name string) string {
+	var id string
+	// Exact match first
+	if err := m.db.QueryRow(
+		`SELECT id FROM entities WHERE name = ? AND fact_status != 'deleted' LIMIT 1`, name,
+	).Scan(&id); err == nil {
+		return id
+	}
+	// Case-insensitive substring match
+	if err := m.db.QueryRow(
+		`SELECT id FROM entities WHERE LOWER(name) LIKE ? AND fact_status != 'deleted' LIMIT 1`,
+		"%"+strings.ToLower(name)+"%",
+	).Scan(&id); err == nil {
+		return id
+	}
+	return ""
 }
 
 // --- Tier 2: named SQL templates ---

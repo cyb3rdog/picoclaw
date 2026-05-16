@@ -57,6 +57,7 @@ const (
 	KnownRelDocuments    EdgeRel = "documents"   // File(kind=anchor) → Directory it is in; marks the file as the anchor for that directory
 	KnownRelHasArea      EdgeRel = "has_area"    // Directory → child Directory with is_semantic_area=true in metadata
 	KnownRelCoOccursWith EdgeRel = "co_occurs_with" // Entities co-occurring in ≥4 sessions (autonomous loop)
+	KnownRelSimilarTo    EdgeRel = "similar_to"     // Symbols similar by structural proximity (same file, shared name prefix ≥4 chars)
 )
 
 // CascadeRels lists the ownership relations that propagate stale status from a

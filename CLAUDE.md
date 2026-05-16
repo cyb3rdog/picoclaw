@@ -343,6 +343,7 @@ in_dir, written_in, edited_in, appended_in, read, fetched, executed,
 deleted, describes, committed_in, found, listed, spawned_by,
 context_of, reasoned, intended_for, uses, documents, has_area,
 co_occurs_with  // auto-derived: entities co-occurring in ≥4 sessions
+similar_to      // auto-derived: symbols in same file sharing name prefix ≥4 chars
 
 // FactStatus
 unknown, verified, stale, deleted
@@ -464,6 +465,7 @@ query_gaps:  id, question, attempt_count, last_attempt_at, suggestion
 | C | Autonomous feedback loop, gap → candidate rule generation, inline suggestions | Done |
 | D | SSE edge delivery, assertion-in-metadata, Intent/SubAgent wiring | Done |
 | N+1 | Graph provenance (context_of), evidence-based decay, DeriveAreaRelations, DeriveSymbolUsage, per-model reliability (ADDENDUM 1) | Done |
+| N+2 | similar_to edges (DeriveSimilarSymbols), path queries (FindPath/askShortestPath), M8 auto-apply (ApplyPendingSuggestions), per-extension overrides, edge weights from YAML | Done |
 
 ### Agent hook lifecycle
 
@@ -484,6 +486,8 @@ AfterTool     → PostHook async (file content extraction, symbol/import/task ca
 - Not all files have symbols: only files touched via tool hooks are extracted
 - Stale operational files (cron, sessions, state): expected workspace churn
 - `DeriveSymbolUsage` creates package-level uses edges — imprecise but structurally sound; extractor-observed edges from actual reads take precedence via upsert
+- `DeriveSimilarSymbols` creates similar_to edges between symbols in the same file sharing a name prefix ≥4 chars; cap 300 total; no cross-file noise
+- `FindPath` is BFS-based (not recursive CTE) — depth cap 8, frontier cap 500; answers "path from X to Y" questions
 
 ### Web API endpoints (`web/backend/api/swl.go`)
 

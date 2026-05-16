@@ -7,47 +7,6 @@ Items completed since initial deferral are moved to the "Resolved" section at th
 
 ---
 
-## Deferred: Semantic Similarity Edges (`similar_to`)
-
-`DeriveSimilarSymbols()` — not built. Design proposed Levenshtein distance ≤3
-on symbol names to derive `similar_to` edges.
-
-**Why deferred**: Name-distance similarity without type context produces systematic
-noise. `handleRequest` and `handleResponse`, `parseJSON` and `parseYAML`, `newClient`
-and `newServer` — all match by name but may be completely unrelated. Without qualifier
-resolution (requires a type checker, not regex), occurrence-based cross-file matching
-creates a high-noise, low-signal edge class. Reopen if a type-context approach becomes
-available (e.g., AST-based matching using tree-sitter).
-
----
-
-## Deferred: Path Queries (`shortestPath`)
-
-No `shortestPath()` implementation. Design proposed recursive CTE in SQLite.
-
-**Why deferred**: SQLite recursive CTEs with depth ≥10 generate millions of intermediate
-rows on graphs with 1000+ nodes. The cost-based termination proposed in design documents
-(`WHERE p.cost < 20`) is not valid SQLite syntax inside a recursive CTE's WHERE clause.
-A correct implementation requires application-level BFS with a hard node frontier limit
-(≤500 nodes, depth cap ≤8). Design and implement before building.
-
----
-
-## Deferred: M8 — Autonomous Rule Auto-Apply
-
-Gap analysis (`gap_analysis.go`) generates candidate YAML rule suggestions and surfaces
-them inline in `query_swl {"gaps":true}`. The suggestions are ready-to-paste YAML.
-However, no automatic write path exists from suggestion → `swl.rules.yaml`.
-
-**Why deferred**: Auto-applying YAML rules without dry-run oversight risks breaking
-workspace-specific extraction configuration. The correct sequence is:
-1. Build a `dry_run` mode that logs what a suggestion *would* change
-2. Gate auto-apply on a config opt-in (`auto_apply_rule_suggestions: true`)
-3. Only apply suggestions above a confidence threshold (e.g. ≥5 query misses, ≥0.8 suggestion confidence)
-
-Until dry-run mode is designed, auto-apply is too risky.
-
----
 
 ## Deferred: Per-Extension Extraction Overrides
 
@@ -145,3 +104,8 @@ enough to have measurable quality variance. Revisit at >1000 entity deployments.
 | DeriveSymbolUsage | N+1 (2026-05-16) | `ontology.go` derives `uses` edges (exported symbols, multi-segment paths only) from import graph |
 | SSE edge delivery | D (2026-05-16) | Two-watermark approach; `links[]` in SSE delta payload; frontend deduplicates by composite key |
 | Decay ordering probabilistic | N+1 (2026-05-16) | `ORDER BY confidence ASC, access_count ASC, last_checked ASC` — evidence-based, not random |
+| `similar_to` edges | N+2 (2026-05-16) | `DeriveSimilarSymbols()` in `ontology.go`; same-file symbols sharing prefix ≥4 chars; `KnownRelSimilarTo` constant; cap 300 total |
+| Path queries (`shortestPath`) | N+2 (2026-05-16) | `FindPath()` + `askShortestPath()` via application-level BFS; depth cap 8, frontier cap 500; no SQLite recursive CTE |
+| M8 — Autonomous Rule Auto-Apply | N+2 (2026-05-16) | `ApplyPendingSuggestions()` writes to `.swl/swl.rules.auto.yaml`; gated on `auto_apply_suggestions: true` + ≥5 misses; loaded as third merge layer |
+| Per-extension extraction overrides | N+2 (2026-05-16) | `ExtractionOverride` struct, `OverrideForExt()`, applied in `ExtractContent()` per file extension |
+| Edge weights at query time | N+2 (2026-05-16) | `LabelSearchWeights` from `swl.query.default.yaml`; applied as CASE expressions in `labelSearch` scoring; no DB schema change |
