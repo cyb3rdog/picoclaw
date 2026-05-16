@@ -226,11 +226,9 @@ func init() {
 		{regexp.MustCompile(`(?i)gaps?`), func(m *Manager, hint string) string { return m.KnowledgeGaps() }},
 		{regexp.MustCompile(`(?i)schema`), func(m *Manager, hint string) string { return m.Schema() }},
 
-		// Shortest path between entities
+		// Shortest path — capture full phrase as group 1 so handler receives "from X to Y" or "between X and Y"
 		{
-			regexp.MustCompile(
-				`(?i)(?:shortest\s+)?path\s+(?:from\s+(.+?)\s+to\s+(.+)|between\s+(.+?)\s+and\s+(.+))`,
-			),
+			regexp.MustCompile(`(?i)((?:shortest\s+)?path\s+(?:from\s+.+\s+to\s+.+|between\s+.+\s+and\s+.+))`),
 			func(m *Manager, hint string) string { return m.askShortestPath(hint) },
 		},
 	}
@@ -432,7 +430,10 @@ func (m *Manager) labelSearch(hint string) string {
 	// Build a SQL query that searches role, domain, kind, content_type, and visibility
 	// fields in entity metadata. Scoring weights are loaded from swl.query.default.yaml
 	// (label_search.weights) with hardcoded fallbacks.
-	w := m.rules.LabelSearchWeights
+	var w LabelSearchWeights
+	if m.rules != nil {
+		w = m.rules.LabelSearchWeights
+	}
 	wRole, wDomain, wKind, wCT, wName, wPath := w.Role, w.Domain, w.Kind, w.ContentType, w.Name, w.Path
 	if wRole == 0 {
 		wRole = 10
