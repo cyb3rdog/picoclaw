@@ -394,7 +394,11 @@ func parseStreamResponse(
 					usage = &UsageInfo{
 						PromptTokens:     int(aws.ToInt32(e.Value.Usage.InputTokens)),
 						CompletionTokens: int(aws.ToInt32(e.Value.Usage.OutputTokens)),
-						TotalTokens:      int(aws.ToInt32(e.Value.Usage.InputTokens)) + int(aws.ToInt32(e.Value.Usage.OutputTokens)),
+						TotalTokens: int(
+							aws.ToInt32(e.Value.Usage.InputTokens),
+						) + int(
+							aws.ToInt32(e.Value.Usage.OutputTokens),
+						),
 					}
 				}
 			}
