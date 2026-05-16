@@ -6,6 +6,7 @@
 
 | Document | Purpose |
 |----------|---------|
+| **[AGENT-HANDOFF.md](./AGENT-HANDOFF.md)** | Session continuity — read first when resuming SWL work in a new session |
 | **[SWL-DESIGN.md](./SWL-DESIGN.md)** | Full system design — purpose, vision, principles, extraction tiers, query model, feedback loop, architecture, configuration, known gaps |
 | **[ROADMAP.md](./ROADMAP.md)** | Intentionally deferred features with rationale |
 | **[swl-refactor-requirements.md](./swl-refactor-requirements.md)** | Canonical verbatim requirements — source of truth for the original intent |
