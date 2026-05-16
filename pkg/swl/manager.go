@@ -51,6 +51,10 @@ type Manager struct {
 	// Non-empty when swl.rules.yaml or swl.query.yaml failed to load/parse.
 	rulesLoadErr string
 
+	// sessionModels maps SWL session UUID → last known LLM model ID for that session.
+	// Written by SetSessionModel (from AfterLLM hook); read by appendAssertionToMeta.
+	sessionModels sync.Map
+
 	// inferenceLog is a fixed-size ring buffer of recent extraction events.
 	// Useful for diagnosing why entities were or were not extracted.
 	infLogMu  sync.Mutex
@@ -215,6 +219,14 @@ func (m *Manager) RegisterDecayHandler(entityType EntityType, fn DecayHandlerFun
 // SetFactStatus is the ONLY permitted path to change an entity's fact_status.
 func (m *Manager) SetFactStatus(entityID string, status FactStatus) error {
 	return m.writer.setFactStatus(entityID, status)
+}
+
+// SetSessionModel records the LLM model ID used in a session. Called by AfterLLM
+// so that subsequent assertions in the same session carry the model identifier.
+func (m *Manager) SetSessionModel(sessionID, modelID string) {
+	if sessionID != "" && modelID != "" {
+		m.sessionModels.Store(sessionID, modelID)
+	}
 }
 
 // UpsertEntity writes a single entity, enforcing all invariants.

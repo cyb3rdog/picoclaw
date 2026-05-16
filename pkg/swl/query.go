@@ -56,12 +56,13 @@ var handlerRegistry = map[string]func(*Manager, string) string{
 	"askURLs": func(m *Manager, _ string) string { return m.askURLs() },
 
 	// Operational
-	"askSessions":         func(m *Manager, _ string) string { return m.askSessions() },
-	"askSessionActivity":  func(m *Manager, _ string) string { return m.askSessionActivity() },
-	"askIndexStatus":      func(m *Manager, _ string) string { return m.IndexStatus() },
-	"Stats":               func(m *Manager, _ string) string { return m.Stats() },
-	"KnowledgeGaps":       func(m *Manager, _ string) string { return m.KnowledgeGaps() },
-	"Schema":              func(m *Manager, _ string) string { return m.Schema() },
+	"askSessions":          func(m *Manager, _ string) string { return m.askSessions() },
+	"askSessionActivity":   func(m *Manager, _ string) string { return m.askSessionActivity() },
+	"askIndexStatus":       func(m *Manager, _ string) string { return m.IndexStatus() },
+	"askModelReliability":  func(m *Manager, _ string) string { return m.askModelReliability() },
+	"Stats":                func(m *Manager, _ string) string { return m.Stats() },
+	"KnowledgeGaps":        func(m *Manager, _ string) string { return m.KnowledgeGaps() },
+	"Schema":               func(m *Manager, _ string) string { return m.Schema() },
 }
 
 // ValidateHandler reports whether name is a registered handler.
@@ -216,6 +217,10 @@ func init() {
 			func(m *Manager, hint string) string { return m.askURLs() },
 		},
 		{regexp.MustCompile(`(?i)sessions?`), func(m *Manager, hint string) string { return m.askSessions() }},
+		{
+			regexp.MustCompile(`(?i)(?:model\s+reliability|per.?model|llm\s+quality|which\s+(?:model|llm)|model\s+(?:accuracy|stats?|performance))`),
+			func(m *Manager, _ string) string { return m.askModelReliability() },
+		},
 		{regexp.MustCompile(`(?i)stats?`), func(m *Manager, hint string) string { return m.Stats() }},
 		{regexp.MustCompile(`(?i)gaps?`), func(m *Manager, hint string) string { return m.KnowledgeGaps() }},
 		{regexp.MustCompile(`(?i)schema`), func(m *Manager, hint string) string { return m.Schema() }},
@@ -1190,6 +1195,85 @@ func (m *Manager) askSessions() string {
 	return "[SWL] Sessions:\n" + strings.Join(out, "\n")
 }
 
+// askModelReliability aggregates per-model assertion statistics from entity metadata.
+// It counts assertions by model_id, how many were confirmed (≥2 distinct sessions),
+// and the average confidence — giving a rough per-model reliability signal.
+func (m *Manager) askModelReliability() string {
+	rows, err := m.db.Query(
+		`SELECT metadata FROM entities WHERE metadata LIKE '%"assertions"%' AND fact_status != 'deleted'`,
+	)
+	if err != nil {
+		return "[SWL] Query error: " + err.Error()
+	}
+	defer rows.Close()
+
+	type modelStats struct {
+		total     int
+		confirmed int
+		confSum   float64
+	}
+	stats := map[string]*modelStats{}
+
+	for rows.Next() {
+		var metaStr string
+		if rows.Scan(&metaStr) != nil {
+			continue
+		}
+		var meta map[string]any
+		if json.Unmarshal([]byte(metaStr), &meta) != nil {
+			continue
+		}
+		raw, ok := meta["assertions"]
+		if !ok {
+			continue
+		}
+		b, _ := json.Marshal(raw)
+		var entries []assertionEntry
+		if json.Unmarshal(b, &entries) != nil {
+			continue
+		}
+		// Count distinct sessions per entity to detect confirmed assertions.
+		sessionsSeen := map[string]bool{}
+		for _, e := range entries {
+			sessionsSeen[e.Sid] = true
+		}
+		confirmed := len(sessionsSeen) >= 2
+		for _, e := range entries {
+			mid := e.ModelID
+			if mid == "" {
+				mid = "(unknown)"
+			}
+			if stats[mid] == nil {
+				stats[mid] = &modelStats{}
+			}
+			stats[mid].total++
+			stats[mid].confSum += e.Conf
+			if confirmed {
+				stats[mid].confirmed++
+			}
+		}
+	}
+	_ = rows.Err()
+
+	if len(stats) == 0 {
+		return "[SWL] No per-model assertion data yet. Assertions recorded after this version will carry model identifiers."
+	}
+
+	var lines []string
+	lines = append(lines, "[SWL] Per-model assertion reliability:")
+	lines = append(lines, fmt.Sprintf("  %-40s  %6s  %9s  %8s", "Model", "Total", "Confirmed", "Avg Conf"))
+	lines = append(lines, "  "+strings.Repeat("-", 70))
+	for mid, s := range stats {
+		rate := 0.0
+		if s.total > 0 {
+			rate = s.confSum / float64(s.total)
+		}
+		lines = append(lines, fmt.Sprintf("  %-40s  %6d  %9d  %8.2f",
+			truncate(mid, 40), s.total, s.confirmed, rate))
+	}
+	return strings.Join(lines, "\n")
+}
+
 // --- Tier 2: named SQL templates ---
 
 type tier2Template struct {
@@ -1575,10 +1659,11 @@ Edge relations (open — any string valid): defines, imports, has_task, has_sect
 
 // assertionEntry is one fact recorded against a workspace entity.
 type assertionEntry struct {
-	Text string  `json:"text"`
-	Conf float64 `json:"conf"`
-	Sid  string  `json:"sid"` // SWL session UUID
-	At   string  `json:"at"`  // RFC3339 timestamp
+	Text    string  `json:"text"`
+	Conf    float64 `json:"conf"`
+	Sid     string  `json:"sid"`               // SWL session UUID
+	At      string  `json:"at"`                // RFC3339 timestamp
+	ModelID string  `json:"model_id,omitempty"` // LLM model that stated this fact
 }
 
 // appendAssertionToMeta appends or updates a fact in the entity's metadata.assertions
@@ -1623,18 +1708,26 @@ func (m *Manager) appendAssertionToMeta(subjectID, text, sessionID string, conf 
 
 	now := nowSQLite()
 
+	// Resolve model ID for this session (set by AfterLLM hook).
+	var modelID string
+	if v, ok := m.sessionModels.Load(sessionID); ok {
+		modelID, _ = v.(string)
+	}
+
+	entry := assertionEntry{Text: text, Conf: conf, Sid: sessionID, At: now, ModelID: modelID}
+
 	// Deduplication: same session → update existing entry.
 	found := false
 	for i, e := range existing {
 		if e.Sid == sessionID {
-			existing[i] = assertionEntry{Text: text, Conf: conf, Sid: sessionID, At: now}
+			existing[i] = entry
 			found = true
 			break
 		}
 	}
 	if !found {
 		// Prepend so newest is first.
-		existing = append([]assertionEntry{{Text: text, Conf: conf, Sid: sessionID, At: now}}, existing...)
+		existing = append([]assertionEntry{entry}, existing...)
 	}
 
 	// Cap at 10: evict lowest-confidence entry.

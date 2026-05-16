@@ -32,7 +32,7 @@ export function SWLStats({ selectedNode, hiddenTypes, onToggleType, onClearFilte
   const { data: overview, isFetching } = useQuery<SWLOverview>({
     queryKey:        ["swl-overview"],
     queryFn:         swlApi.getOverview,
-    refetchInterval: 20_000,
+    refetchInterval: 120_000,
     retry:           false,
   })
 

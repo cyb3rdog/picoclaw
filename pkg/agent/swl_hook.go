@@ -115,11 +115,14 @@ func (h *SWLHook) AfterLLM(ctx context.Context, resp *LLMHookResponse) (*LLMHook
 		return resp, HookDecision{Action: HookActionContinue}, nil
 	}
 
+	modelID := resp.Model
+
 	h.wg.Add(1)
 	go func() {
 		defer h.wg.Done()
 		defer recoverSWLHook("AfterLLM")
 		sessionID := h.manager.EnsureSession(sessionKey)
+		h.manager.SetSessionModel(sessionID, modelID)
 
 		if content != "" {
 			delta := h.manager.ExtractLLMResponse(sessionID, content)

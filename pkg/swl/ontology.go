@@ -1,5 +1,100 @@
 package swl
 
+import (
+	"path/filepath"
+	"strings"
+)
+
+// DeriveSymbolUsage derives File --uses--> Symbol edges from the existing import
+// graph without any new extraction. The logic: if File A imports a Dependency whose
+// import path ends with the directory of File B, and File B defines Symbol S, then
+// File A likely uses Symbol S. Capped at 500 pairs per call.
+//
+// This gives LLMs real answers to "which files use ParseToken?" using already-extracted data.
+func (m *Manager) DeriveSymbolUsage() {
+	// 1. Load all import edges: file_id → []dependency_name
+	impRows, err := m.db.Query(`
+		SELECT f.id, d.name
+		FROM edges e
+		JOIN entities f ON f.id = e.from_id AND f.type = 'File' AND f.fact_status != 'deleted'
+		JOIN entities d ON d.id = e.to_id AND d.type = 'Dependency' AND d.fact_status != 'deleted'
+		WHERE e.rel = ?`, KnownRelImports)
+	if err != nil {
+		return
+	}
+	defer impRows.Close()
+
+	// fileImports: file_id → set of dependency names
+	fileImports := map[string][]string{}
+	for impRows.Next() {
+		var fid, dep string
+		if impRows.Scan(&fid, &dep) == nil {
+			fileImports[fid] = append(fileImports[fid], dep)
+		}
+	}
+	_ = impRows.Err()
+	impRows.Close()
+
+	if len(fileImports) == 0 {
+		return
+	}
+
+	// 2. Load all defines edges: symbol_id → file_path (of the defining file)
+	defRows, err := m.db.Query(`
+		SELECT s.id, f.name
+		FROM edges e
+		JOIN entities f ON f.id = e.from_id AND f.type = 'File' AND f.fact_status != 'deleted'
+		JOIN entities s ON s.id = e.to_id AND s.type = 'Symbol' AND s.fact_status != 'deleted'
+		WHERE e.rel = ?`, KnownRelDefines)
+	if err != nil {
+		return
+	}
+	defer defRows.Close()
+
+	// symPackageDir: symbol_id → package directory (normalized, no trailing slash)
+	symPackageDir := map[string]string{}
+	for defRows.Next() {
+		var symID, filePath string
+		if defRows.Scan(&symID, &filePath) == nil {
+			dir := filepath.ToSlash(filepath.Dir(filePath))
+			dir = strings.TrimPrefix(dir, "./")
+			symPackageDir[symID] = dir
+		}
+	}
+	_ = defRows.Err()
+	defRows.Close()
+
+	if len(symPackageDir) == 0 {
+		return
+	}
+
+	// 3. Match: dep ends with symPackageDir → upsert File --uses--> Symbol
+	count := 0
+	for fileID, deps := range fileImports {
+		for symID, pkgDir := range symPackageDir {
+			if count >= 500 {
+				break
+			}
+			for _, dep := range deps {
+				dep = filepath.ToSlash(dep)
+				// Match: import path "github.com/foo/pkg/auth" ends with "pkg/auth"
+				if strings.HasSuffix(dep, "/"+pkgDir) || dep == pkgDir {
+					_ = m.writer.upsertEdge(EdgeTuple{
+						FromID: fileID,
+						Rel:    KnownRelUses,
+						ToID:   symID,
+					})
+					count++
+					break
+				}
+			}
+		}
+		if count >= 500 {
+			break
+		}
+	}
+}
+
 // DeriveAreaRelations derives semantic relationships between Directory entities
 // that are classified as semantic areas (is_semantic_area=true) from the existing
 // entity graph. Called at the end of ScanWorkspace.

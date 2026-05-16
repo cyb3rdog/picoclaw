@@ -115,6 +115,13 @@ func applySchema(db *sql.DB) error {
 	_ = migrateQueryGaps(db)
 	_ = migrateEntityConsolidation(db)
 	_ = migrateDropLegacySchema(db)
+	_ = migrateEventsModelID(db)
+	return nil
+}
+
+// migrateEventsModelID adds model_id column to events table for per-model tracking.
+func migrateEventsModelID(db *sql.DB) error {
+	_, _ = db.Exec(`ALTER TABLE events ADD COLUMN model_id TEXT`)
 	return nil
 }
 

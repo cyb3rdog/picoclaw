@@ -454,6 +454,15 @@ func (m *Manager) ExtractLLMResponse(sessionID, content string) *GraphDelta {
 		}
 	}
 
+	// Wire context_of edges so extracted entities are traceable to the session.
+	if sessionID != "" {
+		for _, e := range delta.Entities {
+			delta.Edges = append(delta.Edges, EdgeTuple{
+				FromID: e.ID, Rel: KnownRelContextOf, ToID: sessionID, SessionID: sessionID,
+			})
+		}
+	}
+
 	return delta
 }
 

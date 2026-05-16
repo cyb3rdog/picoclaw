@@ -92,7 +92,7 @@ func (m *Manager) DecayCheck(entityID string, limit int) {
 			SELECT id, type, name FROM entities
 			WHERE fact_status IN ('unknown','verified')
 			  AND (last_checked IS NULL OR last_checked < ?)
-			ORDER BY last_checked ASC LIMIT ?`,
+			ORDER BY confidence ASC, access_count ASC, last_checked ASC LIMIT ?`,
 			timeAgo(24*time.Hour), limit,
 		)
 		if err != nil {
