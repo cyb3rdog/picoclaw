@@ -71,6 +71,8 @@ When `NewManager` creates `.swl/` for the first time, it should write scaffold c
 
 **Build tags**: Always `go build -tags goolm,stdjson ./pkg/swl/...` — the package will not build without them.
 
+**Launcher build**: `make build-launcher` requires `GOTOOLCHAIN=auto` (now set in root `Makefile`). If it fails with "running go 1.24.7", the env var has been reset to `local` somewhere. Also requires `pnpm install` in `web/frontend/` if `package.json` has changed since the last lock update.
+
 **Upsert invariants** (enforced in `entity.go`):
 - Confidence **never decreases** — `MAX(existing, new)`
 - `knowledge_depth` **never decreases** — `MAX(existing, new)`
